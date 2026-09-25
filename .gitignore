@@ -1,0 +1,20 @@
+# Note: the repository root has a file named `gitignore`, not `.gitignore`, so its
+# rules are not active. This file is scoped to the connector and does work.
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# Output of local runs (manifests, payloads, captured messages). Generated, never source.
+local_out/
+
+# .env is tracked, exactly as produce_app tracks its own: it holds locations and
+# switches, never a credential. Real values go in .env.local, which is not
+# tracked - and secrets go in CSM, which is neither.
+.env.local
+*.env.secret

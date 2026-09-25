@@ -1,0 +1,129 @@
+"""Confluent wire-format Avro serialisation.
+
+Wire format is: one magic byte ``0x00``, the 4-byte big-endian schema id from
+the registry, then the schemaless Avro body.
+
+The serialiser here returns bytes to the caller rather than being handed to a
+``SerializingProducer``. That is deliberate: the connector must know the exact
+on-the-wire size *before* it produces, so an oversized record can be quarantined
+instead of being rejected by the broker, and so the same bytes can be written to
+the S3 audit trail. A ``SerializingProducer`` serialises inside ``produce()``
+and gives no such opportunity.
+"""
+
+from __future__ import annotations
+
+import io
+import logging
+import struct
+from typing import Any, Callable, Dict, Optional
+
+from fastavro import parse_schema, schemaless_writer
+
+from ifc_trigger_connector.utility import failure_catalog as catalog
+from ifc_trigger_connector.utility.error_classifier import RecordRejected
+
+logger = logging.getLogger(__name__)
+
+MAGIC_BYTE = 0
+_HEADER = struct.Struct(">bI")
+
+
+class AvroSerializer:
+    """Serialises a dict to Confluent wire format under a fixed schema id."""
+
+    def __init__(self, schema: Dict[str, Any], schema_id: Optional[int], *, name: str = "value"):
+        self._schema = schema
+        self._parsed = parse_schema(schema)
+        self._schema_id = schema_id
+        self._name = name
+
+    @property
+    def schema(self) -> Dict[str, Any]:
+        """The schema records are written with; also what the envelope validates against."""
+        return self._schema
+
+    @property
+    def schema_id(self) -> Optional[int]:
+        return self._schema_id
+
+    @property
+    def framed(self) -> bool:
+        """False in DEV mode, where there is no registry and so no id to frame with."""
+        return self._schema_id is not None
+
+    def __call__(self, record: Dict[str, Any]) -> bytes:
+        buffer = io.BytesIO()
+
+        if self._schema_id is not None:
+            buffer.write(_HEADER.pack(MAGIC_BYTE, self._schema_id))
+
+        try:
+            schemaless_writer(buffer, self._parsed, record)
+        except Exception as exc:
+            # fastavro raises on a value the schema cannot encode. That is a
+            # per-record contract fault, so quarantine rather than abort the run.
+            raise RecordRejected(
+                f"Avro serialisation failed for the {self._name} schema: {exc}",
+                catalog.SCHEMA_VALIDATION_FAILURE,
+                detail={"triggerID": record.get("triggerID"), "error": str(exc)},
+            ) from exc
+
+        return buffer.getvalue()
+
+
+class SizeGuard:
+    """Rejects records that the broker would reject, before they are sent.
+
+    Catching this locally is what makes 'Message Too Large' a quarantined record
+    with usable diagnostics rather than a delivery failure with none.
+    """
+
+    def __init__(self, max_bytes: int):
+        self._max_bytes = max_bytes
+
+    @property
+    def max_bytes(self) -> int:
+        return self._max_bytes
+
+    def check(self, payload: bytes, *, trigger_id: str, key: str, record: Dict[str, Any]) -> None:
+        # librdkafka measures key and value together against message.max.bytes.
+        total = len(payload) + len(key.encode("utf-8"))
+        if total <= self._max_bytes:
+            return
+
+        embedded = record.get("payload") or ""
+        raise RecordRejected(
+            f"Serialised message is {total} bytes, over the {self._max_bytes} byte limit",
+            catalog.MESSAGE_TOO_LARGE,
+            detail={
+                "triggerID": trigger_id,
+                "serialised_bytes": total,
+                "limit_bytes": self._max_bytes,
+                # The business payload is almost always the culprit; report its
+                # share so the fix (trim fields vs raise the broker limit) is obvious.
+                "payload_bytes": len(str(embedded).encode("utf-8")),
+                "envelope_overhead_bytes": total - len(str(embedded).encode("utf-8")),
+            },
+        )
+
+
+def build_serializer(
+    *,
+    schema: Dict[str, Any],
+    schema_id: Optional[int],
+    name: str = "value",
+) -> AvroSerializer:
+    serializer = AvroSerializer(schema, schema_id, name=name)
+    logger.info(
+        "Avro serializer ready",
+        extra={"schema_name": schema.get("name"), "schema_id": schema_id, "framed": serializer.framed},
+    )
+    return serializer
+
+
+def make_key_serializer() -> Callable[[str], bytes]:
+    def serialize(key: str) -> bytes:
+        return str(key).encode("utf-8")
+
+    return serialize

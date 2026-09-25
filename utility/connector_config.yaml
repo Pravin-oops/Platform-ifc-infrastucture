@@ -1,0 +1,151 @@
+# IFC trigger connector - UAT.
+#
+# Placeholders marked CONFIRM are open items tracked in the README; they are the
+# environment-readiness values the POC assessment lists as still outstanding.
+#
+# Any value here can be overridden per task without republishing this file, by
+# setting an IFC_ environment variable in the ECS task definition. Sections are
+# separated by a double underscore, e.g. IFC_KAFKA__TOPIC, IFC_RUN__MODE.
+
+app:
+  name: ifc-trigger-connector
+  environment: UAT
+  log_level: INFO
+
+run:
+  # batch   -> ECS RunTask on the trigger's monthly window (see 'schedule').
+  # service -> resident ECS service polling the prefix.
+  mode: batch
+  poll_interval_seconds: 300
+  max_batches: 0
+  # Must be <= the task definition's stopTimeout (set to 120 in deploy/).
+  shutdown_grace_seconds: 90
+
+source:
+  type: s3
+  # Trigger Event BDP output written by FRED, one location per trigger. The
+  # scheduler names the trigger ("trigger 9", IFC_RUN__TRIGGER=TRIGGER_9, ...)
+  # and the run reads only that trigger's location. No source.path fallback on
+  # purpose: an unmapped trigger fails rather than reading another trigger's data.
+  # CONFIRM: the real per-trigger prefixes with the data team.
+  #
+  # {MONTH}_{YYYY} expands at run time to the run month's folder - a run in
+  # September 2026 reads .../trigger_8/SEPTEMBER_2026/ - so this config does not
+  # need republishing each month. Expansion uses the *run* date (Europe/London),
+  # the same month the run gate keys on; the records inside still carry the
+  # previous month as their business month.
+  trigger_paths:
+    TRIGGER_8: s3://devaprocessedlayer-691850678096-emea/triggerbackbone/ifc/trigger-events/trigger_8/{MONTH}_{YYYY}/
+    TRIGGER_9: s3://devaprocessedlayer-691850678096-emea/triggerbackbone/ifc/trigger-events/trigger_9/{MONTH}_{YYYY}/
+    TRIGGER_21: s3://devaprocessedlayer-691850678096-emea/triggerbackbone/ifc/trigger-events/trigger_21/{MONTH}_{YYYY}/
+  archive_path: s3://devaprocessedlayer-691850678096-emea/triggerbackbone/ifc/trigger-events-archive/
+  # Unset: ECS is handed one file holding the whole batch, so a cap would
+  # silently drop its tail with no second object to pick the rest up from.
+  max_records_per_batch: null
+  file_suffixes: [".json", ".jsonl"]
+  # TED rewrites the month's extract rather than appending, so anything older in
+  # the folder is a superseded draft. Read only the newest; "all" opts out.
+  selection: latest
+  # Matches trigger8_20260930_143022_123456.json. Files are ordered by the
+  # parsed timestamp, never by name.
+  filename_timestamp_pattern: "(\\d{8}_\\d{6}_\\d+)"
+  filename_timestamp_format: "%Y%m%d_%H%M%S_%f"
+
+# Upstream reconciliation gate, checked BEFORE the run gate: the run gate asks
+# whether this month is due, this asks whether upstream produced anything to run
+# for. TED writes one recon document per trigger per month; the newest one in the
+# month's folder is read and it must say this month, SUCCESS, and non-zero counts.
+# SUCCESS with both counts zero is a genuine empty month: exit 0, no alert, the
+# month is recorded delivered and TBB gets a batch event with zero messages.
+recon:
+  enabled: true
+  # Per-trigger recon prefixes, confirmed with the data team. Same
+  # {MONTH}_{YYYY} expansion as the source paths.
+  trigger_paths:
+    TRIGGER_8: s3://sit1-pre-cds01-509153454187-eu-west-1/dbx-sit-cds-snsvc0080860-prepared-db/ifc-bdp-audit-recon-json/trigger8/{MONTH}_{YYYY}/
+    TRIGGER_9: s3://sit1-pre-cds01-509153454187-eu-west-1/dbx-sit-cds-snsvc0080860-prepared-db/ifc-bdp-audit-recon-json/trigger9/{MONTH}_{YYYY}/
+    TRIGGER_21: s3://sit1-pre-cds01-509153454187-eu-west-1/dbx-sit-cds-snsvc0080860-prepared-db/ifc-bdp-audit-recon-json/trigger21/{MONTH}_{YYYY}/
+  file_suffixes: [".json"]
+  # Matches BDP_Corp_Trigger_8_recon_20260930_143022_123456.json, ordered by the
+  # parsed timestamp rather than by name.
+  filename_timestamp_pattern: "(\\d{8}_\\d{6}_\\d+)"
+  filename_timestamp_format: "%Y%m%d_%H%M%S_%f"
+
+kafka:
+  # CONFIRM: the CDD trigger topic. The BSP topic table lists
+  # tc01_fncmtrgrbb_ifc_tbb_kyc_refresh for CDD (DEV).
+  topic: tc01_fncmtrgrbb_ifc_tbb_kyc_refresh
+  # The BSP client YAML (librdkafka properties), not this file.
+  bsp_config_path: s3://devaprocessedlayer-691850678096-emea/triggerbackbone/producer_app/config/bsp_uat_config.yaml
+  # Broker limit is 800 KB; the guard sits just under it.
+  max_message_bytes: 819200
+  flush_timeout_seconds: 120
+  local_queue_max_messages: 20000
+  overrides: {}
+
+schema_registry:
+  mode: SECURE
+  url: https://ldndsr000010177.intranet.barcapint.com:8095
+  ca_location: /apps/external/5/deva/bsp/bsp-installer/bsp/etc/CARoot.pem
+  timeout_seconds: 30
+  token_refresh_margin_seconds: 300
+  schema_path: utility/schema.json
+
+csm:
+  base_url: https://csm-uk1-stg.barcapint.com:8200
+  mount_point: CSM
+  # CONFIRM: the actual system account. The POC readiness assessment lists this
+  # as known-as-placeholder only.
+  secret_path: intranet/static-cred/snsvc0035333_sysdevaemeammtdevops
+  role_name: snsvc0035333_aws_ecs-csm-fetcher
+  ca_bundle_path: /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
+  ssl_verify: true
+  sts_region: us-east-1
+  instance_region: eu-west-1
+  vault_server_id: CSM_PROD
+  request_timeout: 30
+  principal_realm: "@INTRANET.BARCAPINT.COM"
+
+# Every invocation's outcome, appended as one JSON line to this file. The gate
+# reads it to decide whether the month is already delivered; Athena reads the
+# folder as a table (deploy/athena-run-markers.sql), so keep the folder to this
+# one file. Unset the path to switch the entry-point gate off. See README,
+# 'The invocation gate'.
+run_marker:
+  path: s3://sit1-pre-cds01-509153454187-eu-west-1/dbx-sit-cds-snsvc0080860-prepared-db/ifc-bdp-audit-recon-json/run-markers/run_markers.json
+
+audit:
+  # Either a bare bucket name or a full s3://bucket/folder URI. The prefixes
+  # below are appended to it, so a URI naming a folder nests them under it.
+  bucket: s3://sit1-pre-cds01-509153454187-eu-west-1/dbx-sit-cds-snsvc0080860-prepared-db/ifc-bdp-audit-recon-json/audit-bucket
+  manifest_prefix: manifests/
+  quarantine_prefix: quarantine/
+  payload_prefix: payloads/
+  # One S3 PUT per message. On for UAT so the control evidence exists during
+  # onboarding; review before production volumes.
+  write_payloads: true
+
+resilience:
+  max_publish_attempts: 5
+  backoff_base_seconds: 1.0
+  backoff_max_seconds: 60.0
+  circuit_breaker_threshold: 20
+  circuit_breaker_reset_seconds: 120
+  preflight_enabled: true
+  preflight_timeout_seconds: 10
+  max_quarantine_ratio: 0.05
+
+health:
+  enabled: true
+  port: 8080
+  bind_host: 0.0.0.0
+
+notifications:
+  # CONFIRM: the RTB alerting topic.
+  sns_topic_arn: null
+  application_label: IFC Trigger Connector
+  # CONFIRM: the Trigger Backbone batch-completion topic. Separate from the
+  # RTB alerting topic above - this one carries a successful business event.
+  batch_sns_topic_arn: null
+  trigger_originating_bu: UK-C
+  batch_notifications_enabled: true

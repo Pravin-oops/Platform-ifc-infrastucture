@@ -1,0 +1,34 @@
+{
+  "type": "record",
+  "name": "TriggerBackboneTopicSchema",
+  "fields": [
+    {"name":"triggerID","type":"string"},
+    {"name":"triggerType","type":"string"},
+
+    {
+      "name":"triggerSubType",
+      "type":{
+        "type":"enum",
+        "name":"TriggerSubType",
+        "symbols":[
+          "NewHRCRelationship",
+          "AccountInactivity",
+          "MultipleTMSARs",
+          "UBOChanges",
+          "SigChanges"
+        ]
+      }
+    },
+
+    {"name":"timestamp","type":"string"},
+    {"name":"triggerPostingTimestamp","type":"string"},
+    {"name":"sequenceNumber","type":"int"},
+    {"name":"triggerOriginatingSystem","type":"string"},
+    {"name":"triggerOriginatingBU","type":"string"},
+    {"name":"idType","type":"string"},
+    {"name":"idValue","type":"string"},
+    {"name":"idSystem","type":"string"},
+    {"name":"upstreamTriggerID","type":["null","string"]},
+    {"name":"payload","type":["null","string"]}
+  ]
+}

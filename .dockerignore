@@ -1,0 +1,24 @@
+.git
+.gitignore
+tests/
+deploy/
+README.md
+# Read with `docker build -f Docker/Dockerfile`, so it never needs to be
+# shipped into the context itself.
+Docker/
+**/__pycache__/
+**/*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+.coverage
+htmlcov/
+.env
+.idea/
+.vscode/
+pyproject.toml
+run_tests.sh
+run_tests.ps1
+samples/expected/
+data/README.md

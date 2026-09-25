@@ -1,0 +1,22 @@
+# The connector is not pip-installed - it is run from a checkout or copied into
+# the image, exactly like produce_app. Runtime dependencies live in
+# utility/requirements.txt; this file exists only to configure the test tools.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Tests import ifc_trigger_connector.utility.*, so the directory *above* the
+# connector (the repository root) is what has to be importable.
+pythonpath = [".."]
+filterwarnings = ["error::DeprecationWarning:ifc_trigger_connector.*"]
+
+[tool.coverage.run]
+source = ["utility", "scripts"]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]
