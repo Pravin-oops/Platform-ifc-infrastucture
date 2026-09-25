@@ -6,8 +6,8 @@ import json
 
 import pytest
 
-from ifc_trigger_connector.utility import trigger_definitions as definitions
-from ifc_trigger_connector.utility.trigger_payload import (
+from utility import trigger_definitions as definitions
+from utility.trigger_payload import (
     DataType,
     FieldSpec,
     PayloadBuildError,

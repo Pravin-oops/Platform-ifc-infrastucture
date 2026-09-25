@@ -123,7 +123,7 @@ class TestDirectoryShape:
 class TestImports:
     @pytest.mark.parametrize("module", UTILITY_MODULES)
     def test_module_imports(self, module):
-        assert importlib.import_module(f"ifc_trigger_connector.utility.{module}") is not None
+        assert importlib.import_module(f"utility.{module}") is not None
 
     @pytest.mark.parametrize("script", ENTRY_POINTS)
     def test_entry_point_loads_and_exposes_main(self, script):
@@ -147,7 +147,7 @@ class TestImports:
     def test_no_module_imports_a_sibling_by_a_subpackage_path(self):
         """``utility.kafka.publisher`` and friends must not come back."""
         bad = re.compile(
-            r"from ifc_trigger_connector\.utility\.(auth|kafka|failures|triggers)\."
+            r"from utility\.(auth|kafka|failures|triggers)\."
         )
         offenders = [
             os.path.relpath(path, APP_ROOT)

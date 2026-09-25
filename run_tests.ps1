@@ -26,7 +26,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $AppDir   = Split-Path -Parent $MyInvocation.MyCommand.Path
-$RepoRoot = Split-Path -Parent $AppDir
+$RepoRoot = $AppDir
 $VenvDir  = if ($env:IFC_VENV) { $env:IFC_VENV } else { Join-Path $AppDir '.venv' }
 
 function Write-Section([string] $Text) {
@@ -77,7 +77,7 @@ if (-not $NoInstall) {
     Write-Section 'Installing test dependencies'
     Invoke-Step 'pip upgrade' { & $Py -m pip install --quiet --upgrade pip }
     Invoke-Step 'pip install' {
-        & $Py -m pip install --quiet pytest pytest-cov PyYAML fastavro boto3 moto pydantic requests
+        & $Py -m pip install --quiet pytest pytest-cov PyYAML fastavro boto3 moto pydantic requests python-dotenv
     }
 }
 
@@ -115,6 +115,10 @@ try {
     # Run detached: this step expects a non-zero exit and output on stderr, and
     # in Windows PowerShell 5.1 redirecting a native command's stderr inline
     # raises NativeCommandError instead of just capturing the text.
+    # Blank APP_CONFIG_PATH explicitly: otherwise main_ecs.py would load it from
+    # the tracked .env (load_dotenv never overrides a variable already set).
+    $PrevConfig = $env:APP_CONFIG_PATH
+    [Environment]::SetEnvironmentVariable('APP_CONFIG_PATH', '', 'Process')
     $StdOut = [System.IO.Path]::GetTempFileName()
     $StdErr = [System.IO.Path]::GetTempFileName()
     try {
@@ -132,6 +136,7 @@ try {
     }
     finally {
         Remove-Item $StdOut, $StdErr -ErrorAction SilentlyContinue
+        $env:APP_CONFIG_PATH = $PrevConfig
     }
 
     Write-Host ''

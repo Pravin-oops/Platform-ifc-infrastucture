@@ -22,10 +22,10 @@ moto = pytest.importorskip("moto", reason="moto is needed for the SNS integratio
 import boto3
 from botocore.exceptions import ClientError
 
-from ifc_trigger_connector.utility.audit_utility import ReconciliationResult, RunCounters
-from ifc_trigger_connector.utility.connector_config import NotificationSettings
-from ifc_trigger_connector.utility.connector_runner import BatchResult
-from ifc_trigger_connector.utility.trigger_batch_notifier import (
+from utility.audit_utility import ReconciliationResult, RunCounters
+from utility.connector_config import NotificationSettings
+from utility.connector_runner import BatchResult
+from utility.trigger_batch_notifier import (
     TriggerBatchNotification,
     TriggerBatchNotifier,
 )

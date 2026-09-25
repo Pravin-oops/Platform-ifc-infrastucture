@@ -6,18 +6,18 @@ import time
 
 import pytest
 
-from ifc_trigger_connector.utility.audit_utility import RunCounters, reconcile
-from ifc_trigger_connector.utility import failure_catalog as catalog
-from ifc_trigger_connector.utility.failure_catalog import Handling, Layer
-from ifc_trigger_connector.utility.error_classifier import (
+from utility.audit_utility import RunCounters, reconcile
+from utility import failure_catalog as catalog
+from utility.failure_catalog import Handling, Layer
+from utility.error_classifier import (
     ConnectorError,
     RecordRejected,
     classify,
 )
-from ifc_trigger_connector.utility.failure_notifier import build_body, build_subject
-from ifc_trigger_connector.utility.connector_utility import SourceAccessError
-from ifc_trigger_connector.utility.kafka_serializers import SizeGuard
-from ifc_trigger_connector.utility.resilience_utility import BackoffPolicy, CircuitBreaker, CircuitOpen, ShutdownSignal, retry
+from utility.failure_notifier import build_body, build_subject
+from utility.connector_utility import SourceAccessError
+from utility.kafka_serializers import SizeGuard
+from utility.resilience_utility import BackoffPolicy, CircuitBreaker, CircuitOpen, ShutdownSignal, retry
 
 
 class FakeKafkaError:

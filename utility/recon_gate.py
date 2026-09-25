@@ -50,14 +50,14 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-from ifc_trigger_connector.utility import failure_catalog as catalog
-from ifc_trigger_connector.utility.connector_config import expand_date_tokens
-from ifc_trigger_connector.utility.connector_utility import (
+from utility import failure_catalog as catalog
+from utility.connector_config import expand_date_tokens
+from utility.connector_utility import (
     SourceAccessError,
     iter_object_paths,
     read_text,
 )
-from ifc_trigger_connector.utility.trigger_source import parse_filename_timestamp
+from utility.trigger_source import parse_filename_timestamp
 
 logger = logging.getLogger(__name__)
 

@@ -14,7 +14,7 @@
 set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(dirname "$APP_DIR")"
+REPO_ROOT="$APP_DIR"
 VENV_DIR="${IFC_VENV:-$APP_DIR/.venv}"
 
 INSTALL=1
@@ -62,7 +62,7 @@ say "Interpreter"
 if [[ $INSTALL -eq 1 ]]; then
     say "Installing test dependencies"
     "$PY" -m pip install --quiet --upgrade pip
-    "$PY" -m pip install --quiet pytest pytest-cov PyYAML fastavro boto3 moto pydantic requests
+    "$PY" -m pip install --quiet pytest pytest-cov PyYAML fastavro boto3 moto pydantic requests python-dotenv
 fi
 
 # ---------------------------------------------------------------------------
@@ -73,7 +73,7 @@ cd "$APP_DIR"
 
 # Under Git Bash the interpreter is a native Windows build, so PYTHONPATH needs
 # Windows paths and ';' as the separator - a POSIX '/c/...' entry is silently
-# ignored and every ifc_trigger_connector import then fails.
+# ignored and every utility import then fails.
 case "$(uname -s 2>/dev/null || echo unknown)" in
     MINGW*|MSYS*|CYGWIN*)
         PATH_SEP=';'
@@ -108,7 +108,9 @@ say "Smoke: local dry run (scripts/main_local.py --dry-run)"
 "$PY" scripts/main_local.py --dry-run --log-level WARNING
 
 say "Smoke: ECS entry point refuses to start without a config"
-if "$PY" scripts/main_ecs.py > /dev/null 2>&1; then
+# Blank APP_CONFIG_PATH explicitly: otherwise main_ecs.py would load it from the
+# tracked .env (load_dotenv never overrides a variable that is already set).
+if APP_CONFIG_PATH= "$PY" scripts/main_ecs.py > /dev/null 2>&1; then
     echo "FAIL: main_ecs.py exited 0 with no APP_CONFIG_PATH" >&2
     exit 1
 fi

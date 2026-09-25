@@ -16,11 +16,11 @@ import pytest
 import yaml
 from fastavro import parse_schema
 
-from ifc_trigger_connector.utility.connector_config import (
+from utility.connector_config import (
     ConnectorSettings,
     SchemaRegistrySettings,
 )
-from ifc_trigger_connector.utility.connector_utility import (
+from utility.connector_utility import (
     load_schema_document,
     package_resource,
 )
@@ -155,8 +155,8 @@ class TestBundledConfigs:
     def test_a_relative_bsp_config_path_does_not_depend_on_the_working_directory(
         self, clean_ifc_env, monkeypatch, tmp_path
     ):
-        from ifc_trigger_connector.utility import kafka_factory
-        from ifc_trigger_connector.utility.resilience_utility import ShutdownSignal
+        from utility import kafka_factory
+        from utility.resilience_utility import ShutdownSignal
 
         path = os.path.join(UTILITY_DIR, "connector_config_ecs_local.yaml")
         with open(path, "r", encoding="utf-8") as handle:

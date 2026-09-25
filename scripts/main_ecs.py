@@ -31,29 +31,35 @@ import os
 import sys
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
-# Runnable directly as well as on PYTHONPATH: put the directory that holds the
-# ifc_trigger_connector package on sys.path.
-sys.path.insert(
-    0,
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-)
+from dotenv import load_dotenv
+load_dotenv()
+# Runnable directly from any working directory: put the app root - the directory
+# that holds utility/ and scripts/ - on sys.path.
+APP_ROOT = Path(__file__).resolve().parent.parent
+if str(APP_ROOT) not in sys.path:
+    sys.path.insert(0, str(APP_ROOT))
 
-from ifc_trigger_connector.utility import failure_catalog as catalog
-from ifc_trigger_connector.utility.audit_utility import new_run_id, write_invocation_manifest
-from ifc_trigger_connector.utility.connector_config import load_settings
-from ifc_trigger_connector.utility.error_classifier import ConnectorError, classify
-from ifc_trigger_connector.utility.failure_notifier import Notifier
-from ifc_trigger_connector.utility.health_utility import HealthServer, HealthState
-from ifc_trigger_connector.utility.observability_utility import Metrics, configure_logging
-from ifc_trigger_connector.utility.resilience_utility import ShutdownSignal
-from ifc_trigger_connector.utility.tb_outcome_schema import now_timestamp
-from ifc_trigger_connector.utility.trigger_definitions import resolve as resolve_trigger
-from ifc_trigger_connector.utility import recon_gate
-from ifc_trigger_connector.utility import run_gate
-from ifc_trigger_connector.utility.run_gate import RunMarker, month_of, should_run, today
-from ifc_trigger_connector.utility.trigger_batch_notifier import (
+# Pick up APP_CONFIG_PATH and the IFC_ overlay from <app root>/.env when one is
+# present. Variables injected by the ECS task definition always win.
+load_dotenv(APP_ROOT / ".env", override=False)
+
+from utility import failure_catalog as catalog
+from utility.audit_utility import new_run_id, write_invocation_manifest
+from utility.connector_config import load_settings
+from utility.error_classifier import ConnectorError, classify
+from utility.failure_notifier import Notifier
+from utility.health_utility import HealthServer, HealthState
+from utility.observability_utility import Metrics, configure_logging
+from utility.resilience_utility import ShutdownSignal
+from utility.tb_outcome_schema import now_timestamp
+from utility.trigger_definitions import resolve as resolve_trigger
+from utility import recon_gate
+from utility import run_gate
+from utility.run_gate import RunMarker, month_of, should_run, today
+from utility.trigger_batch_notifier import (
     TriggerBatchNotification,
     TriggerBatchNotifier,
 )
@@ -444,7 +450,7 @@ def ecs_handler(event: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     # manifest itself, whatever happens, so a later failure must not add another.
     runner_started = False
     try:
-        from ifc_trigger_connector.utility.connector_runner import ConnectorRunner
+        from utility.connector_runner import ConnectorRunner
 
         runner = ConnectorRunner(settings, shutdown=shutdown, health=health, metrics=metrics)
         runner_started = True

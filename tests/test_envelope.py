@@ -8,11 +8,11 @@ from datetime import date
 
 import pytest
 
-from ifc_trigger_connector.utility import tb_outcome_schema
-from ifc_trigger_connector.utility import trigger_definitions as definitions
-from ifc_trigger_connector.utility.error_classifier import PreflightError, RecordRejected
-from ifc_trigger_connector.utility.connector_utility import load_schema_document
-from ifc_trigger_connector.utility.tb_outcome_schema import (
+from utility import tb_outcome_schema
+from utility import trigger_definitions as definitions
+from utility.error_classifier import PreflightError, RecordRejected
+from utility.connector_utility import load_schema_document
+from utility.tb_outcome_schema import (
     CSID_SOURCE,
     EnvelopeBuilder,
     TriggerEvent,

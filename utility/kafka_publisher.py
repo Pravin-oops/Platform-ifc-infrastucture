@@ -26,9 +26,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from ifc_trigger_connector.utility import failure_catalog as catalog
-from ifc_trigger_connector.utility.error_classifier import Classification, PublishError, classify
-from ifc_trigger_connector.utility.resilience_utility import ShutdownSignal
+from utility import failure_catalog as catalog
+from utility.error_classifier import Classification, PublishError, classify
+from utility.resilience_utility import ShutdownSignal
 
 logger = logging.getLogger(__name__)
 

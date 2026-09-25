@@ -22,10 +22,10 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from ifc_trigger_connector.utility import failure_catalog as catalog
-from ifc_trigger_connector.utility.error_classifier import Classification
-from ifc_trigger_connector.utility.connector_utility import join_path, write_bytes, write_json
-from ifc_trigger_connector.utility.connector_config import AuditSettings
+from utility import failure_catalog as catalog
+from utility.error_classifier import Classification
+from utility.connector_utility import join_path, write_bytes, write_json
+from utility.connector_config import AuditSettings
 
 logger = logging.getLogger(__name__)
 

@@ -36,15 +36,15 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Iterator, List, Optional, Set, Tuple, Union
 
-from ifc_trigger_connector.utility import failure_catalog as catalog
-from ifc_trigger_connector.utility.error_classifier import RecordRejected
-from ifc_trigger_connector.utility.connector_utility import (
+from utility import failure_catalog as catalog
+from utility.error_classifier import RecordRejected
+from utility.connector_utility import (
     SourceAccessError,
     iter_object_paths,
     read_text,
 )
-from ifc_trigger_connector.utility.connector_config import SourceSettings
-from ifc_trigger_connector.utility.tb_outcome_schema import TriggerEvent
+from utility.connector_config import SourceSettings
+from utility.tb_outcome_schema import TriggerEvent
 
 logger = logging.getLogger(__name__)
 

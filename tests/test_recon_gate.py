@@ -17,10 +17,10 @@ from datetime import date, datetime
 
 import pytest
 
-from ifc_trigger_connector.utility import failure_catalog as catalog
-from ifc_trigger_connector.utility import recon_gate
-from ifc_trigger_connector.utility.connector_config import ReconSettings
-from ifc_trigger_connector.utility.run_gate import GateOutcome
+from utility import failure_catalog as catalog
+from utility import recon_gate
+from utility.connector_config import ReconSettings
+from utility.run_gate import GateOutcome
 
 MONTH = "2026-09"
 NEWEST = "BDP_Corp_Trigger_8_recon_20260930_143022_123456.json"
@@ -42,7 +42,7 @@ def a_document(**overrides):
 @pytest.fixture
 def recon(tmp_path, monkeypatch):
     """A local stand-in for the recon prefix, with the month folder templated."""
-    import ifc_trigger_connector.utility.run_gate as run_gate
+    import utility.run_gate as run_gate
 
     monkeypatch.setattr(run_gate, "today", lambda tz=None: date(2026, 9, 18))
 
@@ -325,8 +325,8 @@ def a_config(tmp_path, recon_root, *, enabled=True, marker=True, batch_topic=Non
 @pytest.fixture
 def ecs(main_ecs_script, monkeypatch, tmp_path, clean_ifc_env):
     """The entry point with the run gate open and the runner fused."""
-    import ifc_trigger_connector.utility.connector_runner as runner_module
-    import ifc_trigger_connector.utility.run_gate as run_gate
+    import utility.connector_runner as runner_module
+    import utility.run_gate as run_gate
 
     monkeypatch.setattr(run_gate, "today", lambda tz=None: date(2026, 9, 18))
     monkeypatch.setattr(main_ecs_script, "today", lambda tz=None: date(2026, 9, 18))
@@ -368,7 +368,7 @@ def ecs(main_ecs_script, monkeypatch, tmp_path, clean_ifc_env):
 @pytest.fixture
 def batch_sent(main_ecs_script, monkeypatch):
     """Captures the batch-completion events the entry point would publish."""
-    from ifc_trigger_connector.utility.trigger_batch_notifier import TriggerBatchNotifier
+    from utility.trigger_batch_notifier import TriggerBatchNotifier
 
     captured = []
 
@@ -430,7 +430,7 @@ class TestThroughTheEntryPoint:
     ):
         """Same body as a publishing run: zero messages, and the current time
         as both ends of the batch window."""
-        from ifc_trigger_connector.utility.tb_outcome_schema import now_timestamp
+        from utility.tb_outcome_schema import now_timestamp
 
         ecs.write(a_document(source_count=0, target_count=0))
         before = now_timestamp()
@@ -509,7 +509,7 @@ class TestThroughTheEntryPoint:
         """The recon gate runs after the run gate's skips on purpose: a weekend
         invocation is a day the run is not meant to happen, and checking
         upstream on it would alert six times a month for nothing."""
-        import ifc_trigger_connector.utility.run_gate as run_gate
+        import utility.run_gate as run_gate
 
         monkeypatch.setattr(run_gate, "today", lambda tz=None: date(2026, 9, 18))
         monkeypatch.setattr(
@@ -536,7 +536,7 @@ class TestThroughTheEntryPoint:
 class TestGateActivation:
     def test_it_is_off_when_no_location_is_configured(self, tmp_path):
         """Mirrors the run marker: unset means off, so a local run needs no feed."""
-        from ifc_trigger_connector.utility.connector_config import ConnectorSettings
+        from utility.connector_config import ConnectorSettings
 
         settings = ConnectorSettings.model_validate(
             {
@@ -548,7 +548,7 @@ class TestGateActivation:
         assert not settings.recon_active
 
     def test_a_configured_location_turns_it_on(self, tmp_path):
-        from ifc_trigger_connector.utility.connector_config import ConnectorSettings
+        from utility.connector_config import ConnectorSettings
 
         settings = ConnectorSettings.model_validate(
             {
@@ -561,7 +561,7 @@ class TestGateActivation:
         assert settings.recon_active
 
     def test_enabled_false_wins_over_a_configured_location(self, tmp_path):
-        from ifc_trigger_connector.utility.connector_config import ConnectorSettings
+        from utility.connector_config import ConnectorSettings
 
         settings = ConnectorSettings.model_validate(
             {
@@ -576,7 +576,7 @@ class TestGateActivation:
     def test_select_trigger_resolves_the_recon_path_too(self):
         """The source and the recon document must never point at different
         triggers."""
-        from ifc_trigger_connector.utility.connector_config import ConnectorSettings
+        from utility.connector_config import ConnectorSettings
 
         settings = ConnectorSettings.model_validate(
             {
@@ -621,7 +621,7 @@ class TestTheRunMarkerStatus:
     def test_an_upstream_block_records_not_ran(self, ecs, recording, main_ecs_script,
                                                monkeypatch, tmp_path):
         """Weekend or upstream failure -> NOT RAN, with zero records."""
-        from ifc_trigger_connector.utility import run_gate
+        from utility import run_gate
 
         ecs.write(a_document(status="RECON_FAILED"))
         config = a_config(tmp_path, ecs.root, marker=True)
@@ -636,7 +636,7 @@ class TestTheRunMarkerStatus:
     ):
         """A genuine empty month is delivered: SUCCESS closes it, so the rest of
         the window stands down instead of announcing it to TBB again."""
-        from ifc_trigger_connector.utility import run_gate
+        from utility import run_gate
 
         ecs.write(a_document(source_count=0, target_count=0))
         config = a_config(tmp_path, ecs.root, marker=True)
@@ -651,7 +651,7 @@ class TestTheRunMarkerStatus:
                                                monkeypatch, tmp_path):
         """Delivered on the 3rd, triggered again on the 4th: the 4th is
         reported as SKIPPED and recorded as NOT RAN, saying why."""
-        from ifc_trigger_connector.utility import run_gate
+        from utility import run_gate
 
         monkeypatch.setattr(
             main_ecs_script, "should_run",
@@ -668,7 +668,7 @@ class TestTheRunMarkerStatus:
     def test_a_failed_run_records_failure(self, ecs, recording, main_ecs_script, tmp_path):
         """The fused runner raises, which is a startup failure: the invocation
         ran and did not deliver."""
-        from ifc_trigger_connector.utility import run_gate
+        from utility import run_gate
 
         ecs.write(a_document())
         config = a_config(tmp_path, ecs.root, marker=True)
@@ -686,7 +686,7 @@ class TestTheRunMarkerStatus:
 @pytest.fixture
 def manifests(monkeypatch):
     """Captures what would be written to the audit bucket's manifests/ folder."""
-    from ifc_trigger_connector.utility import audit_utility
+    from utility import audit_utility
 
     written = []
     monkeypatch.setattr(
@@ -740,7 +740,7 @@ class TestInvocationManifest:
 
     def test_a_started_runner_is_not_recorded_twice(self, ecs, manifests, monkeypatch):
         """Once run() is entered the runner owns the manifest."""
-        import ifc_trigger_connector.utility.connector_runner as runner_module
+        import utility.connector_runner as runner_module
 
         class Started:
             def __init__(self, *a, **k):
@@ -758,7 +758,7 @@ class TestInvocationManifest:
 
     def test_a_run_gate_skip_is_recorded(self, main_ecs_script, monkeypatch, tmp_path,
                                          clean_ifc_env, manifests):
-        import ifc_trigger_connector.utility.run_gate as run_gate
+        import utility.run_gate as run_gate
 
         monkeypatch.setattr(run_gate, "today", lambda tz=None: date(2026, 9, 18))
         monkeypatch.setattr(

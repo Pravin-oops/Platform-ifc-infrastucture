@@ -16,12 +16,12 @@ from typing import Iterator
 
 import pytest
 
-#: <repo>/ifc_trigger_connector - the app root that bundled resource paths such
+#: <repo> - the app root that bundled resource paths such
 #: as ``utility/schema.json`` are relative to.
 APP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-#: The directory holding the ifc_trigger_connector package.
-REPO_ROOT = os.path.dirname(APP_ROOT)
+#: The app root is also the import root: modules import ``utility.*`` directly.
+REPO_ROOT = APP_ROOT
 
 SCRIPTS_DIR = os.path.join(APP_ROOT, "scripts")
 

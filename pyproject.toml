@@ -4,10 +4,10 @@
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# Tests import ifc_trigger_connector.utility.*, so the directory *above* the
-# connector (the repository root) is what has to be importable.
-pythonpath = [".."]
-filterwarnings = ["error::DeprecationWarning:ifc_trigger_connector.*"]
+# Tests import utility.*, so the repository root (which holds utility/) is
+# what has to be importable.
+pythonpath = ["."]
+filterwarnings = ["error::DeprecationWarning:utility.*"]
 
 [tool.coverage.run]
 source = ["utility", "scripts"]

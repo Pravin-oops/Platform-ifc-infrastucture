@@ -24,9 +24,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from ifc_trigger_connector.utility.audit_utility import AuditWriter, RunCounters, build_manifest, new_run_id, reconcile
-from ifc_trigger_connector.utility import failure_catalog as catalog
-from ifc_trigger_connector.utility.error_classifier import (
+from utility.audit_utility import AuditWriter, RunCounters, build_manifest, new_run_id, reconcile
+from utility import failure_catalog as catalog
+from utility.error_classifier import (
     Classification,
     ConnectorError,
     PublishError,
@@ -34,15 +34,15 @@ from ifc_trigger_connector.utility.error_classifier import (
     ZeroRecordsError,
     classify,
 )
-from ifc_trigger_connector.utility.failure_notifier import Notifier
-from ifc_trigger_connector.utility.health_utility import HealthState
-from ifc_trigger_connector.utility.kafka_factory import KafkaStack, KafkaStackFactory
-from ifc_trigger_connector.utility.observability_utility import Metrics, memory_limit_mb, process_rss_mb, set_log_context
-from ifc_trigger_connector.utility.resilience_utility import CircuitBreaker, CircuitOpen, ShutdownSignal
-from ifc_trigger_connector.utility.connector_config import ConnectorSettings
-from ifc_trigger_connector.utility.trigger_source import ParseFailure, TriggerSource
-from ifc_trigger_connector.utility.sequence_allocator import SequenceAllocator
-from ifc_trigger_connector.utility.tb_outcome_schema import BuiltRecord, EnvelopeBuilder, TriggerEvent
+from utility.failure_notifier import Notifier
+from utility.health_utility import HealthState
+from utility.kafka_factory import KafkaStack, KafkaStackFactory
+from utility.observability_utility import Metrics, memory_limit_mb, process_rss_mb, set_log_context
+from utility.resilience_utility import CircuitBreaker, CircuitOpen, ShutdownSignal
+from utility.connector_config import ConnectorSettings
+from utility.trigger_source import ParseFailure, TriggerSource
+from utility.sequence_allocator import SequenceAllocator
+from utility.tb_outcome_schema import BuiltRecord, EnvelopeBuilder, TriggerEvent
 
 logger = logging.getLogger(__name__)
 
@@ -158,7 +158,7 @@ class ConnectorRunner:
         )
 
         if settings.resilience.preflight_enabled:
-            from ifc_trigger_connector.utility import kafka_preflight as pf
+            from utility import kafka_preflight as pf
 
             pf.check_source(factory.report, path=settings.source.resolved_path, lister=self._source.first_object)
             factory.report.raise_if_failed()

@@ -16,8 +16,8 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from ifc_trigger_connector.utility import failure_catalog as catalog
-from ifc_trigger_connector.utility.failure_catalog import Scenario
+from utility import failure_catalog as catalog
+from utility.failure_catalog import Scenario
 
 logger = logging.getLogger(__name__)
 
@@ -278,7 +278,7 @@ def classify(
             context=merged,
         )
 
-    from ifc_trigger_connector.utility.connector_utility import SourceAccessError
+    from utility.connector_utility import SourceAccessError
 
     if isinstance(error, SourceAccessError):
         scenario = (

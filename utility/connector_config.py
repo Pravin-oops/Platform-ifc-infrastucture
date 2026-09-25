@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Literal, Optional
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from ifc_trigger_connector.utility.trigger_definitions import resolve as resolve_trigger
+from utility.trigger_definitions import resolve as resolve_trigger
 
 # Broker-enforced ceiling documented in the TBB failure catalogue (Message Too
 # Large). Kept just under 800 KiB so the Avro envelope and headers still fit.
@@ -62,7 +62,7 @@ def expand_date_tokens(template: str, run_date: Optional[date] = None) -> str:
         return template
 
     if run_date is None:
-        from ifc_trigger_connector.utility.run_gate import today
+        from utility.run_gate import today
 
         run_date = today()
 
@@ -523,7 +523,7 @@ def load_settings(config_path: str, *, reader=None) -> ConnectorSettings:
     ``reader`` is injected by tests; it defaults to the S3-aware reader.
     """
     if reader is None:
-        from ifc_trigger_connector.utility.connector_utility import read_text
+        from utility.connector_utility import read_text
 
         reader = read_text
 

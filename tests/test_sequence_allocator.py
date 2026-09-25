@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import pytest
 
-from ifc_trigger_connector.utility.connector_utility import load_schema_document
-from ifc_trigger_connector.utility.sequence_allocator import SequenceAllocator
-from ifc_trigger_connector.utility.tb_outcome_schema import (
+from utility.connector_utility import load_schema_document
+from utility.sequence_allocator import SequenceAllocator
+from utility.tb_outcome_schema import (
     MAX_SEQUENCE,
     EnvelopeBuilder,
     TriggerEvent,
@@ -153,7 +153,7 @@ class TestTriggerIdUniqueness:
 
 
 def _definition():
-    from ifc_trigger_connector.utility import trigger_definitions as definitions
+    from utility import trigger_definitions as definitions
 
     return definitions.resolve("TRIGGER_8")
 

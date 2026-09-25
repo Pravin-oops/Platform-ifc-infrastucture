@@ -44,12 +44,12 @@ from typing import Any, Dict, List, Optional, Protocol
 from fastavro import parse_schema
 from fastavro.validation import validate as avro_validate
 
-from ifc_trigger_connector.utility import failure_catalog as catalog
-from ifc_trigger_connector.utility.error_classifier import PreflightError, RecordRejected
-from ifc_trigger_connector.utility import trigger_definitions as definitions
-from ifc_trigger_connector.utility.run_gate import today
-from ifc_trigger_connector.utility.trigger_definitions import TriggerDefinition
-from ifc_trigger_connector.utility.trigger_payload import (
+from utility import failure_catalog as catalog
+from utility.error_classifier import PreflightError, RecordRejected
+from utility import trigger_definitions as definitions
+from utility.run_gate import today
+from utility.trigger_definitions import TriggerDefinition
+from utility.trigger_payload import (
     PayloadBuildError,
     build_fields,
     normalise_identifier,
@@ -227,7 +227,7 @@ class EnvelopeBuilder:
             # implementation - a second one drifts from this one the moment the
             # numbering rule changes, which is how the local dry run ended up
             # numbering by file position rather than by customer.
-            from ifc_trigger_connector.utility.sequence_allocator import (
+            from utility.sequence_allocator import (
                 SequenceAllocator as _DefaultAllocator,
             )
 

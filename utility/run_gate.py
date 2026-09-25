@@ -25,7 +25,7 @@ import os
 from datetime import date, datetime, timezone
 from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
-from ifc_trigger_connector.utility.connector_utility import is_s3_path, parse_s3_path, s3
+from utility.connector_utility import is_s3_path, parse_s3_path, s3
 
 logger = logging.getLogger(__name__)
 

@@ -15,7 +15,7 @@ from typing import Any, Dict, Optional
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
-from ifc_trigger_connector.utility.error_classifier import Classification
+from utility.error_classifier import Classification
 
 logger = logging.getLogger(__name__)
 

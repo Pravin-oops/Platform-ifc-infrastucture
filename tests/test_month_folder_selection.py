@@ -18,11 +18,11 @@ from datetime import date, datetime
 
 import pytest
 
-from ifc_trigger_connector.utility.connector_config import (
+from utility.connector_config import (
     SourceSettings,
     expand_date_tokens,
 )
-from ifc_trigger_connector.utility.trigger_source import (
+from utility.trigger_source import (
     TriggerSource,
     parse_filename_timestamp,
 )
@@ -35,7 +35,7 @@ FORMAT = "%Y%m%d_%H%M%S_%f"
 def run_date(monkeypatch):
     """Pin the run date so folder expansion is deterministic."""
     def pin(day):
-        import ifc_trigger_connector.utility.run_gate as run_gate
+        import utility.run_gate as run_gate
 
         monkeypatch.setattr(run_gate, "today", lambda tz=None: day)
         return day
@@ -235,7 +235,7 @@ class TestLatestExtractWins:
     def test_a_missing_month_folder_raises_locally(self, tmp_path, run_date):
         """Local and S3 differ here: a local path must exist, while a missing S3
         prefix simply lists empty. The S3 case is covered below, under moto."""
-        from ifc_trigger_connector.utility.connector_utility import SourceAccessError
+        from utility.connector_utility import SourceAccessError
 
         run_date(date(2026, 11, 2))
         write_extract(

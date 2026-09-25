@@ -1,11 +1,11 @@
 """ECS / CLI entry point for the IFC trigger connector.
 
-    python ifc_trigger_connector/scripts/main.py --config s3://.../connector_config.yaml
+    python scripts/main.py --config s3://.../connector_config.yaml
 
 Also exposes two subcommands that are useful without a BSP connection:
 
-    python ifc_trigger_connector/scripts/main.py validate --input samples/trigger_events.jsonl
-    python ifc_trigger_connector/scripts/main.py catalogue
+    python scripts/main.py validate --input samples/trigger_events.jsonl
+    python scripts/main.py catalogue
 
 The process exit code is the catalogue exit code for whatever scenario ended the
 run, so ECS's stopped task record identifies the failure without log archaeology.
@@ -15,39 +15,35 @@ from __future__ import annotations
 
 import argparse
 import json
-
-
-
-
-
 import logging
 import os
 import sys
+from pathlib import Path
 from typing import List, Optional
 
-# Runnable directly (`python .../scripts/main.py`) as well as on PYTHONPATH: put
-# the directory that holds the ifc_trigger_connector package on sys.path.
-sys.path.insert(
-    0,
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-)
+from dotenv import load_dotenv
 
-from ifc_trigger_connector.utility import failure_catalog as catalog
-from ifc_trigger_connector.utility.error_classifier import ConnectorError, RecordRejected, classify
-from ifc_trigger_connector.utility.health_utility import HealthServer, HealthState
-from ifc_trigger_connector.utility.observability_utility import Metrics, configure_logging
-from ifc_trigger_connector.utility.resilience_utility import ShutdownSignal
-from ifc_trigger_connector.utility.connector_config import load_settings
+# Runnable directly (`python .../scripts/main.py`) from any working directory:
+# put the app root - the directory that holds utility/ and scripts/ - on sys.path.
+APP_ROOT = Path(__file__).resolve().parent.parent
+if str(APP_ROOT) not in sys.path:
+    sys.path.insert(0, str(APP_ROOT))
+
+# Pick up APP_CONFIG_PATH and the IFC_ overlay from <app root>/.env when one is
+# present. Variables already set (e.g. by the ECS task definition) always win.
+load_dotenv(APP_ROOT / ".env", override=False)
+
+from utility import failure_catalog as catalog
+from utility.error_classifier import ConnectorError, RecordRejected, classify
+from utility.health_utility import HealthServer, HealthState
+from utility.observability_utility import Metrics, configure_logging
+from utility.resilience_utility import ShutdownSignal
+from utility.connector_config import load_settings
 
 logger = logging.getLogger("ifc_trigger_connector")
 
 DEFAULT_CONFIG_ENV = "APP_CONFIG_PATH"
-DEFAULT_ENVELOPE_DUMP = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "samples",
-    "outbound",
-    "validated_envelopes.json",
-)
+DEFAULT_ENVELOPE_DUMP = str(APP_ROOT / "samples" / "outbound" / "validated_envelopes.json")
 
 
 def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
@@ -103,11 +99,11 @@ def _command_validate(path: str, *, show_payload: bool, save_envelopes: Optional
     Uses the bundled .avsc, so it needs neither AWS nor BSP. This is the check
     to run in CI against sample data whenever a trigger definition changes.
     """
-    from ifc_trigger_connector.utility.connector_utility import load_schema_document
-    from ifc_trigger_connector.utility.connector_config import SchemaRegistrySettings
-    from ifc_trigger_connector.utility.trigger_source import ParseFailure, TriggerSource
-    from ifc_trigger_connector.utility.connector_config import SourceSettings
-    from ifc_trigger_connector.utility.tb_outcome_schema import EnvelopeBuilder
+    from utility.connector_utility import load_schema_document
+    from utility.connector_config import SchemaRegistrySettings
+    from utility.trigger_source import ParseFailure, TriggerSource
+    from utility.connector_config import SourceSettings
+    from utility.tb_outcome_schema import EnvelopeBuilder
 
     schema = load_schema_document(SchemaRegistrySettings(mode="DEV").schema_path)
     builder = EnvelopeBuilder(avro_schema=schema)
@@ -186,7 +182,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     configure_logging(args.log_level or settings.app.log_level)
 
-    from ifc_trigger_connector.utility.connector_runner import ConnectorRunner
+    from utility.connector_runner import ConnectorRunner
 
     shutdown = ShutdownSignal().install()
     health = HealthState()

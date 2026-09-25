@@ -13,15 +13,15 @@ from typing import Any, Callable, Dict, List, Optional
 
 import pytest
 
-from ifc_trigger_connector.utility import failure_catalog as catalog
-from ifc_trigger_connector.utility.connector_utility import load_schema_document
-from ifc_trigger_connector.utility.kafka_factory import KafkaStack
-from ifc_trigger_connector.utility.kafka_publisher import Publisher
-from ifc_trigger_connector.utility.kafka_serializers import AvroSerializer, SizeGuard
-from ifc_trigger_connector.utility.observability_utility import Metrics
-from ifc_trigger_connector.utility.resilience_utility import ShutdownSignal
-from ifc_trigger_connector.utility.connector_runner import ConnectorRunner
-from ifc_trigger_connector.utility.connector_config import ConnectorSettings
+from utility import failure_catalog as catalog
+from utility.connector_utility import load_schema_document
+from utility.kafka_factory import KafkaStack
+from utility.kafka_publisher import Publisher
+from utility.kafka_serializers import AvroSerializer, SizeGuard
+from utility.observability_utility import Metrics
+from utility.resilience_utility import ShutdownSignal
+from utility.connector_runner import ConnectorRunner
+from utility.connector_config import ConnectorSettings
 
 # ---------------------------------------------------------------------------
 # Fakes
@@ -187,7 +187,7 @@ def runner_factory(tmp_path):
         runner = ConnectorRunner(settings, metrics=metrics, shutdown=ShutdownSignal())
         runner._stack = build_stack(producer, settings, metrics)
 
-        from ifc_trigger_connector.utility.tb_outcome_schema import EnvelopeBuilder
+        from utility.tb_outcome_schema import EnvelopeBuilder
 
         runner._envelopes = EnvelopeBuilder(
             avro_schema=runner._stack.serializer.schema,
@@ -366,7 +366,7 @@ class TestBackpressure:
         runner = ConnectorRunner(settings, metrics=metrics, shutdown=ShutdownSignal())
         runner._stack = build_stack(producer, settings, metrics)
 
-        from ifc_trigger_connector.utility.tb_outcome_schema import EnvelopeBuilder
+        from utility.tb_outcome_schema import EnvelopeBuilder
 
         runner._envelopes = EnvelopeBuilder(
             avro_schema=runner._stack.serializer.schema,
@@ -432,7 +432,7 @@ class TestTheSingleFileContract:
         runner = ConnectorRunner(settings, metrics=metrics, shutdown=ShutdownSignal())
         runner._stack = build_stack(producer, settings, metrics)
 
-        from ifc_trigger_connector.utility.tb_outcome_schema import EnvelopeBuilder
+        from utility.tb_outcome_schema import EnvelopeBuilder
 
         runner._envelopes = EnvelopeBuilder(
             avro_schema=runner._stack.serializer.schema,
@@ -492,7 +492,7 @@ class TestTheSingleFileContract:
         runner, _ = self._runner(path)
 
         # Stand in for S3 NoSuchKey: the object lists but cannot be read.
-        from ifc_trigger_connector.utility import trigger_source as source_module
+        from utility import trigger_source as source_module
 
         def unreadable(_path):
             raise source_module.SourceAccessError(

@@ -21,9 +21,9 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
-from ifc_trigger_connector.utility import failure_catalog as catalog
-from ifc_trigger_connector.utility.failure_catalog import Scenario
-from ifc_trigger_connector.utility.error_classifier import PreflightError
+from utility import failure_catalog as catalog
+from utility.failure_catalog import Scenario
+from utility.error_classifier import PreflightError
 
 logger = logging.getLogger(__name__)
 

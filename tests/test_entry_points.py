@@ -13,7 +13,7 @@ import os
 
 import pytest
 
-from ifc_trigger_connector.utility import failure_catalog as catalog
+from utility import failure_catalog as catalog
 from tests.conftest import SAMPLES_DIR
 
 pytestmark = pytest.mark.usefixtures("clean_ifc_env")
@@ -218,7 +218,7 @@ class TestEcsEntryPoint:
             encoding="utf-8",
         )
 
-        import ifc_trigger_connector.utility.connector_runner as runner_module
+        import utility.connector_runner as runner_module
 
         class Boom:
             def __init__(self, *a, **k):

@@ -12,25 +12,25 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
-from ifc_trigger_connector.utility.auth_helper import BSPClient, BSPTokenProvider, TokenProvider
-from ifc_trigger_connector.utility.csm_aws_fetch import CSMAuthenticator
-from ifc_trigger_connector.utility import failure_catalog as catalog
-from ifc_trigger_connector.utility.error_classifier import PreflightError
-from ifc_trigger_connector.utility.connector_utility import (
+from utility.auth_helper import BSPClient, BSPTokenProvider, TokenProvider
+from utility.csm_aws_fetch import CSMAuthenticator
+from utility import failure_catalog as catalog
+from utility.error_classifier import PreflightError
+from utility.connector_utility import (
     load_schema_document,
     materialise_local,
     package_resource,
 )
-from ifc_trigger_connector.utility import kafka_preflight as pf
-from ifc_trigger_connector.utility.kafka_publisher import Publisher
-from ifc_trigger_connector.utility.schema_registry_client import (
+from utility import kafka_preflight as pf
+from utility.kafka_publisher import Publisher
+from utility.schema_registry_client import (
     SchemaRegistryClient,
     compare_schemas,
     value_subject,
 )
-from ifc_trigger_connector.utility.kafka_serializers import AvroSerializer, SizeGuard, build_serializer
-from ifc_trigger_connector.utility.resilience_utility import BackoffPolicy, ShutdownSignal
-from ifc_trigger_connector.utility.connector_config import ConnectorSettings
+from utility.kafka_serializers import AvroSerializer, SizeGuard, build_serializer
+from utility.resilience_utility import BackoffPolicy, ShutdownSignal
+from utility.connector_config import ConnectorSettings
 
 logger = logging.getLogger(__name__)
 

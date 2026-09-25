@@ -30,9 +30,9 @@ import requests
 from botocore.auth import SigV4Auth
 from botocore.awsrequest import AWSRequest
 
-from ifc_trigger_connector.utility import failure_catalog as catalog
-from ifc_trigger_connector.utility.error_classifier import PreflightError
-from ifc_trigger_connector.utility.connector_config import CSMSettings
+from utility import failure_catalog as catalog
+from utility.error_classifier import PreflightError
+from utility.connector_config import CSMSettings
 
 logger = logging.getLogger(__name__)
 

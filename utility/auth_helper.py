@@ -22,8 +22,8 @@ import threading
 import time
 from typing import Any, Callable, Dict, Optional, Protocol, runtime_checkable
 
-from ifc_trigger_connector.utility import failure_catalog as catalog
-from ifc_trigger_connector.utility.error_classifier import PreflightError
+from utility import failure_catalog as catalog
+from utility.error_classifier import PreflightError
 
 logger = logging.getLogger(__name__)
 

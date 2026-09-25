@@ -7,12 +7,12 @@ import json
 import pytest
 import yaml
 
-from ifc_trigger_connector.utility.connector_utility import load_schema_document
-from ifc_trigger_connector.utility.schema_registry_client import compare_schemas, value_subject
-from ifc_trigger_connector.utility.connector_config import ConnectorSettings, load_settings
-from ifc_trigger_connector.utility.connector_config import SourceSettings
-from ifc_trigger_connector.utility.trigger_source import ParseFailure, TriggerSource
-from ifc_trigger_connector.utility.tb_outcome_schema import TriggerEvent
+from utility.connector_utility import load_schema_document
+from utility.schema_registry_client import compare_schemas, value_subject
+from utility.connector_config import ConnectorSettings, load_settings
+from utility.connector_config import SourceSettings
+from utility.trigger_source import ParseFailure, TriggerSource
+from utility.tb_outcome_schema import TriggerEvent
 
 BASE_CONFIG = {
     "source": {"type": "local", "path": "/tmp/x"},
@@ -281,7 +281,7 @@ class TestTheSingleFileContract:
 
     def test_a_missing_local_file_raises_a_source_access_error(self, tmp_path):
         """Locally the path iterator checks existence and raises."""
-        from ifc_trigger_connector.utility.connector_utility import SourceAccessError
+        from utility.connector_utility import SourceAccessError
 
         source = TriggerSource(SourceSettings(type="local", path=str(tmp_path / "absent.json")))
         with pytest.raises(SourceAccessError):
@@ -357,8 +357,8 @@ class TestTheAuditLocation:
     """
 
     def _base(self, bucket, prefix="manifests/"):
-        from ifc_trigger_connector.utility.audit_utility import AuditWriter
-        from ifc_trigger_connector.utility.connector_config import AuditSettings
+        from utility.audit_utility import AuditWriter
+        from utility.connector_config import AuditSettings
 
         settings = AuditSettings(bucket=bucket)
         return AuditWriter(settings, run_id="r", environment="TEST")._base(prefix)
@@ -382,15 +382,15 @@ class TestTheAuditLocation:
         assert self._base(written) == "s3://my-bucket/audit/manifests"
 
     def test_the_raw_value_is_kept_for_the_log(self):
-        from ifc_trigger_connector.utility.connector_config import AuditSettings
+        from utility.connector_config import AuditSettings
 
         settings = AuditSettings(bucket="s3://my-bucket/audit/")
         assert settings.bucket == "s3://my-bucket/audit"
         assert settings.root == "s3://my-bucket/audit"
 
     def test_an_unset_bucket_disables_the_writer_rather_than_raising(self):
-        from ifc_trigger_connector.utility.audit_utility import AuditWriter
-        from ifc_trigger_connector.utility.connector_config import AuditSettings
+        from utility.audit_utility import AuditWriter
+        from utility.connector_config import AuditSettings
 
         writer = AuditWriter(AuditSettings(), run_id="r", environment="TEST")
         assert not writer.enabled
@@ -398,8 +398,8 @@ class TestTheAuditLocation:
     def test_the_deployed_config_resolves_to_the_audit_folder(self, app_root):
         import os
 
-        from ifc_trigger_connector.utility.audit_utility import AuditWriter
-        from ifc_trigger_connector.utility.connector_config import load_settings
+        from utility.audit_utility import AuditWriter
+        from utility.connector_config import load_settings
 
         settings = load_settings(os.path.join(app_root, "utility", "connector_config.yaml"))
         writer = AuditWriter(settings.audit, run_id="r", environment="TEST")

@@ -25,7 +25,7 @@ from __future__ import annotations
 import threading
 from typing import Dict
 
-from ifc_trigger_connector.utility.tb_outcome_schema import MAX_SEQUENCE
+from utility.tb_outcome_schema import MAX_SEQUENCE
 
 
 class SequenceAllocator:

@@ -27,7 +27,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
 
-from ifc_trigger_connector.utility.trigger_payload import (
+from utility.trigger_payload import (
     POLICY_NAME,
     DataType,
     FieldSpec,

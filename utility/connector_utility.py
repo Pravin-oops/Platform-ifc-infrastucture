@@ -207,7 +207,7 @@ def materialise_local(path: str, suffix: str = ".yaml") -> str:
 def package_resource(relative: str) -> str:
     """Resolve an app-relative resource (e.g. a bundled schema) inside the image.
 
-    Paths are relative to the ``ifc_trigger_connector`` app root, so a bundled
+    Paths are relative to the app root (the directory holding ``utility/``), so a bundled
     schema is named ``utility/schema.json``. ``IFC_HOME`` is set in the
     Dockerfile; it falls back to the app root, two levels up from this file
     (``<app>/utility/connector_utility.py``), when running from a checkout.

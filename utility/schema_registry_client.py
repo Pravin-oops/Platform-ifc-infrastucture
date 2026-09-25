@@ -18,9 +18,9 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 import requests
 
-from ifc_trigger_connector.utility import failure_catalog as catalog
-from ifc_trigger_connector.utility.error_classifier import ConnectorError, PreflightError
-from ifc_trigger_connector.utility.resilience_utility import BackoffPolicy, ShutdownSignal, retry
+from utility import failure_catalog as catalog
+from utility.error_classifier import ConnectorError, PreflightError
+from utility.resilience_utility import BackoffPolicy, ShutdownSignal, retry
 
 logger = logging.getLogger(__name__)
 

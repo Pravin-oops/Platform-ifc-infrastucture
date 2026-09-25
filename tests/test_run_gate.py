@@ -13,8 +13,8 @@ from datetime import date
 import pytest
 from botocore.exceptions import ClientError
 
-from ifc_trigger_connector.utility import run_gate
-from ifc_trigger_connector.utility.run_gate import (
+from utility import run_gate
+from utility.run_gate import (
     RunMarker,
     is_weekend,
     month_of,
@@ -510,7 +510,7 @@ def test_a_weekend_invocation_exits_clean_without_touching_anything(
         encoding="utf-8",
     )
 
-    import ifc_trigger_connector.utility.connector_runner as runner_module
+    import utility.connector_runner as runner_module
 
     class Boom:
         def __init__(self, *a, **k):
@@ -532,7 +532,7 @@ def test_a_weekend_invocation_exits_clean_without_touching_anything(
 
 def test_gating_is_off_without_a_marker_file(tmp_path, clean_ifc_env):
     """A local developer run needs neither a trigger name nor a marker file."""
-    from ifc_trigger_connector.utility.connector_config import ConnectorSettings
+    from utility.connector_config import ConnectorSettings
 
     settings = ConnectorSettings.model_validate(
         {
@@ -549,7 +549,7 @@ def test_a_leftover_dynamodb_table_name_is_rejected(tmp_path, clean_ifc_env):
     every date in the window republish the month."""
     from pydantic import ValidationError
 
-    from ifc_trigger_connector.utility.connector_config import ConnectorSettings
+    from utility.connector_config import ConnectorSettings
 
     with pytest.raises(ValidationError, match="run_marker.path"):
         ConnectorSettings.model_validate(
@@ -568,7 +568,7 @@ def test_a_leftover_dynamodb_table_name_is_rejected(tmp_path, clean_ifc_env):
 
 
 def _settings(**source):
-    from ifc_trigger_connector.utility.connector_config import ConnectorSettings
+    from utility.connector_config import ConnectorSettings
 
     return ConnectorSettings.model_validate(
         {
@@ -595,7 +595,7 @@ def test_scheduler_spellings_resolve_to_one_trigger(spelling, clean_ifc_env):
 
 def test_one_marker_whatever_the_spelling(marker):
     """'trigger 9' and 'TRIGGER_9' must not each deliver the same month."""
-    from ifc_trigger_connector.utility.connector_config import canonical_trigger
+    from utility.connector_config import canonical_trigger
 
     marker.mark_done(canonical_trigger("trigger 9"), "2026-09", records=3)
     assert not should_run(canonical_trigger("TRIGGER_9"), marker, day=date(2026, 9, 8))[0]
@@ -623,7 +623,7 @@ def test_data_path_beats_trigger_path_beats_source_path(clean_ifc_env):
 
 def test_env_trigger_is_normalised(monkeypatch, clean_ifc_env):
     monkeypatch.setenv("IFC_RUN__TRIGGER", "trigger 9")
-    from ifc_trigger_connector.utility.connector_config import _deep_merge, _env_overlay, ConnectorSettings
+    from utility.connector_config import _deep_merge, _env_overlay, ConnectorSettings
 
     doc = {
         "source": {"trigger_paths": TRIGGER_PATHS},
@@ -640,7 +640,7 @@ def test_env_trigger_is_normalised(monkeypatch, clean_ifc_env):
     "argv", [["trigger", "9"], ["trigger 9"], ["--trigger", "TRIGGER_9"]]
 )
 def test_command_line_trigger(main_ecs_script, argv):
-    from ifc_trigger_connector.utility.connector_config import canonical_trigger
+    from utility.connector_config import canonical_trigger
 
     assert canonical_trigger(main_ecs_script._event_from_argv(argv)["trigger"]) == "TRIGGER_9"
 
@@ -669,7 +669,7 @@ def test_trigger_9_invocation_reads_trigger_9_location(
         encoding="utf-8",
     )
 
-    import ifc_trigger_connector.utility.connector_runner as runner_module
+    import utility.connector_runner as runner_module
 
     seen = {}
 
@@ -712,7 +712,7 @@ def test_trigger_9_invocation_reads_trigger_9_location(
 
 
 def _settings_from_env():
-    from ifc_trigger_connector.utility.connector_config import ConnectorSettings, _deep_merge, _env_overlay
+    from utility.connector_config import ConnectorSettings, _deep_merge, _env_overlay
 
     doc = {
         "source": {"trigger_paths": TRIGGER_PATHS},
@@ -752,7 +752,7 @@ def test_scheduler_env_variable_through_the_ecs_entry_point(
     monkeypatch.setenv("APP_CONFIG_PATH", str(config))
     monkeypatch.setenv("IFC_RUN__TRIGGER", "TRIGGER_9")
 
-    import ifc_trigger_connector.utility.connector_runner as runner_module
+    import utility.connector_runner as runner_module
 
     seen = {}
 
@@ -788,8 +788,8 @@ def test_ecs_local_config_reads_each_trigger_from_its_own_data_folder(app_root, 
 
     import yaml
 
-    from ifc_trigger_connector.utility.connector_config import ConnectorSettings
-    from ifc_trigger_connector.utility.connector_utility import iter_object_paths
+    from utility.connector_config import ConnectorSettings
+    from utility.connector_utility import iter_object_paths
 
     with open(os.path.join(app_root, "utility", "connector_config_ecs_local.yaml"), encoding="utf-8") as handle:
         document = yaml.safe_load(handle)

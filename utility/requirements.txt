@@ -15,6 +15,10 @@ fastavro~=1.9
 confluent-kafka~=2.4
 pydantic~=2.7
 
+# Loads <app root>/.env in scripts/main.py and scripts/main_ecs.py. Never
+# overrides variables already set, so the ECS task definition always wins.
+python-dotenv~=1.0
+
 # Zone database for zoneinfo. The runtime image is python:3.11-slim, which
 # carries no system tzdata, and the entry-point gate decides 'is today a
 # weekday' in Europe/London. Without this the gate falls back to UTC and a

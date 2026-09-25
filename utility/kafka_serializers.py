@@ -20,8 +20,8 @@ from typing import Any, Callable, Dict, Optional
 
 from fastavro import parse_schema, schemaless_writer
 
-from ifc_trigger_connector.utility import failure_catalog as catalog
-from ifc_trigger_connector.utility.error_classifier import RecordRejected
+from utility import failure_catalog as catalog
+from utility.error_classifier import RecordRejected
 
 logger = logging.getLogger(__name__)
 
