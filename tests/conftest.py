@@ -52,11 +52,6 @@ def app_root() -> str:
 
 
 @pytest.fixture(scope="session")
-def samples_jsonl() -> str:
-    return os.path.join(SAMPLES_DIR, "trigger_events.jsonl")
-
-
-@pytest.fixture(scope="session")
 def main_script() -> types.ModuleType:
     return load_script("main")
 
@@ -64,11 +59,6 @@ def main_script() -> types.ModuleType:
 @pytest.fixture(scope="session")
 def main_ecs_script() -> types.ModuleType:
     return load_script("main_ecs")
-
-
-@pytest.fixture(scope="session")
-def main_local_script() -> types.ModuleType:
-    return load_script("main_local")
 
 
 @pytest.fixture

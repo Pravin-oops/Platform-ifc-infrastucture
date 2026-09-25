@@ -1,9 +1,8 @@
-"""The three entry points in ``scripts/``.
+"""The two entry points in ``scripts/``.
 
-``main.py`` (CLI), ``main_ecs.py`` (platform) and ``main_local.py`` (developer)
-are the connector's public surface, and the restructure moved all three. Each is
-exercised here through the path that needs no broker, no AWS and no BSP, so the
-suite runs anywhere: the catalogue, the offline validator and the dry run.
+``main.py`` (CLI) and ``main_ecs.py`` (platform) are the connector's public
+surface. Each is exercised here through the path that needs no broker, no AWS
+and no BSP, so the suite runs anywhere: the catalogue and the offline validator.
 """
 
 from __future__ import annotations
@@ -51,27 +50,6 @@ class TestCatalogueCommand:
 
 
 class TestValidateCommand:
-    def test_the_bundled_samples_all_build(self, main_script, samples_jsonl, capsys):
-        assert main_script.main(["validate", "--input", samples_jsonl]) == 0
-
-        out = capsys.readouterr().out
-        assert "4 valid, 0 rejected" in out
-        assert out.count("OK ") == 4
-
-    def test_it_reports_the_trigger_id_of_each_built_record(self, main_script, samples_jsonl, capsys):
-        main_script.main(["validate", "--input", samples_jsonl])
-        out = capsys.readouterr().out
-
-        for sub_type in ("NewHRCRelationship", "AccountInactivity", "MultipleTMSARs"):
-            assert f"TBD-KYCRefresh-{sub_type}-" in out
-
-    def test_show_payload_prints_the_bsp_field_list(self, main_script, samples_jsonl, capsys):
-        main_script.main(["validate", "--input", samples_jsonl, "--show-payload"])
-        out = capsys.readouterr().out
-
-        assert '"fieldName"' in out
-        assert '"fieldEncryptionPolicy"' in out
-
     def test_a_rejected_record_fails_with_the_schema_scenario_code(
         self, main_script, tmp_path, capsys
     ):
@@ -115,55 +93,6 @@ class TestMainWithoutAConfig:
     def test_an_unreadable_config_is_classified_not_raised(self, main_script, tmp_path):
         missing = str(tmp_path / "nope.yaml")
         assert main_script.main(["--config", missing]) == catalog.CONTAINER_FAILURE.exit_code
-
-
-class TestLocalDryRun:
-    def test_it_builds_every_bundled_sample(self, main_local_script, samples_jsonl, capsys):
-        code = main_local_script.main(["--dry-run", "--input", samples_jsonl])
-
-        out = capsys.readouterr().out
-        assert code == catalog.EXIT_OK
-        assert "built=4 rejected=0 oversize=0" in out
-
-    def test_it_counts_the_records_per_sub_type(self, main_local_script, samples_jsonl, capsys):
-        main_local_script.main(["--dry-run", "--input", samples_jsonl])
-        summary = capsys.readouterr().out.rsplit("by_sub_type=", 1)[1].strip()
-
-        assert json.loads(summary) == {"TRIGGER_8": 2, "TRIGGER_9": 1, "TRIGGER_21": 1}
-
-    def test_it_reports_the_serialised_size_of_each_record(
-        self, main_local_script, samples_jsonl, capsys
-    ):
-        main_local_script.main(["--dry-run", "--input", samples_jsonl])
-        assert "bytes=" in capsys.readouterr().out
-
-    def test_a_rejected_record_makes_the_dry_run_fail(self, main_local_script, tmp_path, capsys):
-        bad = tmp_path / "bad.jsonl"
-        bad.write_text(
-            json.dumps(
-                {
-                    "triggerSubType": "TRIGGER_99",
-                    "attributes": {"counterparty_csid_sds": 1},
-                }
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-
-        code = main_local_script.main(["--dry-run", "--input", str(bad)])
-
-        assert code != catalog.EXIT_OK
-        assert "rejected=1" in capsys.readouterr().out
-
-    def test_the_default_config_is_the_local_one(self, main_local_script):
-        assert main_local_script.DEFAULT_CONFIG.endswith(
-            os.path.join("utility", "connector_config_local.yaml")
-        )
-        assert os.path.isfile(main_local_script.DEFAULT_CONFIG)
-
-    def test_an_unreadable_config_is_reported_not_raised(self, main_local_script, tmp_path):
-        code = main_local_script.main(["--config", str(tmp_path / "nope.yaml"), "--dry-run"])
-        assert code == catalog.CONTAINER_FAILURE.exit_code
 
 
 class TestEcsEntryPoint:

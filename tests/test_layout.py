@@ -46,14 +46,13 @@ UTILITY_MODULES = [
     "trigger_source",
 ]
 
-ENTRY_POINTS = ["main", "main_ecs", "main_local"]
+ENTRY_POINTS = ["main", "main_ecs"]
 
 #: Non-code assets that live beside the modules, exactly as produce_app keeps
 #: its YAML, its .json schema and its requirements.txt inside utility/.
 UTILITY_ASSETS = [
     "requirements.txt",
     "connector_config.yaml",
-    "connector_config_local.yaml",
     "schema.json",
 ]
 
@@ -199,8 +198,7 @@ class TestDockerfile:
         like a missing file rather than a wrong -f/context pairing.
         """
         text = self.dockerfile()
-        assert "-f Docker/Dockerfile" in text
-        assert "docker build -f ifc_trigger_connector/Docker/Dockerfile" in text
+        assert "docker build -f Docker/Dockerfile" in text
 
     def test_it_installs_requirements_from_utility(self):
         assert "COPY utility/requirements.txt" in self.dockerfile()
@@ -224,10 +222,16 @@ class TestDockerfile:
         assert "scripts/ /app/ifc_trigger_connector/scripts/" in text
         assert "src/" not in text
 
+    def test_it_copies_no_directory_the_repository_does_not_have(self):
+        """A COPY of a missing source directory fails the whole image build."""
+        sources = re.findall(r"^COPY\s+(?:--\S+\s+)*(\S+)", self.dockerfile(), re.MULTILINE)
+        for source in sources:
+            assert os.path.exists(os.path.join(APP_ROOT, source)), f"COPY {source}: not in the repository"
+
     def test_pythonpath_and_ifc_home_agree_with_the_package_root(self):
         text = self.dockerfile()
-        # PYTHONPATH must hold the *parent* of the package; IFC_HOME the app root.
-        assert "PYTHONPATH=/app" in text
+        # Modules import utility.* directly, so both point at the app root.
+        assert "PYTHONPATH=/app/ifc_trigger_connector" in text
         assert "IFC_HOME=/app/ifc_trigger_connector" in text
 
     def test_the_entrypoint_is_the_ecs_script(self):

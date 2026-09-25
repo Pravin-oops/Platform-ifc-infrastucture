@@ -8,7 +8,7 @@
 #   ./run_tests.sh -k envelope     pass anything else straight to pytest
 #
 # Nothing here touches AWS, BSP, CSM, BAM or a Kafka broker. Every check runs
-# against the bundled samples and the bundled schemas, so it is safe to run on a
+# against the bundled schemas, so it is safe to run on a
 # laptop and in CI without credentials.
 
 set -euo pipefail
@@ -62,7 +62,7 @@ say "Interpreter"
 if [[ $INSTALL -eq 1 ]]; then
     say "Installing test dependencies"
     "$PY" -m pip install --quiet --upgrade pip
-    "$PY" -m pip install --quiet pytest pytest-cov PyYAML fastavro boto3 moto pydantic requests python-dotenv
+    "$PY" -m pip install --quiet pytest pytest-cov PyYAML fastavro boto3 moto pydantic requests python-dotenv tzdata
 fi
 
 # ---------------------------------------------------------------------------
@@ -94,18 +94,12 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Smoke checks: the three entry points, on the paths that need no network.
+# Smoke checks: the two entry points, on the paths that need no network.
 # ---------------------------------------------------------------------------
 
 say "Smoke: failure catalogue (scripts/main.py catalogue)"
 "$PY" scripts/main.py catalogue > /dev/null
 echo "catalogue rendered as JSON"
-
-say "Smoke: offline envelope validation (scripts/main.py validate)"
-"$PY" scripts/main.py validate --input samples/trigger_events.jsonl
-
-say "Smoke: local dry run (scripts/main_local.py --dry-run)"
-"$PY" scripts/main_local.py --dry-run --log-level WARNING
 
 say "Smoke: ECS entry point refuses to start without a config"
 # Blank APP_CONFIG_PATH explicitly: otherwise main_ecs.py would load it from the

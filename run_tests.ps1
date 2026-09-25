@@ -3,9 +3,9 @@
     Test runner for the IFC trigger connector (Windows PowerShell).
 
 .DESCRIPTION
-    Runs the unit tests, then exercises the three entry points on the paths that
+    Runs the unit tests, then exercises the two entry points on the paths that
     need no network. Nothing here touches AWS, BSP, CSM, BAM or a Kafka broker:
-    every check runs against the bundled samples and the bundled schemas, so it
+    every check runs against the bundled schemas, so it
     is safe on a laptop and in CI without credentials.
 
 .EXAMPLE
@@ -77,7 +77,7 @@ if (-not $NoInstall) {
     Write-Section 'Installing test dependencies'
     Invoke-Step 'pip upgrade' { & $Py -m pip install --quiet --upgrade pip }
     Invoke-Step 'pip install' {
-        & $Py -m pip install --quiet pytest pytest-cov PyYAML fastavro boto3 moto pydantic requests python-dotenv
+        & $Py -m pip install --quiet pytest pytest-cov PyYAML fastavro boto3 moto pydantic requests python-dotenv tzdata
     }
 }
 
@@ -98,18 +98,12 @@ try {
     }
 
     # -----------------------------------------------------------------------
-    # Smoke checks: the three entry points, offline.
+    # Smoke checks: the two entry points, offline.
     # -----------------------------------------------------------------------
 
     Write-Section 'Smoke: failure catalogue (scripts\main.py catalogue)'
     Invoke-Step 'catalogue' { & $Py scripts\main.py catalogue | Out-Null }
     Write-Host 'catalogue rendered as JSON'
-
-    Write-Section 'Smoke: offline envelope validation (scripts\main.py validate)'
-    Invoke-Step 'validate' { & $Py scripts\main.py validate --input samples\trigger_events.jsonl }
-
-    Write-Section 'Smoke: local dry run (scripts\main_local.py --dry-run)'
-    Invoke-Step 'dry run' { & $Py scripts\main_local.py --dry-run --log-level WARNING }
 
     Write-Section 'Smoke: ECS entry point refuses to start without a config'
     # Run detached: this step expects a non-zero exit and output on stderr, and

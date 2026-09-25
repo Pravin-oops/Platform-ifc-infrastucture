@@ -776,30 +776,3 @@ def test_scheduler_env_variable_through_the_ecs_entry_point(
     assert main_ecs_script.main([]) == 0
     assert gate_calls == ["TRIGGER_9"]
     assert seen == {"trigger": "TRIGGER_9", "path": "s3://b/t9/"}
-
-
-# ---------------------------------------------------------------------------
-# No AWS yet: data/trigger_<n>/ folders
-# ---------------------------------------------------------------------------
-
-
-def test_ecs_local_config_reads_each_trigger_from_its_own_data_folder(app_root, clean_ifc_env):
-    import os
-
-    import yaml
-
-    from utility.connector_config import ConnectorSettings
-    from utility.connector_utility import iter_object_paths
-
-    with open(os.path.join(app_root, "utility", "connector_config_ecs_local.yaml"), encoding="utf-8") as handle:
-        document = yaml.safe_load(handle)
-
-    for trigger, expected in (("TRIGGER_8", "trigger_8.json"), ("TRIGGER_9", "trigger_9.json")):
-        settings = ConnectorSettings.model_validate(document)
-        assert not settings.gate_active
-        settings.select_trigger(trigger)
-        assert settings.source.path == f"data/{trigger.lower()}"
-
-        files = list(iter_object_paths(os.path.join(app_root, settings.source.path), settings.source.file_suffixes))
-        assert [os.path.basename(f) for f in files] == [expected]
-
