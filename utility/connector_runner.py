@@ -40,7 +40,7 @@ from utility.kafka_factory import KafkaStack, KafkaStackFactory
 from utility.observability_utility import Metrics, memory_limit_mb, process_rss_mb, set_log_context
 from utility.resilience_utility import CircuitBreaker, CircuitOpen, ShutdownSignal
 from utility.connector_config import ConnectorSettings
-from utility.trigger_source import ParseFailure, TriggerSource
+from utility.trigger_source import ParseFailure, make_source
 from utility.sequence_allocator import SequenceAllocator
 from utility.tb_outcome_schema import BuiltRecord, EnvelopeBuilder, TriggerEvent
 
@@ -100,7 +100,7 @@ class ConnectorRunner:
 
         self._run_id = new_run_id()
         self._sequence = SequenceAllocator()
-        self._source = TriggerSource(settings.source)
+        self._source = make_source(settings.source, trigger=settings.run.trigger)
         self._audit = AuditWriter(settings.audit, run_id=self._run_id, environment=settings.app.environment)
         self._notifier = Notifier(
             sns_topic_arn=settings.notifications.sns_topic_arn,
@@ -160,7 +160,7 @@ class ConnectorRunner:
         if settings.resilience.preflight_enabled:
             from utility import kafka_preflight as pf
 
-            pf.check_source(factory.report, path=settings.source.resolved_path, lister=self._source.first_object)
+            pf.check_source(factory.report, table=settings.source.resolved_table, lister=self._source.first_object)
             factory.report.raise_if_failed()
 
         self._stack = factory.build()
@@ -279,18 +279,17 @@ class ConnectorRunner:
             return outcome, exit_code, classification
 
         if source_unreadable and not counters.records_parsed:
-            # An unreadable object arrives as a ParseFailure, which on its own
-            # would leave the run SUCCESS with one quarantined "record" - so a
-            # missing monthly file would exit 0 and look clean. Under the
-            # one-file contract that object *is* the batch, so failing to read
-            # it fails the run. BDP_READ_FAILURE names missing files among its
-            # causes and is a HIGH-severity abort.
+            # A failed Athena query arrives as a ParseFailure, which on its own
+            # would leave the run SUCCESS with one quarantined "record" - so an
+            # unreadable table would exit 0 and look clean. The query *is* the
+            # batch, so failing to run it fails the run. BDP_READ_FAILURE is a
+            # HIGH-severity abort.
             return (
                 "SOURCE_UNREADABLE",
                 catalog.BDP_READ_FAILURE.exit_code,
                 classify(
                     ConnectorError(
-                        f"Could not read the trigger source at {settings.source.path}; "
+                        f"Could not read the trigger table {settings.source.table}; "
                         "no records were published",
                         catalog.BDP_READ_FAILURE,
                     ),
@@ -299,14 +298,14 @@ class ConnectorRunner:
             )
 
         if stream_exhausted and not counters.records_parsed and not counters.parse_failures:
-            # An empty source on a scheduled run means TED or FRED produced
+            # No rows for the month on a scheduled run means upstream produced
             # nothing. That is a reportable condition, not a clean run.
             return (
                 "ZERO_RECORDS",
                 catalog.TED_MISSING_SOURCE_DATA.exit_code,
                 classify(
                     ZeroRecordsError(
-                        f"No trigger events found under {settings.source.path}",
+                        f"No trigger events found in {settings.source.table} for this month",
                         catalog.TED_MISSING_SOURCE_DATA,
                     ),
                     operation="run_batch",

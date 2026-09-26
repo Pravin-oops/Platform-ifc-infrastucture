@@ -306,7 +306,7 @@ def a_config(tmp_path, recon_root, *, enabled=True, marker=True, batch_topic=Non
     config = tmp_path / "c.yaml"
     lines = [
         "app: {name: t, environment: TEST}",
-        "source: {type: s3, path: 's3://bucket/prefix/'}",
+        "source: {table: ifc_trigger_db.trigger_8}",
         "kafka: {topic: t, overrides: {bootstrap.servers: 'localhost:9092'}}",
         "schema_registry: {mode: DEV}",
         "state: {backend: memory}",
@@ -540,7 +540,7 @@ class TestGateActivation:
 
         settings = ConnectorSettings.model_validate(
             {
-                "source": {"type": "local", "path": str(tmp_path)},
+                "source": {"table": "ifc_trigger_db.trigger_8"},
                 "kafka": {"topic": "t", "overrides": {"bootstrap.servers": "x:9092"}},
                 "schema_registry": {"mode": "DEV"},
             }
@@ -552,7 +552,7 @@ class TestGateActivation:
 
         settings = ConnectorSettings.model_validate(
             {
-                "source": {"type": "local", "path": str(tmp_path)},
+                "source": {"table": "ifc_trigger_db.trigger_8"},
                 "kafka": {"topic": "t", "overrides": {"bootstrap.servers": "x:9092"}},
                 "schema_registry": {"mode": "DEV"},
                 "recon": {"path": "s3://b/recon/{MONTH}_{YYYY}/"},
@@ -565,7 +565,7 @@ class TestGateActivation:
 
         settings = ConnectorSettings.model_validate(
             {
-                "source": {"type": "local", "path": str(tmp_path)},
+                "source": {"table": "ifc_trigger_db.trigger_8"},
                 "kafka": {"topic": "t", "overrides": {"bootstrap.servers": "x:9092"}},
                 "schema_registry": {"mode": "DEV"},
                 "recon": {"enabled": False, "path": "s3://b/recon/{MONTH}_{YYYY}/"},
@@ -580,14 +580,14 @@ class TestGateActivation:
 
         settings = ConnectorSettings.model_validate(
             {
-                "source": {"type": "s3", "trigger_paths": {"TRIGGER_9": "s3://b/src/t9/"}},
+                "source": {"trigger_tables": {"TRIGGER_9": "ifc_trigger_db.t9"}},
                 "kafka": {"topic": "t", "overrides": {"bootstrap.servers": "x:9092"}},
                 "schema_registry": {"mode": "DEV"},
                 "recon": {"trigger_paths": {"TRIGGER_9": "s3://b/recon/trigger9/"}},
             }
         )
         settings.select_trigger("trigger 9")
-        assert settings.source.path == "s3://b/src/t9/"
+        assert settings.source.table == "ifc_trigger_db.t9"
         assert settings.recon.path == "s3://b/recon/trigger9/"
 
 

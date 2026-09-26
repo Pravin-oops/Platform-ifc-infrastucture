@@ -189,12 +189,12 @@ def check_tcp(
         )
 
 
-def check_source(report: PreflightReport, *, path: str, lister: Callable[[], Optional[str]]) -> None:
-    """Confirm the Trigger BDP prefix is readable before authenticating to BSP."""
+def check_source(report: PreflightReport, *, table: str, lister: Callable[[], Optional[str]]) -> None:
+    """Confirm the trigger table is visible to this role before authenticating to BSP."""
 
     def probe() -> Tuple[bool, str, Dict[str, Any]]:
         first = lister()
-        return True, "", {"source_path": path, "first_object": first, "empty": first is None}
+        return True, "", {"source_table": table, "first_object": first, "empty": first is None}
 
     ok, detail, context, ms = _timed(probe)
     report.add(

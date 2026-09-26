@@ -29,7 +29,6 @@ SCRIPTS_DIR = os.path.join(APP_ROOT, "scripts")
 DOCKER_DIR = os.path.join(APP_ROOT, "Docker")
 DOCKERFILE = os.path.join(DOCKER_DIR, "Dockerfile")
 UTILITY_DIR = os.path.join(APP_ROOT, "utility")
-SAMPLES_DIR = os.path.join(APP_ROOT, "samples")
 
 
 def load_script(name: str) -> types.ModuleType:

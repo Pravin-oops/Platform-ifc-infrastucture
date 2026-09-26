@@ -2,18 +2,16 @@
 
 ``main.py`` (CLI) and ``main_ecs.py`` (platform) are the connector's public
 surface. Each is exercised here through the path that needs no broker, no AWS
-and no BSP, so the suite runs anywhere: the catalogue and the offline validator.
+and no BSP, so the suite runs anywhere.
 """
 
 from __future__ import annotations
 
 import json
-import os
 
 import pytest
 
 from utility import failure_catalog as catalog
-from tests.conftest import SAMPLES_DIR
 
 pytestmark = pytest.mark.usefixtures("clean_ifc_env")
 
@@ -49,40 +47,6 @@ class TestCatalogueCommand:
         assert codes["work_remaining"] == catalog.EXIT_WORK_REMAINING
 
 
-class TestValidateCommand:
-    def test_a_rejected_record_fails_with_the_schema_scenario_code(
-        self, main_script, tmp_path, capsys
-    ):
-        bad = tmp_path / "bad.jsonl"
-        # No counterparty CSID in the row, so idValue cannot be populated.
-        bad.write_text(
-            json.dumps(
-                {
-                    "triggerSubType": "TRIGGER_8",
-                    "attributes": {},
-                }
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-
-        code = main_script.main(["validate", "--input", str(bad)])
-
-        assert code == catalog.SCHEMA_VALIDATION_FAILURE.exit_code
-        assert "0 valid, 1 rejected" in capsys.readouterr().out
-
-    def test_an_unparseable_line_is_reported_rather_than_raised(
-        self, main_script, tmp_path, capsys
-    ):
-        bad = tmp_path / "broken.jsonl"
-        bad.write_text("{not json at all\n", encoding="utf-8")
-
-        code = main_script.main(["validate", "--input", str(bad)])
-
-        assert code == catalog.SCHEMA_VALIDATION_FAILURE.exit_code
-        assert "PARSE FAIL" in capsys.readouterr().out
-
-
 class TestMainWithoutAConfig:
     def test_it_refuses_rather_than_guessing(self, main_script, capsys):
         code = main_script.main([])
@@ -93,6 +57,21 @@ class TestMainWithoutAConfig:
     def test_an_unreadable_config_is_classified_not_raised(self, main_script, tmp_path):
         missing = str(tmp_path / "nope.yaml")
         assert main_script.main(["--config", missing]) == catalog.CONTAINER_FAILURE.exit_code
+
+    def test_a_run_without_a_trigger_is_refused(self, main_script, tmp_path):
+        """IFC_RUN__TRIGGER picks the Athena table; without it there is nothing to read."""
+        config = tmp_path / "c.yaml"
+        config.write_text(
+            "\n".join(
+                [
+                    "source: {trigger_tables: {TRIGGER_8: ifc_trigger_db.trigger_8}}",
+                    "kafka: {topic: t, overrides: {bootstrap.servers: 'localhost:9092'}}",
+                    "schema_registry: {mode: DEV}",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        assert main_script.main(["--config", str(config)]) == catalog.CONTAINER_FAILURE.exit_code
 
 
 class TestEcsEntryPoint:
@@ -136,7 +115,7 @@ class TestEcsEntryPoint:
             "\n".join(
                 [
                     "app: {name: t, environment: TEST}",
-                    "source: {type: local, path: " + SAMPLES_DIR.replace("\\", "/") + "}",
+                    "source: {trigger_tables: {TRIGGER_8: ifc_trigger_db.trigger_8}}",
                     "kafka: {topic: t, overrides: {bootstrap.servers: 'localhost:9092'}}",
                     "schema_registry: {mode: DEV, schema_path: utility/schema.json}",
                     "state: {backend: memory}",
@@ -155,7 +134,7 @@ class TestEcsEntryPoint:
 
         monkeypatch.setattr(runner_module, "ConnectorRunner", Boom)
 
-        result = main_ecs_script.ecs_handler({"config_path": str(config)})
+        result = main_ecs_script.ecs_handler({"config_path": str(config), "trigger": "TRIGGER_8"})
 
         assert result["exit_code"] != 0
         assert result["scenario"]

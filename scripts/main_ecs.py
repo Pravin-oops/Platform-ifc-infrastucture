@@ -108,9 +108,9 @@ def _load(event: Dict[str, Any]):
     # the right format, then again at the level the config asks for.
     configure_logging(os.getenv("IFC_LOG_LEVEL", "INFO"))
     settings = load_settings(config_path)
-    # The trigger decides where the data is read from, so it is fixed here -
-    # before anything logs or preflights the source path.
-    settings.select_trigger(event.get("trigger"), data_path=event.get("data_path"))
+    # The trigger decides which Athena table is read, so it is fixed here -
+    # before anything logs or preflights the source.
+    settings.select_trigger(event.get("trigger"))
     configure_logging(os.getenv("IFC_LOG_LEVEL") or settings.app.log_level)
 
     return settings, config_path
@@ -359,7 +359,7 @@ def ecs_handler(event: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Run one connector lifecycle and return its summary.
 
     ``event`` mirrors the Lambda handler's event so an ECS RunTask override, or
-    a test, can supply ``config_path`` / ``data_path`` without touching the
+    a test, can supply ``config_path`` / ``trigger`` without touching the
     environment. Environment values win only when the event omits them.
     """
     event = event or {}
@@ -374,10 +374,7 @@ def ecs_handler(event: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
             "mode": settings.run.mode,
             "topic": settings.kafka.topic,
             "trigger": settings.run.trigger,
-            # Both: the template says what was configured, the resolved folder
-            # says which month this invocation actually went to.
-            "source_path": settings.source.path,
-            "source_folder": _resolved_source(settings),
+            "source_table": settings.source.table,
             **{k: v for k, v in task.items() if v},
         },
     )
@@ -470,10 +467,10 @@ def ecs_handler(event: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
             "topic": settings.kafka.topic,
             "config_path": config_path,
             "environment": settings.app.environment,
-            # Which month's folder, and which extract inside it. The stopped-task
-            # record is all that survives the container, so "which file did this
-            # run actually publish" has to be answerable from the summary.
-            "source_folder": _resolved_source(settings),
+            # Which table and business date this run read. The stopped-task
+            # record is all that survives the container, so "what did this run
+            # actually publish" has to be answerable from the summary.
+            "source_table": settings.source.table,
             "source_objects": runner.last_result.source_objects if runner.last_result else [],
             "ecs": task,
         }
@@ -512,18 +509,6 @@ def ecs_handler(event: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     finally:
         if server is not None:
             server.stop()
-
-
-def _resolved_source(settings) -> Optional[str]:
-    """The source location with its date tokens expanded, for the startup log.
-
-    Best-effort: a config with no location resolved yet must not stop the run
-    before the real error is raised where it can be classified.
-    """
-    try:
-        return settings.source.resolved_path
-    except Exception:  # pragma: no cover - defensive
-        return None
 
 
 def _publish_batch_notification(

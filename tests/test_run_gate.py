@@ -499,7 +499,7 @@ def test_a_weekend_invocation_exits_clean_without_touching_anything(
         "\n".join(
             [
                 "app: {name: t, environment: TEST}",
-                "source: {type: s3, path: 's3://bucket/prefix/'}",
+                "source: {table: ifc_trigger_db.trigger_8}",
                 "kafka: {topic: t, overrides: {bootstrap.servers: 'localhost:9092'}}",
                 "schema_registry: {mode: DEV}",
                 "state: {backend: memory}",
@@ -531,12 +531,12 @@ def test_a_weekend_invocation_exits_clean_without_touching_anything(
 
 
 def test_gating_is_off_without_a_marker_file(tmp_path, clean_ifc_env):
-    """A local developer run needs neither a trigger name nor a marker file."""
+    """Without a marker file the entry-point gate is off."""
     from utility.connector_config import ConnectorSettings
 
     settings = ConnectorSettings.model_validate(
         {
-            "source": {"type": "local", "path": str(tmp_path)},
+            "source": {"table": "ifc_trigger_db.trigger_8"},
             "kafka": {"topic": "t", "overrides": {"bootstrap.servers": "localhost:9092"}},
             "schema_registry": {"mode": "DEV"},
         }
@@ -554,7 +554,7 @@ def test_a_leftover_dynamodb_table_name_is_rejected(tmp_path, clean_ifc_env):
     with pytest.raises(ValidationError, match="run_marker.path"):
         ConnectorSettings.model_validate(
             {
-                "source": {"type": "local", "path": str(tmp_path)},
+                "source": {"table": "ifc_trigger_db.trigger_8"},
                 "kafka": {"topic": "t", "overrides": {"bootstrap.servers": "localhost:9092"}},
                 "schema_registry": {"mode": "DEV"},
                 "run_marker": {"table_name": "ifc-trigger-connector-run-markers"},
@@ -563,7 +563,7 @@ def test_a_leftover_dynamodb_table_name_is_rejected(tmp_path, clean_ifc_env):
 
 
 # ---------------------------------------------------------------------------
-# The scheduler names the trigger; the trigger picks the source
+# The scheduler names the trigger; the trigger picks the Athena table
 # ---------------------------------------------------------------------------
 
 
@@ -572,7 +572,7 @@ def _settings(**source):
 
     return ConnectorSettings.model_validate(
         {
-            "source": {"type": "s3", **source},
+            "source": source,
             "kafka": {"topic": "t", "overrides": {"bootstrap.servers": "localhost:9092"}},
             "schema_registry": {"mode": "DEV"},
             "run_marker": {"path": MARKER_PATH},
@@ -580,17 +580,17 @@ def _settings(**source):
     )
 
 
-TRIGGER_PATHS = {
-    "TRIGGER_8": "s3://bucket/trigger_8/",
-    "trigger 9": "s3://bucket/trigger_9/",
+TRIGGER_TABLES = {
+    "TRIGGER_8": "ifc_trigger_db.trigger_8",
+    "trigger 9": "ifc_trigger_db.trigger_9",
 }
 
 
 @pytest.mark.parametrize("spelling", ["trigger 9", "Trigger 9", "TRIGGER_9", "trigger-9", "9", 9])
 def test_scheduler_spellings_resolve_to_one_trigger(spelling, clean_ifc_env):
-    settings = _settings(trigger_paths=TRIGGER_PATHS)
+    settings = _settings(trigger_tables=TRIGGER_TABLES)
     assert settings.select_trigger(spelling) == "TRIGGER_9"
-    assert settings.source.path == "s3://bucket/trigger_9/"
+    assert settings.source.table == "ifc_trigger_db.trigger_9"
 
 
 def test_one_marker_whatever_the_spelling(marker):
@@ -603,22 +603,28 @@ def test_one_marker_whatever_the_spelling(marker):
 
 def test_an_unknown_trigger_is_rejected(clean_ifc_env):
     with pytest.raises(ValueError):
-        _settings(trigger_paths=TRIGGER_PATHS).select_trigger("trigger 99")
+        _settings(trigger_tables=TRIGGER_TABLES).select_trigger("trigger 99")
 
 
 def test_an_unmapped_trigger_without_a_fallback_fails(clean_ifc_env):
-    with pytest.raises(ValueError, match="No source location"):
-        _settings(trigger_paths=TRIGGER_PATHS).select_trigger("TRIGGER_21")
+    with pytest.raises(ValueError, match="No Athena table"):
+        _settings(trigger_tables=TRIGGER_TABLES).select_trigger("TRIGGER_21")
 
 
-def test_data_path_beats_trigger_path_beats_source_path(clean_ifc_env):
-    settings = _settings(path="s3://bucket/fallback/", trigger_paths=TRIGGER_PATHS)
+def test_a_trigger_table_beats_the_fallback_table(clean_ifc_env):
+    settings = _settings(table="ifc_trigger_db.fallback", trigger_tables=TRIGGER_TABLES)
     settings.select_trigger("TRIGGER_21")
-    assert settings.source.path == "s3://bucket/fallback/"
+    assert settings.source.table == "ifc_trigger_db.fallback"
 
-    settings = _settings(path="s3://bucket/fallback/", trigger_paths=TRIGGER_PATHS)
-    settings.select_trigger("TRIGGER_8", data_path="s3://bucket/manual/")
-    assert settings.source.path == "s3://bucket/manual/"
+    settings = _settings(table="ifc_trigger_db.fallback", trigger_tables=TRIGGER_TABLES)
+    settings.select_trigger("TRIGGER_8")
+    assert settings.source.table == "ifc_trigger_db.trigger_8"
+
+
+def test_a_run_without_a_trigger_is_refused(clean_ifc_env):
+    """The table holds only attributes, so the trigger is what names the sub-type."""
+    with pytest.raises(ValueError, match="No trigger specified"):
+        _settings(table="ifc_trigger_db.fallback").select_trigger(None)
 
 
 def test_env_trigger_is_normalised(monkeypatch, clean_ifc_env):
@@ -626,14 +632,14 @@ def test_env_trigger_is_normalised(monkeypatch, clean_ifc_env):
     from utility.connector_config import _deep_merge, _env_overlay, ConnectorSettings
 
     doc = {
-        "source": {"trigger_paths": TRIGGER_PATHS},
+        "source": {"trigger_tables": TRIGGER_TABLES},
         "kafka": {"topic": "t", "overrides": {"bootstrap.servers": "localhost:9092"}},
         "schema_registry": {"mode": "DEV"},
     }
     settings = ConnectorSettings.model_validate(_deep_merge(doc, _env_overlay()))
     settings.select_trigger(None)
     assert settings.run.trigger == "TRIGGER_9"
-    assert settings.source.path == "s3://bucket/trigger_9/"
+    assert settings.source.table == "ifc_trigger_db.trigger_9"
 
 
 @pytest.mark.parametrize(
@@ -652,13 +658,13 @@ def test_command_line_is_optional(main_ecs_script):
 def test_trigger_9_invocation_reads_trigger_9_location(
     main_ecs_script, monkeypatch, tmp_path, clean_ifc_env
 ):
-    """Not yet delivered this month -> runs against TRIGGER_9's bucket location."""
+    """Not yet delivered this month -> runs against TRIGGER_9's table."""
     config = tmp_path / "c.yaml"
     config.write_text(
         "\n".join(
             [
                 "app: {name: t, environment: TEST}",
-                "source: {type: s3, trigger_paths: {TRIGGER_8: 's3://b/t8/', TRIGGER_9: 's3://b/t9/'}}",
+                "source: {trigger_tables: {TRIGGER_8: ifc_trigger_db.t8, TRIGGER_9: ifc_trigger_db.t9}}",
                 "kafka: {topic: t, overrides: {bootstrap.servers: 'localhost:9092'}}",
                 "schema_registry: {mode: DEV}",
                 "state: {backend: memory}",
@@ -678,7 +684,7 @@ def test_trigger_9_invocation_reads_trigger_9_location(
         last_result = None
 
         def __init__(self, settings, **_):
-            seen["path"] = settings.source.path
+            seen["table"] = settings.source.table
 
         def run(self):
             return 0
@@ -693,7 +699,7 @@ def test_trigger_9_invocation_reads_trigger_9_location(
 
     result = main_ecs_script.ecs_handler({"config_path": str(config), "trigger": "trigger 9"})
     assert result["exit_code"] == 0
-    assert seen["path"] == "s3://b/t9/"
+    assert seen["table"] == "ifc_trigger_db.t9"
 
     # Delivered this month -> the next invocation stands down without reading,
     # and records that it looked: NOT RAN, with the SUCCESS still in force.
@@ -715,7 +721,7 @@ def _settings_from_env():
     from utility.connector_config import ConnectorSettings, _deep_merge, _env_overlay
 
     doc = {
-        "source": {"trigger_paths": TRIGGER_PATHS},
+        "source": {"trigger_tables": TRIGGER_TABLES},
         "kafka": {"topic": "t", "overrides": {"bootstrap.servers": "localhost:9092"}},
         "schema_registry": {"mode": "DEV"},
     }
@@ -728,7 +734,7 @@ def test_scheduler_env_variable_selects_the_trigger(value, monkeypatch, clean_if
     settings = _settings_from_env()
     settings.select_trigger(None)
     assert settings.run.trigger == "TRIGGER_9"
-    assert settings.source.path == "s3://bucket/trigger_9/"
+    assert settings.source.table == "ifc_trigger_db.trigger_9"
 
 
 def test_scheduler_env_variable_through_the_ecs_entry_point(
@@ -739,7 +745,7 @@ def test_scheduler_env_variable_through_the_ecs_entry_point(
     config.write_text(
         "\n".join(
             [
-                "source: {type: s3, trigger_paths: {TRIGGER_8: 's3://b/t8/', TRIGGER_9: 's3://b/t9/'}}",
+                "source: {trigger_tables: {TRIGGER_8: ifc_trigger_db.t8, TRIGGER_9: ifc_trigger_db.t9}}",
                 "kafka: {topic: t, overrides: {bootstrap.servers: 'localhost:9092'}}",
                 "schema_registry: {mode: DEV}",
                 "state: {backend: memory}",
@@ -761,7 +767,7 @@ def test_scheduler_env_variable_through_the_ecs_entry_point(
         last_result = None
 
         def __init__(self, settings, **_):
-            seen["trigger"], seen["path"] = settings.run.trigger, settings.source.path
+            seen["trigger"], seen["table"] = settings.run.trigger, settings.source.table
 
         def run(self):
             return 0
@@ -775,4 +781,4 @@ def test_scheduler_env_variable_through_the_ecs_entry_point(
 
     assert main_ecs_script.main([]) == 0
     assert gate_calls == ["TRIGGER_9"]
-    assert seen == {"trigger": "TRIGGER_9", "path": "s3://b/t9/"}
+    assert seen == {"trigger": "TRIGGER_9", "table": "ifc_trigger_db.t9"}

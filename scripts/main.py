@@ -2,9 +2,9 @@
 
     python scripts/main.py --config s3://.../connector_config.yaml
 
-Also exposes two subcommands that are useful without a BSP connection:
+IFC_RUN__TRIGGER picks the trigger, and with it the Athena table to read. The
+failure catalogue is available without a BSP connection:
 
-    python scripts/main.py validate --input samples/trigger_events.jsonl
     python scripts/main.py catalogue
 
 The process exit code is the catalogue exit code for whatever scenario ended the
@@ -34,7 +34,7 @@ if str(APP_ROOT) not in sys.path:
 load_dotenv(APP_ROOT / ".env", override=False)
 
 from utility import failure_catalog as catalog
-from utility.error_classifier import ConnectorError, RecordRejected, classify
+from utility.error_classifier import ConnectorError, classify
 from utility.health_utility import HealthServer, HealthState
 from utility.observability_utility import Metrics, configure_logging
 from utility.resilience_utility import ShutdownSignal
@@ -43,7 +43,6 @@ from utility.connector_config import load_settings
 logger = logging.getLogger("ifc_trigger_connector")
 
 DEFAULT_CONFIG_ENV = "APP_CONFIG_PATH"
-DEFAULT_ENVELOPE_DUMP = str(APP_ROOT / "samples" / "outbound" / "validated_envelopes.json")
 
 
 def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
@@ -56,21 +55,6 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--log-level", default=None, help="Override app.log_level.")
 
     sub = parser.add_subparsers(dest="command")
-
-    validate = sub.add_parser(
-        "validate", help="Build and validate trigger envelopes from a file, without publishing."
-    )
-    validate.add_argument("--input", required=True, help="Trigger event JSON / JSONL file.")
-    validate.add_argument("--show-payload", action="store_true", help="Print the built payload.")
-    validate.add_argument(
-        "--save-envelopes",
-        nargs="?",
-        const=DEFAULT_ENVELOPE_DUMP,
-        default=None,
-        metavar="PATH",
-        help=f"Write the pre-serialization Avro envelopes as JSON (default: {DEFAULT_ENVELOPE_DUMP}).",
-    )
-
     sub.add_parser("catalogue", help="Print the failure scenario catalogue as JSON.")
 
     return parser.parse_args(argv)
@@ -93,71 +77,12 @@ def _command_catalogue() -> int:
     return 0
 
 
-def _command_validate(path: str, *, show_payload: bool, save_envelopes: Optional[str] = None) -> int:
-    """Offline contract check: does this file produce publishable envelopes?
-
-    Uses the bundled .avsc, so it needs neither AWS nor BSP. This is the check
-    to run in CI against sample data whenever a trigger definition changes.
-    """
-    from utility.connector_utility import load_schema_document
-    from utility.connector_config import SchemaRegistrySettings
-    from utility.trigger_source import ParseFailure, TriggerSource
-    from utility.connector_config import SourceSettings
-    from utility.tb_outcome_schema import EnvelopeBuilder
-
-    schema = load_schema_document(SchemaRegistrySettings(mode="DEV").schema_path)
-    builder = EnvelopeBuilder(avro_schema=schema)
-
-    source = TriggerSource(SourceSettings(type="local", path=path))
-    ok = failed = 0
-    envelopes: List[dict] = []
-
-    for item in source.stream(limit=10_000):
-        if isinstance(item, ParseFailure):
-            failed += 1
-            print(f"PARSE FAIL  {item.source_object}[{item.index}]: {item.error}")
-            continue
-
-        try:
-            built = builder.build(item)
-        except RecordRejected as exc:
-            failed += 1
-            print(f"REJECTED    {item.trigger_sub_type} {item.csid}: {exc}")
-            print(f"            detail: {json.dumps(exc.detail, default=str)}")
-            continue
-
-        ok += 1
-        print(f"OK          {built.trigger_id}  seq={built.record['sequenceNumber']}")
-        if show_payload:
-            print(json.dumps(json.loads(built.record["payload"]), indent=2))
-        if save_envelopes:
-            envelopes.append(built.record)
-
-    # The record dict is exactly what AvroSerializer receives, so this file is
-    # the envelope as it stands immediately before serialization.
-    if save_envelopes:
-        os.makedirs(os.path.dirname(os.path.abspath(save_envelopes)), exist_ok=True)
-        with open(save_envelopes, "w", encoding="utf-8") as handle:
-            json.dump(envelopes, handle, indent=2, default=str)
-            handle.write("\n")
-        print(f"\nSaved {len(envelopes)} envelope(s) to {save_envelopes}")
-
-    print(f"\n{ok} valid, {failed} rejected")
-    return 0 if failed == 0 else catalog.SCHEMA_VALIDATION_FAILURE.exit_code
-
-
 def main(argv: Optional[List[str]] = None) -> int:
     args = _parse_args(argv)
 
     if args.command == "catalogue":
         configure_logging("WARNING")
         return _command_catalogue()
-
-    if args.command == "validate":
-        configure_logging(args.log_level or "INFO")
-        return _command_validate(
-            args.input, show_payload=args.show_payload, save_envelopes=args.save_envelopes
-        )
 
     if not args.config:
         print(
@@ -172,6 +97,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     try:
         settings = load_settings(args.config)
+        # IFC_RUN__TRIGGER decides which Athena table this run reads.
+        settings.select_trigger(None)
     except Exception as exc:
         classification = classify(exc, operation="load_settings")
         logger.error(

@@ -277,7 +277,7 @@ def build_manifest(
         "configuration": {
             "trigger": settings.run.trigger,
             "run_mode": settings.run.mode,
-            "source_path": settings.source.path,
+            "source_table": settings.source.table,
             "topic": settings.kafka.topic,
             "schema_registry_mode": settings.schema_registry.mode,
             "schema_id": schema_id,
