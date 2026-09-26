@@ -502,7 +502,6 @@ def test_a_weekend_invocation_exits_clean_without_touching_anything(
                 "source: {table: ifc_trigger_db.trigger_8}",
                 "kafka: {topic: t, overrides: {bootstrap.servers: 'localhost:9092'}}",
                 "schema_registry: {mode: DEV}",
-                "state: {backend: memory}",
                 f"run_marker: {{path: '{tmp_path / 'run_markers.json'}'}}",
                 "health: {enabled: false}",
             ]
@@ -667,7 +666,6 @@ def test_trigger_9_invocation_reads_trigger_9_location(
                 "source: {trigger_tables: {TRIGGER_8: ifc_trigger_db.t8, TRIGGER_9: ifc_trigger_db.t9}}",
                 "kafka: {topic: t, overrides: {bootstrap.servers: 'localhost:9092'}}",
                 "schema_registry: {mode: DEV}",
-                "state: {backend: memory}",
                 f"run_marker: {{path: '{MARKER_PATH}'}}",
                 "health: {enabled: false}",
             ]
@@ -748,7 +746,6 @@ def test_scheduler_env_variable_through_the_ecs_entry_point(
                 "source: {trigger_tables: {TRIGGER_8: ifc_trigger_db.t8, TRIGGER_9: ifc_trigger_db.t9}}",
                 "kafka: {topic: t, overrides: {bootstrap.servers: 'localhost:9092'}}",
                 "schema_registry: {mode: DEV}",
-                "state: {backend: memory}",
                 f"run_marker: {{path: '{MARKER_PATH}'}}",
                 "health: {enabled: false}",
             ]

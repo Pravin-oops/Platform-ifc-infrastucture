@@ -5,7 +5,7 @@
 #
 # Any value here can be overridden per task without republishing this file, by
 # setting an IFC_ environment variable in the ECS task definition. Sections are
-# separated by a double underscore, e.g. IFC_KAFKA__TOPIC, IFC_RUN__MODE.
+# separated by a double underscore, e.g. IFC_KAFKA__TOPIC, IFC_RUN__TRIGGER.
 
 app:
   name: ifc-trigger-connector
@@ -13,11 +13,8 @@ app:
   log_level: INFO
 
 run:
-  # batch   -> ECS RunTask on the trigger's monthly window (see 'schedule').
-  # service -> resident ECS service re-querying the trigger table.
-  mode: batch
-  poll_interval_seconds: 300
-  max_batches: 0
+  # One ECS RunTask per trigger invocation: publish the month, then exit.
+  # EventBridge Scheduler sets IFC_RUN__TRIGGER on every invocation.
   # Must be <= the task definition's stopTimeout (set to 120 in deploy/).
   shutdown_grace_seconds: 90
 
@@ -40,7 +37,6 @@ source:
     TRIGGER_9: ifc_trigger_db.bdp_corp_ifc_trigger_9
     TRIGGER_21: ifc_trigger_db.bdp_corp_ifc_trigger_21
   # Unset: every row of the month is published.
-  max_records_per_batch: null
   athena:
     # CONFIRM: the workgroup the task role may use. Leave output_location unset
     # when the workgroup enforces its own result location and KMS key.
@@ -96,6 +92,8 @@ schema_registry:
   ca_location: /apps/external/5/deva/bsp/bsp-installer/bsp/etc/CARoot.pem
   timeout_seconds: 30
   token_refresh_margin_seconds: 300
+  # Attempts at each registry request before preflight fails.
+  max_attempts: 5
   schema_path: utility/schema.json
 
 csm:
@@ -133,7 +131,6 @@ audit:
   write_payloads: true
 
 resilience:
-  max_publish_attempts: 5
   backoff_base_seconds: 1.0
   backoff_max_seconds: 60.0
   circuit_breaker_threshold: 20

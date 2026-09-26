@@ -189,22 +189,22 @@ def check_tcp(
         )
 
 
-def check_source(report: PreflightReport, *, table: str, lister: Callable[[], Optional[str]]) -> None:
+def check_source(report: PreflightReport, *, table: str, probe: Callable[[], Any]) -> None:
     """Confirm the trigger table is visible to this role before authenticating to BSP."""
 
-    def probe() -> Tuple[bool, str, Dict[str, Any]]:
-        first = lister()
-        return True, "", {"source_table": table, "first_object": first, "empty": first is None}
+    def run() -> Tuple[bool, str, Dict[str, Any]]:
+        probe()
+        return True, "", {"source_table": table}
 
-    ok, detail, context, ms = _timed(probe)
+    ok, detail, context, ms = _timed(run)
     report.add(
         CheckResult(
             name="source:readable",
             passed=ok,
             duration_ms=ms,
-            detail=detail or ("readable but empty" if context.get("empty") else "readable"),
+            detail=detail or "readable",
             scenario=None if ok else catalog.BDP_READ_FAILURE,
-            context=context,
+            context=context or {"source_table": table},
         )
     )
 

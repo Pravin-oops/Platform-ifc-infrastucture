@@ -61,15 +61,18 @@ def trigger_8_row(**overrides):
     return row
 
 
-def trigger_8_event(attributes=None, **wrapper):
-    """A Trigger 8 event in the shape the source yields."""
-    raw = {
-        "triggerType": "IFC_CDD",
-        "triggerSubType": "TRIGGER_8",
-        "attributes": trigger_8_row() if attributes is None else attributes,
-    }
-    raw.update(wrapper)
-    return TriggerEvent.from_dict(raw)
+def trigger_8_event(attributes=None, *, triggerSubType="TRIGGER_8", triggerType="KYCRefresh"):
+    """A Trigger 8 event in the shape the Athena source yields."""
+    return TriggerEvent(
+        trigger_sub_type=triggerSubType,
+        attributes=trigger_8_row() if attributes is None else attributes,
+        trigger_type=triggerType,
+    )
+
+
+def as_event(raw):
+    """An event from a trigger name and a row, as the Athena source builds it."""
+    return TriggerEvent(trigger_sub_type=raw["triggerSubType"], attributes=raw["attributes"])
 
 
 class TestEnvelope:
@@ -155,20 +158,6 @@ class TestEnvelope:
     def test_partition_key_is_the_csid_so_related_events_stay_ordered(self, builder):
         assert builder.build(trigger_8_event()).kafka_key == "9912345678"
 
-    def test_identity_keys_in_the_wrapper_are_ignored(self, builder):
-        """Identity comes from the row and the run, never from the wrapper."""
-        event = trigger_8_event(
-            customerId="IGNORED",
-            idType="CustomerID",
-            executionMonth="1999-01",
-            detectionTimestamp="1999-01-01T00:00:00.000Z",
-            businessUnit="Somewhere else",
-        )
-        record = builder.build(event).record
-        assert record["idValue"] == "9912345678"
-        assert record["idType"] == "Customer"
-        assert record["timestamp"] == "2026-06-30T23:59:59.999999999Z"
-        assert record["triggerOriginatingBU"] == "UK-C and UK-ICB"
 
 
 class TestBusinessMonth:
@@ -258,11 +247,13 @@ class TestIdentity:
 
 
 class TestRejection:
-    def test_unknown_sub_type_is_rejected_not_raised_as_a_run_failure(self, builder):
-        event = trigger_8_event(triggerSubType="TRIGGER_99")
-        with pytest.raises(RecordRejected) as exc:
-            builder.build(event)
-        assert exc.value.scenario.key == "SCHEMA_VALIDATION_FAILURE"
+    def test_an_unknown_trigger_is_refused_when_the_config_loads(self):
+        """The run's trigger is the only sub-type a row can have, so an unknown
+        one stops the run before a row is read rather than per record."""
+        from utility.connector_config import RunSettings
+
+        with pytest.raises(ValueError, match="TRIGGER_99"):
+            RunSettings(trigger="TRIGGER_99")
 
     @pytest.mark.parametrize("csid", [None, "", "   ", 12.5])
     def test_a_row_without_a_usable_csid_is_rejected_naming_id_value(self, builder, csid):
@@ -331,15 +322,6 @@ class TestRejection:
         assert exc.value.scenario.key == "SCHEMA_VALIDATION_FAILURE"
         assert exc.value.detail["source_key"] == source
 
-    def test_missing_trigger_sub_type_is_rejected_at_parse_time(self):
-        with pytest.raises(RecordRejected) as exc:
-            TriggerEvent.from_dict({"attributes": trigger_8_row()})
-        assert "triggerSubType" in str(exc.value)
-
-    def test_non_object_attributes_are_rejected(self):
-        with pytest.raises(RecordRejected):
-            TriggerEvent.from_dict({"triggerSubType": "TRIGGER_8", "attributes": []})
-
     def test_avro_validation_failure_names_the_offending_field(self, builder):
         record = builder.build(trigger_8_event()).record
         record["sequenceNumber"] = "not-an-int"
@@ -351,7 +333,7 @@ class TestRejection:
 
 class TestAllTriggers:
     def test_trigger_9(self, builder):
-        event = TriggerEvent.from_dict(
+        event = as_event(
             {
                 "triggerSubType": "TRIGGER_9",
                 "attributes": {
@@ -375,7 +357,7 @@ class TestAllTriggers:
         assert "Last Run Date" not in fields
 
     def test_trigger_21(self, builder):
-        event = TriggerEvent.from_dict(
+        event = as_event(
             {
                 "triggerSubType": "TRIGGER_21",
                 "attributes": {
@@ -424,10 +406,11 @@ class TestSubTypeEnum:
     def test_the_published_symbol_also_resolves_on_input(self):
         assert definitions.resolve("NewHRCRelationship").sub_type == definitions.TRIGGER_8
 
-    def test_a_symbol_we_do_not_produce_is_rejected_as_out_of_scope(self, builder):
-        with pytest.raises(RecordRejected) as exc:
-            builder.build(trigger_8_event(triggerSubType="UBOChanges"))
-        assert "not produced by this connector" in str(exc.value)
+    def test_a_symbol_we_do_not_produce_is_refused_as_out_of_scope(self):
+        from utility.connector_config import RunSettings
+
+        with pytest.raises(ValueError, match="not produced by this connector"):
+            RunSettings(trigger="UBOChanges")
 
     def test_the_trigger_id_carries_the_published_symbol(self, builder):
         built = builder.build(trigger_8_event())

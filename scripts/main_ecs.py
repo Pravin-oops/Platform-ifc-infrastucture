@@ -12,12 +12,11 @@ than the BAM token it started with.
 Environment (all optional except the config path):
 
     APP_CONFIG_PATH   connector config YAML, local path or s3://   (required)
-    IFC_RUN__MODE     batch | service - overrides the config file
     IFC_LOG_LEVEL     overrides app.log_level
     IFC_*             any other setting, e.g. IFC_KAFKA__TOPIC
 
 ``ecs_handler()`` returns the run summary as a dict so the same code can be
-driven from a test, an ECS RunTask, or a resident ECS service. ``main()`` maps
+driven from a test or an ECS RunTask. ``main()`` maps
 that summary onto the process exit code, because the stopped-task record is the
 only thing left after the container is gone.
 """
@@ -84,18 +83,6 @@ def ecs_task_metadata() -> Dict[str, Optional[str]]:
     }
 
 
-def _trigger_for(settings) -> str:
-    """Which trigger this invocation publishes. No default: defaulting would
-    silently publish the wrong trigger's month."""
-    if not settings.run.trigger:
-        raise RuntimeError(
-            "No trigger specified: pass it as an argument ('trigger 9'), pass "
-            "event['trigger'], set IFC_RUN__TRIGGER, or set run.trigger "
-            "(TRIGGER_8 | TRIGGER_9 | TRIGGER_21)"
-        )
-    return settings.run.trigger
-
-
 def _load(event: Dict[str, Any]):
     """Resolve the config, set the log level, return (settings, config_path)."""
     config_path = event.get("config_path") or os.getenv(DEFAULT_CONFIG_ENV)
@@ -109,7 +96,8 @@ def _load(event: Dict[str, Any]):
     configure_logging(os.getenv("IFC_LOG_LEVEL", "INFO"))
     settings = load_settings(config_path)
     # The trigger decides which Athena table is read, so it is fixed here -
-    # before anything logs or preflights the source.
+    # before anything logs or preflights the source. A run without one fails:
+    # EventBridge Scheduler always sends IFC_RUN__TRIGGER.
     settings.select_trigger(event.get("trigger"))
     configure_logging(os.getenv("IFC_LOG_LEVEL") or settings.app.log_level)
 
@@ -166,7 +154,7 @@ def _gate(settings, event: Dict[str, Any]) -> Tuple[Optional[Gate], Optional[str
     if not settings.gate_active:
         return None, None
 
-    gate = Gate(_trigger_for(settings), RunMarker(settings.run_marker.path))
+    gate = Gate(settings.run.trigger, RunMarker(settings.run_marker.path))
     outcome = should_run(
         gate.trigger, gate.marker, force=event.get("force") or settings.run.force
     )
@@ -371,7 +359,6 @@ def ecs_handler(event: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         "Connector starting on ECS",
         extra={
             "config_path": config_path,
-            "mode": settings.run.mode,
             "topic": settings.kafka.topic,
             "trigger": settings.run.trigger,
             "source_table": settings.source.table,
@@ -382,8 +369,8 @@ def ecs_handler(event: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     try:
         gate, skip_reason = _gate(settings, event)
     except Exception as exc:
-        # No trigger named, or the run marker file unreadable: still an
-        # invocation, so it is recorded before the failure propagates.
+        # The run marker file could not be read: still an invocation, so it is
+        # recorded before the failure propagates.
         invocation.record(
             "RUN_GATE", "FAILED", catalog.CONTAINER_FAILURE.exit_code, reason=str(exc),
             classification=classify(exc, operation="run_gate", topic=settings.kafka.topic),
@@ -463,15 +450,13 @@ def ecs_handler(event: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         summary = {
             "run_id": runner.run_id,
             "exit_code": exit_code,
-            "mode": settings.run.mode,
             "topic": settings.kafka.topic,
             "config_path": config_path,
             "environment": settings.app.environment,
-            # Which table and business date this run read. The stopped-task
-            # record is all that survives the container, so "what did this run
-            # actually publish" has to be answerable from the summary.
-            "source_table": settings.source.table,
-            "source_objects": runner.last_result.source_objects if runner.last_result else [],
+            # Which table, business date and Athena query this run read. The
+            # stopped-task record is all that survives the container, so "what
+            # did this run actually publish" has to be answerable from here.
+            "source": runner.last_result.source if runner.last_result else {"table": settings.source.table},
             "ecs": task,
         }
 
@@ -576,7 +561,7 @@ def _publish_zero_batch_notification(settings, run_id: str) -> None:
     notification = TriggerBatchNotification(
         Trigger_Originating_BU=settings.notifications.trigger_originating_bu,
         No_Of_Messages_Produced=0,
-        Trigger_Sub_Type=resolve_trigger(_trigger_for(settings)).published_sub_type,
+        Trigger_Sub_Type=resolve_trigger(settings.run.trigger).published_sub_type,
         Topic_Name=settings.kafka.topic,
         Trigger_Batch_Start_Timestamp=now,
         Trigger_Batch_End_Timestamp=now,
@@ -618,19 +603,14 @@ def _batch_notification_skip_reason(settings, result) -> Optional[str]:
     config_reason = _batch_config_skip_reason(settings)
     if config_reason:
         return config_reason
+    # SUCCESS already means reconciliation balanced: every row published or
+    # quarantined, every publish acknowledged, none failed or left unflushed.
     if result.outcome != "SUCCESS":
         return f"run outcome is {result.outcome}, not SUCCESS"
-    if not result.reconciliation.balanced:
-        return (
-            f"reconciliation not balanced (expected={result.reconciliation.expected}, "
-            f"accounted={result.reconciliation.accounted})"
-        )
+    # Still possible under SUCCESS when max_quarantine_ratio allows every row to
+    # be quarantined.
     if result.counters.acked <= 0:
         return "no messages were acknowledged by Kafka"
-    if result.counters.delivery_failed:
-        return f"{result.counters.delivery_failed} message(s) failed delivery"
-    if result.counters.unflushed:
-        return f"{result.counters.unflushed} message(s) were never flushed"
     return None
 
 

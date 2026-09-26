@@ -4,9 +4,9 @@ Athena is the only source this project reads. ``IFC_RUN__TRIGGER`` picks the
 table, the query selects the month's rows by ``business_date``, and each row is
 yielded as a ``TriggerEvent`` whose attributes are the row's columns.
 
-A row that cannot become an event, or a query that cannot be run, yields a
-``ParseFailure`` rather than raising, so the runner can classify and report it
-instead of the task dying on an unhandled exception.
+A query that cannot be run - a missing table, AccessDenied, a failed, cancelled
+or timed-out query - raises ``SourceAccessError``, which the runner reports as a
+Trigger BDP read failure.
 """
 
 from __future__ import annotations
@@ -15,35 +15,18 @@ import calendar
 import json
 import logging
 import time
-from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple, Union
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from utility import failure_catalog as catalog
-from utility.error_classifier import RecordRejected
 from utility.connector_utility import SourceAccessError
 from utility.connector_config import SourceSettings, athena_table, sql_identifier
 from utility.run_gate import today
 from utility.tb_outcome_schema import TRIGGER_TYPE, TriggerEvent, previous_month
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class ParseFailure:
-    """A record that could not even be parsed into a ``TriggerEvent``."""
-
-    source_object: str
-    index: int
-    error: str
-    raw: Optional[str] = None
-    scenario_key: str = catalog.SCHEMA_VALIDATION_FAILURE.key
-
-
-SourceItem = Union[TriggerEvent, ParseFailure]
 
 
 # ---------------------------------------------------------------------------
@@ -96,8 +79,8 @@ def _coerce(value: Optional[str], athena_type: str) -> Any:
 class AthenaTriggerSource:
     """Reads one trigger's latest month straight from its Iceberg table.
 
-    The runner uses ``stream``, ``first_object`` (preflight) and
-    ``objects_read`` (audit trail).
+    The runner uses ``check_access`` (preflight), ``stream`` and ``describe``
+    (what the run read, for the manifest and run summary).
 
     ``IFC_RUN__TRIGGER`` picks the table (``source.trigger_tables``) and is the
     only thing that says which trigger a row belongs to: the table holds just
@@ -118,20 +101,17 @@ class AthenaTriggerSource:
         self,
         settings: SourceSettings,
         *,
-        trigger: Optional[str],
+        trigger: str,
         business_month: Optional[str] = None,
         client: Any = None,
         sleep: Callable[[float], None] = time.sleep,
     ):
-        if not trigger:
-            raise ValueError("The Athena source needs the run's trigger (IFC_RUN__TRIGGER)")
         self._settings = settings
         self._athena = settings.athena
         self._trigger = trigger
         self._business_month = business_month or previous_month(today())
         self._client = client
         self._sleep = sleep
-        self._objects_read: List[str] = []
         self.last_query_execution_id: Optional[str] = None
 
     # -- identity ------------------------------------------------------------
@@ -139,19 +119,6 @@ class AthenaTriggerSource:
     @property
     def table(self) -> str:
         return self._settings.resolved_table
-
-    @property
-    def object_id(self) -> str:
-        """A stable name for this run's batch.
-
-        Stable across re-runs of the same month, so it works as the checkpoint
-        key ``skip_objects`` compares against, and it is what the run summary
-        and manifest record as the source that was read.
-        """
-        return (
-            f"athena://{self._athena.catalog}/{self.table}"
-            f"?{self._athena.business_date_column}={self.business_date.isoformat()}"
-        )
 
     @property
     def business_date(self) -> date:
@@ -163,9 +130,17 @@ class AthenaTriggerSource:
         year, month = (int(part) for part in self._business_month.split("-"))
         return date(year, month, calendar.monthrange(year, month)[1])
 
-    @property
-    def objects_read(self) -> List[str]:
-        return list(self._objects_read)
+    def describe(self) -> Dict[str, Any]:
+        """What this run read: the table, the business date and the query.
+
+        The query execution id lets anyone re-run or inspect the exact query in
+        Athena after the container is gone.
+        """
+        return {
+            "table": self.table,
+            "business_date": self.business_date.isoformat(),
+            "query_execution_id": self.last_query_execution_id,
+        }
 
     def _athena_client(self) -> Any:
         if self._client is None:
@@ -279,7 +254,7 @@ class AthenaTriggerSource:
 
     # -- runner surface --------------------------------------------------------
 
-    def first_object(self) -> Optional[str]:
+    def check_access(self) -> str:
         """Preflight probe: confirm the table exists and is visible to this role.
 
         Cheap (a Glue catalogue lookup, no data scanned) and exercises the same
@@ -290,60 +265,41 @@ class AthenaTriggerSource:
         self._athena_client().get_table_metadata(
             CatalogName=self._athena.catalog, DatabaseName=database, TableName=table
         )
-        return self.object_id
+        return self.table
 
-    def selected_objects(self) -> List[str]:
-        return [self.object_id]
-
-    def stream(self, *, skip_objects: Optional[Set[str]] = None, limit: Optional[int] = None) -> Iterator[SourceItem]:
-        object_id = self.object_id
-        if object_id in (skip_objects or set()):
-            logger.debug("Skipping already-processed batch", extra={"source_object": object_id})
-            return
-
-        self._objects_read.append(object_id)
-        max_records = limit or self._settings.max_records_per_batch
-
+    def stream(self) -> Iterator[TriggerEvent]:
+        """Yield the month's rows as events. Raises ``SourceAccessError`` when the
+        query cannot be run."""
         try:
             query_id = self._start()
             self._wait(query_id)
             for index, row in enumerate(self._rows(query_id)):
-                # The row's columns are the event's attributes; the trigger is
-                # the run's own.
-                yield from self._to_event(row, object_id, index)
-                if max_records is not None and index + 1 >= max_records:
-                    logger.warning(
-                        "Record limit reached; the rest of this month's rows are NOT published",
-                        extra={"limit": max_records, "source_object": object_id},
-                    )
-                    return
-        except (SourceAccessError, ClientError, BotoCoreError) as exc:
-            # A BDP read failure, so the runner fails the run as SOURCE_UNREADABLE
-            # rather than ZERO_RECORDS.
-            logger.error(
-                "Could not read the Athena source",
-                extra={"source_object": object_id, "error": str(exc)},
-            )
-            yield ParseFailure(object_id, 0, str(exc), scenario_key=catalog.BDP_READ_FAILURE.key)
+                yield self._to_event(row, index)
+        except (ClientError, BotoCoreError) as exc:
+            raise SourceAccessError(
+                f"Athena query on {self.table} failed: {exc}",
+                path=self.table,
+                operation="query",
+                cause=exc,
+            ) from exc
 
-    def _to_event(self, row: Dict[str, Any], object_id: str, index: int) -> Iterator[SourceItem]:
-        # The table holds only the attribute columns; the wrapper around them is
-        # built from the run. triggerType is informational here - the envelope
-        # always publishes TRIGGER_TYPE whatever an event says.
-        wrapper: Dict[str, Any] = {
-            "triggerType": TRIGGER_TYPE,
-            "triggerSubType": self._trigger,
-            "attributes": row,
-        }
-        if self._athena.upstream_trigger_id_column:
-            upstream_id = row.get(self._athena.upstream_trigger_id_column)
-            wrapper["upstreamTriggerId"] = None if upstream_id is None else str(upstream_id)
-        try:
-            yield TriggerEvent.from_dict(wrapper, source_object=object_id, index=index)
-        except RecordRejected as exc:
-            yield ParseFailure(object_id, index, str(exc), raw=json.dumps(row, default=str)[:2000])
+    def _to_event(self, row: Dict[str, Any], index: int) -> TriggerEvent:
+        # The table holds only the attribute columns; the trigger is the run's own.
+        upstream_id = (
+            row.get(self._athena.upstream_trigger_id_column)
+            if self._athena.upstream_trigger_id_column
+            else None
+        )
+        return TriggerEvent(
+            trigger_sub_type=self._trigger,
+            attributes=row,
+            trigger_type=TRIGGER_TYPE,
+            upstream_trigger_id=None if upstream_id is None else str(upstream_id),
+            source_object=self.table,
+            source_index=index,
+        )
 
 
-def make_source(settings: SourceSettings, *, trigger: Optional[str] = None) -> "AthenaTriggerSource":
+def make_source(settings: SourceSettings, *, trigger: str) -> AthenaTriggerSource:
     """The reader for this run's trigger table."""
     return AthenaTriggerSource(settings, trigger=trigger)

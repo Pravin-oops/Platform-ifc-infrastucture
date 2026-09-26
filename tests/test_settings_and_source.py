@@ -15,7 +15,6 @@ BASE_CONFIG = {
     "source": {"table": "ifc_trigger_db.trigger_8"},
     "kafka": {"topic": "t", "bsp_config_path": "b.yaml"},
     "schema_registry": {"mode": "DEV"},
-    "state": {"backend": "memory"},
 }
 
 
@@ -35,13 +34,13 @@ class TestSettings:
         path.write_text(yaml.safe_dump(BASE_CONFIG), encoding="utf-8")
 
         monkeypatch.setenv("IFC_KAFKA__TOPIC", "overridden_topic")
-        monkeypatch.setenv("IFC_RUN__POLL_INTERVAL_SECONDS", "900")
+        monkeypatch.setenv("IFC_RUN__SHUTDOWN_GRACE_SECONDS", "45")
         monkeypatch.setenv("IFC_HEALTH__ENABLED", "false")
 
         settings = load_settings(str(path), reader=lambda p: path.read_text(encoding="utf-8"))
 
         assert settings.kafka.topic == "overridden_topic"
-        assert settings.run.poll_interval_seconds == 900
+        assert settings.run.shutdown_grace_seconds == 45
         assert settings.health.enabled is False
 
     def test_unrelated_env_vars_are_ignored(self, monkeypatch, tmp_path):

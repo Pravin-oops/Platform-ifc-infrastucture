@@ -118,7 +118,7 @@ Platform-ifc-infrastructure/      # the app root; imports are utility.*
 │   ├── __init__.py
 │   ├── connector_utility.py      # S3/local path handling, loaders, resource resolution
 │   ├── connector_config.py       # typed config; YAML + IFC_ env overlay
-│   ├── connector_runner.py       # the batch/service loop
+│   ├── connector_runner.py       # the batch run: query, publish, reconcile
 │   ├── trigger_source.py         # Athena trigger-table reader
 │   ├── recon_gate.py             # upstream reconciliation gate
 │   ├── run_gate.py               # weekend / already-delivered gate, run markers
@@ -167,7 +167,7 @@ action, an exit code, and what the connector does automatically.
 
 | Scenario | Handling | What the connector does |
 |---|---|---|
-| **Producer Container Failure** | graceful drain | SIGTERM stops intake, flushes in-flight messages within the grace window, persists the checkpoint, exits 75 so a restart resumes rather than republishes |
+| **Producer Container Failure** | graceful drain | SIGTERM stops intake, flushes in-flight messages within the grace window, exits 75; the run marker records FAILURE so the next date in the window re-runs the month |
 | **Producer Out Of Memory** | back-pressure | Streaming reads (never a full listing in memory), capped producer queue, `BufferError` waits instead of growing the heap; RSS and RSS/limit published so the alarm precedes exit 137 |
 | **Network Connectivity Failure** | preflight abort | DNS resolution and a TCP connect to every broker (9095) and the registry (8095) before authenticating — the exact evidence a firewall request needs |
 | **Trigger BDP Read Failure** | preflight abort | Source prefix listed before any BSP handshake, so a permission or path error is reported in seconds |
@@ -178,7 +178,7 @@ action, an exit code, and what the connector does automatically.
 | **High Kafka Publish Latency** | retry + backoff | Ack-latency and queue-depth metrics; delivery timeouts retried with jittered backoff; sustained failure trips the breaker rather than queuing unboundedly |
 | **Message Too Large** | quarantine | Serialised size measured against the 800 KB limit *before* `produce()`; oversized records quarantined with a payload/overhead breakdown |
 | **Kafka Partition Leader Failure** | retry + backoff | Idempotent producer + librdkafka metadata refresh; escalates only past the breaker threshold |
-| **Broker Unavailable** | retry + backoff | Jittered backoff; after N consecutive failures the run is abandoned cleanly with the checkpoint intact |
+| **Broker Unavailable** | retry + backoff | Jittered backoff; after N consecutive failures the run is abandoned cleanly and recorded as FAILURE |
 | **Topic Unavailable / Incorrect Topic** | preflight abort | Cluster metadata for the topic, with a partition-count assertion — a typo fails in seconds |
 | **Schema Registry Unavailable** | retry + backoff | Schema id resolved once and cached, so a mid-run outage does not stop publishing |
 | **Authentication Failure** | preflight abort | CSM, BAM and a registry call all happen before any record is read; JWT shape checked and `exp` tracked with pre-emptive refresh |
@@ -349,19 +349,15 @@ query parameter. `order_by` fixes the row order so a re-run allocates the same s
 Results are paged through `GetQueryResults` (1000 rows a page) and each column's Athena type is
 restored — a `bigint` CSID arrives as an int, a `date` as a date.
 
-**Only Athena.** `source` accepts `trigger_tables`, `table`, `max_records_per_batch` and the
-`athena` block, and rejects anything else — a config still carrying the old S3 extract settings
+**Only Athena.** `source` accepts `trigger_tables`, `table` and the `athena` block, and rejects
+anything else — a config still carrying the old S3 extract settings
 (`type`, `path`, `trigger_paths`, `file_suffixes`, `archive_path`, ...) fails at load rather than
 being silently ignored.
 
-**No record cap.** `source.max_records_per_batch` is unset in the deployed config: a cap would
-leave the rest of the month unpublished.
-
 A query that **cannot be run** — a missing table, `AccessDenied`, a failed, cancelled or
 timed-out query — fails the run as `SOURCE_UNREADABLE` with the `TRIGGER_BDP_READ_FAILURE` exit
-code. It reaches the runner as a single parse failure, which on its own reconciles cleanly, so
-without that rule an unreadable table would exit 0 and look like a clean run. A query that runs
-and finds **no rows** is different and stays `ZERO_RECORDS`.
+code — the reader raises `SourceAccessError`, and nothing is published. A query that runs and
+finds **no rows** is different and stays `ZERO_RECORDS`.
 
 Preflight checks the table with `GetTableMetadata` — a Glue catalogue lookup that scans no data
 but exercises the same permissions the query needs.
@@ -448,13 +444,14 @@ that lives under a folder rather than at the root of a bucket of its own. The th
 appended to it, so a URI naming a folder nests them under that folder. Every run writes a manifest
 to `<audit.bucket>/<manifest_prefix>/run_date=…/<run_id>.json`
 containing the run and task identity, configuration in force, full counters, per-partition
-offset ranges, the preflight report, the source objects read, quarantine object keys, and the
+offset ranges, the preflight report, what was read (table, business date and Athena query
+execution id), quarantine object keys, and the
 classified failure if there was one.
 
 The control is a balance identity:
 
 ```
-records read = published + quarantined + parse failures
+records read = published + quarantined
 ```
 
 If it does not hold — or if published ≠ acknowledged, or the flush timed out with messages still
@@ -549,7 +546,6 @@ separates sections:
 
 ```
 IFC_KAFKA__TOPIC=tc01_fncmtrgrbb_ifc_tbb_kyc_refresh
-IFC_RUN__MODE=service
 IFC_RUN__TRIGGER=TRIGGER_9
 ```
 
@@ -784,23 +780,19 @@ Artefacts in [`deploy/`](deploy):
 |---|---|
 | `ecs-task-definition.json` | Fargate task definition. `stopTimeout: 120` **must** exceed `run.shutdown_grace_seconds` (90), or SIGKILL wins and the drain is lost |
 | `iam-task-role-policy.json` | Least-privilege task role, including an explicit **Deny** on deleting from the Trigger BDP — the connector archives by copy, never deletes |
-| `infrastructure.json` | The run-marker file location, the three EventBridge trigger schedules *or* the continuous ECS service, egress security group (9095/8095/BAM/CSM), log retention |
+| `infrastructure.json` | The run-marker file location, the three EventBridge trigger schedules, egress security group (9095/8095/BAM/CSM), log retention |
 | `athena-run-markers.sql` | Athena table and latest-state view over the run marker file |
 | `cloudwatch-alarms.json` | One alarm per observable scenario, each naming the catalogue scenario it detects |
 
-Two deployment modes, same image and task definition:
+One deployment shape: an ECS RunTask per invocation under EventBridge Scheduler — one schedule
+per trigger, each firing on three consecutive dates (`cron(0 3 3,4,5 * ? *)` and so on) and
+setting `IFC_RUN__TRIGGER`. A run without it fails. The container decides whether to process
+(see [The invocation gate](#the-invocation-gate)), publishes the month, and exits. There is no
+resident service mode: a resident task would re-query and republish the same month.
 
-- **`run.mode: batch`** with EventBridge Scheduler — one schedule per trigger, each firing on
-  three consecutive dates (`cron(0 3 3,4,5 * ? *)` and so on). The container decides whether to
-  process; see [The invocation gate](#the-invocation-gate). The task drains and exits.
-- **`run.mode: service`** as a resident ECS service polling the prefix. Keep `desiredCount: 1`
-  unless the DynamoDB state backend is in use; the S3 backend cannot allocate sequence numbers
-  safely across concurrent tasks.
-
-Health endpoints on `:8080` — `/health/live` (restart me), `/health/ready` (stop routing to me),
-`/health/startup` (preflight done), `/metrics`. A task that has lost its BSP connection but is
-still running reports **not ready**, which is the most dangerous form of container failure:
-nothing crashes, and nothing publishes.
+Health endpoints on `:8080` — `/health/live` (restart me, used by the container health check) and
+`/metrics`. A run loop that stops checking in for five minutes reports **not live**, so a task
+wedged on a stuck socket is restarted rather than left publishing nothing.
 
 ---
 

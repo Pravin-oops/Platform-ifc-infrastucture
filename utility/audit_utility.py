@@ -4,7 +4,7 @@ The reconciliation control asks a simple question - can you prove every trigger
 event that was detected was either published or accounted for? The manifest
 answers it with an identity that must hold for every run::
 
-    records read = published + quarantined + parse failures
+    records read = published + quarantined
 
 If it does not balance, the run fails even when every individual Kafka publish
 succeeded, because an unexplained gap is exactly the condition the control
@@ -58,9 +58,7 @@ def ecs_task_identity() -> Dict[str, Optional[str]]:
 class RunCounters:
     """Every record's fate, counted exactly once."""
 
-    objects_read: int = 0
     records_parsed: int = 0
-    parse_failures: int = 0
     quarantined: int = 0
     published: int = 0
     acked: int = 0
@@ -90,20 +88,14 @@ class ReconciliationResult:
 def reconcile(counters: RunCounters) -> ReconciliationResult:
     findings: List[str] = []
 
-    # Parse failures are counted separately from parsed records, so the total
-    # the run is answerable for is everything it read.
-    expected = counters.records_parsed + counters.parse_failures
-    accounted = (
-        counters.published
-        + counters.quarantined
-        + counters.parse_failures
-    )
+    # Every row read is either published or quarantined.
+    expected = counters.records_parsed
+    accounted = counters.published + counters.quarantined
 
     if accounted != expected:
         findings.append(
             f"record accounting does not balance: read {expected}, accounted for {accounted} "
-            f"(published={counters.published}, quarantined={counters.quarantined}, "
-            f"parse_failures={counters.parse_failures})"
+            f"(published={counters.published}, quarantined={counters.quarantined})"
         )
 
     if counters.acked != counters.published:
@@ -120,7 +112,6 @@ def reconcile(counters: RunCounters) -> ReconciliationResult:
             f"{counters.unflushed} messages were still queued when the flush timed out; "
             "their delivery is uncertain and must be confirmed against topic offsets"
         )
-
 
     return ReconciliationResult(
         balanced=not findings, expected=expected, accounted=accounted, findings=findings
@@ -250,7 +241,7 @@ def build_manifest(
     outcome: str,
     exit_code: int,
     classification: Optional[Classification] = None,
-    source_objects: Optional[List[str]] = None,
+    source: Optional[Dict[str, Any]] = None,
     quarantine_keys: Optional[List[str]] = None,
     schema_id: Optional[int] = None,
     stage: str = "RUN",
@@ -276,7 +267,6 @@ def build_manifest(
         "task": ecs_task_identity(),
         "configuration": {
             "trigger": settings.run.trigger,
-            "run_mode": settings.run.mode,
             "source_table": settings.source.table,
             "topic": settings.kafka.topic,
             "schema_registry_mode": settings.schema_registry.mode,
@@ -287,7 +277,7 @@ def build_manifest(
         "reconciliation": reconciliation.to_dict(),
         "delivery": delivery_stats,
         "preflight": preflight,
-        "source_objects": source_objects or [],
+        "source": source or {},
         "quarantine_objects": quarantine_keys or [],
         "failure": classification.to_dict() if classification else None,
         "gate": gate,

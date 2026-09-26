@@ -5,7 +5,7 @@ All three exist because the connector is long-lived and container-hosted:
 * retries have to be interruptible, or a SIGTERM lands in the middle of a
   60-second sleep and ECS escalates to SIGKILL;
 * a circuit breaker turns "BSP is down" from an infinite retry loop into a
-  clean, checkpointed exit that the next scheduled run resumes from;
+  clean exit, recorded as FAILURE so the next date in the window re-runs;
 * shutdown is cooperative, so the drain path is the same whether the task is
   stopped by a deployment, a scale-in or an operator.
 """

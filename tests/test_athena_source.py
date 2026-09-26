@@ -15,11 +15,12 @@ from botocore.exceptions import ClientError
 
 from utility import failure_catalog as catalog
 from utility.connector_config import SourceSettings, load_settings
+from utility.error_classifier import classify
 from utility.connector_utility import load_schema_document
 from utility.tb_outcome_schema import EnvelopeBuilder, TriggerEvent
+from utility.connector_utility import SourceAccessError
 from utility.trigger_source import (
     AthenaTriggerSource,
-    ParseFailure,
     _coerce,
     make_source,
 )
@@ -219,9 +220,13 @@ class TestStream:
         assert isinstance(event, TriggerEvent)
         assert event.trigger_sub_type == "TRIGGER_8"
         assert event.csid == "9912345678"
-        assert event.source_object == "athena://AwsDataCatalog/ifc_trigger_db.trigger_8_events?business_date=2026-08-31"
-        assert source.objects_read == [event.source_object]
-        assert source.last_query_execution_id == "q-1"
+        assert event.trigger_type == "KYCRefresh"
+        assert event.source_object == TABLE
+        assert source.describe() == {
+            "table": TABLE,
+            "business_date": "2026-08-31",
+            "query_execution_id": "q-1",
+        }
 
     def test_column_types_are_restored(self):
         attributes = list(make(FakeAthena()).stream())[0].attributes
@@ -249,16 +254,6 @@ class TestStream:
         client = FakeAthena(pages=[result_page([], header=True)])
         assert list(make(client).stream()) == []
 
-    def test_an_already_processed_month_is_skipped_without_querying(self):
-        client = FakeAthena()
-        source = make(client)
-        assert list(source.stream(skip_objects={source.object_id})) == []
-        assert client.started == []
-
-    def test_the_limit_caps_the_rows(self):
-        client = FakeAthena(pages=[result_page([ROW, ROW, ROW], header=True)])
-        assert len(list(make(client).stream(limit=2))) == 2
-
     def test_the_upstream_trigger_id_can_come_from_a_column(self):
         event = list(make(FakeAthena(), upstream_trigger_id_column="counterparty_csid_sds").stream())[0]
         assert event.upstream_trigger_id == "9912345678"
@@ -268,34 +263,35 @@ class TestStream:
 
 
 class TestFailures:
-    def _only_failure(self, source) -> ParseFailure:
-        items = list(source.stream())
-        assert len(items) == 1 and isinstance(items[0], ParseFailure)
-        assert items[0].scenario_key == catalog.BDP_READ_FAILURE.key
-        return items[0]
+    """A query that cannot be run raises, and is classified as a BDP read failure."""
+
+    def _failure(self, source) -> SourceAccessError:
+        with pytest.raises(SourceAccessError) as exc:
+            list(source.stream())
+        assert classify(exc.value).scenario.key == catalog.BDP_READ_FAILURE.key
+        return exc.value
 
     def test_a_failed_query_is_a_source_read_failure(self):
         client = FakeAthena(states=["FAILED"], reason="TABLE_NOT_FOUND: line 1:15")
-        failure = self._only_failure(make(client))
-        assert "TABLE_NOT_FOUND" in failure.error
+        assert "TABLE_NOT_FOUND" in str(self._failure(make(client)))
 
     def test_a_cancelled_query_is_a_source_read_failure(self):
-        self._only_failure(make(FakeAthena(states=["CANCELLED"])))
+        self._failure(make(FakeAthena(states=["CANCELLED"])))
 
     def test_an_api_error_is_a_source_read_failure(self):
         error = ClientError({"Error": {"Code": "AccessDeniedException", "Message": "no"}}, "StartQueryExecution")
-        failure = self._only_failure(make(FakeAthena(start_error=error)))
-        assert "AccessDeniedException" in failure.error
+        failure = self._failure(make(FakeAthena(start_error=error)))
+        assert "AccessDeniedException" in str(failure)
 
     def test_a_query_past_its_timeout_is_cancelled(self, monkeypatch):
         clock = iter([0.0, 0.0, 400.0])
         monkeypatch.setattr("utility.trigger_source.time.monotonic", lambda: next(clock))
         client = FakeAthena(states=["RUNNING"])
 
-        failure = self._only_failure(make(client, query_timeout_seconds=300))
+        failure = self._failure(make(client, query_timeout_seconds=300))
 
         assert client.stopped == ["q-1"]
-        assert "cancelled" in failure.error
+        assert "cancelled" in str(failure)
 
 
 class TestPreflightProbe:
@@ -303,7 +299,7 @@ class TestPreflightProbe:
         client = FakeAthena()
         source = make(client)
 
-        assert source.first_object() == source.object_id
+        assert source.check_access() == TABLE
         assert client.metadata_calls == [
             {"CatalogName": "AwsDataCatalog", "DatabaseName": "ifc_trigger_db", "TableName": "trigger_8_events"}
         ]
@@ -314,10 +310,6 @@ class TestFactory:
     def test_athena_type_builds_the_athena_reader(self):
         source = make_source(athena_settings(), trigger="TRIGGER_8")
         assert isinstance(source, AthenaTriggerSource)
-
-    def test_athena_needs_the_run_trigger(self):
-        with pytest.raises(ValueError, match="IFC_RUN__TRIGGER"):
-            make_source(athena_settings(), trigger=None)
 
 
 class TestCoerce:

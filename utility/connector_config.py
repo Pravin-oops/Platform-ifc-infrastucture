@@ -82,21 +82,16 @@ class AppSettings(BaseModel):
 
 
 class RunSettings(BaseModel):
-    #: ``batch``   - drain the source once and exit. Use with ECS RunTask /
-    #:               EventBridge Scheduler for the monthly cadence.
-    #: ``service`` - stay resident and re-poll the source. Use with an ECS
-    #:               service when triggers arrive continuously.
-    mode: Literal["batch", "service"] = "batch"
-    poll_interval_seconds: int = Field(default=300, ge=5)
-    max_batches: int = Field(default=0, ge=0, description="0 = unbounded (service mode only).")
+    """One invocation publishes one trigger's month and exits (ECS RunTask
+    under EventBridge Scheduler)."""
+
     shutdown_grace_seconds: int = Field(
         default=90,
         ge=5,
         description="Must be <= the ECS task definition stopTimeout, or SIGKILL wins.",
     )
-    #: Which trigger this invocation publishes. Normally supplied per-invocation
-    #: by the scheduler's RunTask override (``IFC_RUN__TRIGGER``) rather than set here; the
-    #: config value is the local-run convenience.
+    #: Which trigger this invocation publishes. EventBridge Scheduler supplies it
+    #: on every invocation as ``IFC_RUN__TRIGGER``; a run without it fails.
     trigger: Optional[str] = None
     #: Bypass the weekend and already-delivered gates. Operator decision for a
     #: re-delivery, never a scheduled value - see ``run_gate``.
@@ -232,10 +227,6 @@ class SourceSettings(BaseModel):
     #: entry. Production leaves it unset, so an unmapped trigger fails rather
     #: than reading another trigger's table.
     table: Optional[str] = None
-    #: ``None`` (the default) publishes every row of the month. A number caps
-    #: the batch - a developer convenience; production leaves it unset, because
-    #: the rest of the month would not be published.
-    max_records_per_batch: Optional[int] = Field(default=None, ge=1)
 
     @field_validator("trigger_tables", mode="before")
     @classmethod
@@ -297,8 +288,7 @@ class ReconSettings(BaseModel):
     def resolved_path(self) -> str:
         """The recon location for this run, tokens still unexpanded.
 
-        ``ReconSource`` expands them, so a resident service crossing a month
-        boundary looks in the new month's folder without a restart.
+        ``ReconSource`` expands them against the run date.
         """
         if not self.path:
             raise ValueError(
@@ -329,6 +319,9 @@ class SchemaRegistrySettings(BaseModel):
     timeout_seconds: int = Field(default=30, ge=1)
     #: Refresh the SR bearer token this many seconds before its ``exp`` claim.
     token_refresh_margin_seconds: int = Field(default=300, ge=30)
+    #: Attempts at each registry request (schema lookup) before preflight fails,
+    #: backing off per ``resilience.backoff_*_seconds``.
+    max_attempts: int = Field(default=5, ge=1)
     #: Local .avsc used to serialise. Compared against the registered subject at
     #: preflight so producer/registry drift fails before any publish happens.
     schema_path: str = "utility/schema.json"
@@ -389,7 +382,6 @@ class AuditSettings(BaseModel):
 
 
 class ResilienceSettings(BaseModel):
-    max_publish_attempts: int = Field(default=5, ge=1)
     backoff_base_seconds: float = Field(default=1.0, gt=0)
     backoff_max_seconds: float = Field(default=60.0, gt=0)
     circuit_breaker_threshold: int = Field(
@@ -473,13 +465,8 @@ class ConnectorSettings(BaseModel):
 
     @property
     def gate_active(self) -> bool:
-        """Whether the entry-point run gate applies to this configuration.
-
-        Only a batch run with a marker file is gated: a ``service`` run is
-        resident and has no invocation to gate, and a local run leaves
-        ``run_marker.path`` unset so it needs no trigger and no marker file.
-        """
-        return self.run.mode == "batch" and bool(self.run_marker.path)
+        """Whether the entry-point run gate applies: only with a marker file."""
+        return bool(self.run_marker.path)
 
     def select_trigger(self, trigger: Any) -> Optional[str]:
         """Fix this run's trigger and point the source at that trigger's table.

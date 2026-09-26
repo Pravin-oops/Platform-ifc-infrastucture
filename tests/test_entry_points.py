@@ -118,7 +118,6 @@ class TestEcsEntryPoint:
                     "source: {trigger_tables: {TRIGGER_8: ifc_trigger_db.trigger_8}}",
                     "kafka: {topic: t, overrides: {bootstrap.servers: 'localhost:9092'}}",
                     "schema_registry: {mode: DEV, schema_path: utility/schema.json}",
-                    "state: {backend: memory}",
                     "health: {enabled: false}",
                     "resilience: {preflight_enabled: false}",
                 ]

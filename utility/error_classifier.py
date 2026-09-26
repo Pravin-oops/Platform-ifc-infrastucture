@@ -53,7 +53,7 @@ class PreflightError(ConnectorError):
 
 
 class PublishError(ConnectorError):
-    """Publishing was abandoned. The checkpoint is intact."""
+    """Publishing a record failed."""
 
 
 class RecordRejected(Exception):

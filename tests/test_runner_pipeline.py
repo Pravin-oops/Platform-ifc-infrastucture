@@ -206,14 +206,13 @@ class FakeAthena:
 def make_settings(**overrides) -> ConnectorSettings:
     document = {
         "app": {"environment": "TEST", "log_level": "WARNING"},
-        "run": {"mode": "batch", "shutdown_grace_seconds": 5, "trigger": "TRIGGER_8"},
+        "run": {"shutdown_grace_seconds": 5, "trigger": "TRIGGER_8"},
         "source": {"trigger_tables": {"TRIGGER_8": "ifc_trigger_db.trigger_8"}},
         "kafka": {
             "topic": "test_ifc_topic",
             "bsp_config_path": "config/bsp_local_config.yaml",
         },
         "schema_registry": {"mode": "DEV"},
-        "state": {"backend": "memory"},
         "audit": {"bucket": None},
         "resilience": {"preflight_enabled": False, "max_quarantine_ratio": 1.0},
         "health": {"enabled": False},
@@ -462,8 +461,11 @@ class TestTheMonthIsOneBatch:
         assert result.counters.acked == 25
         assert len(producer.produced) == 25
         assert result.reconciliation.balanced
-        assert result.source_objects == [runner._source.object_id]
-        assert result.counters.objects_read == 1
+        assert result.source == {
+            "table": "ifc_trigger_db.trigger_8",
+            "business_date": "2026-06-30",
+            "query_execution_id": "q-1",
+        }
 
     def test_the_run_trigger_table_is_queried_for_the_month_end(self):
         athena = FakeAthena([VALID_ROW])

@@ -309,7 +309,6 @@ def a_config(tmp_path, recon_root, *, enabled=True, marker=True, batch_topic=Non
         "source: {table: ifc_trigger_db.trigger_8}",
         "kafka: {topic: t, overrides: {bootstrap.servers: 'localhost:9092'}}",
         "schema_registry: {mode: DEV}",
-        "state: {backend: memory}",
         "health: {enabled: false}",
         f"recon: {{enabled: {str(enabled).lower()}, "
         f"path: '{recon_root}/{{MONTH}}_{{YYYY}}'}}",
