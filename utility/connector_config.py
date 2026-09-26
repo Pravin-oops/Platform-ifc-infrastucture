@@ -468,35 +468,44 @@ class ConnectorSettings(BaseModel):
         """Whether the entry-point run gate applies: only with a marker file."""
         return bool(self.run_marker.path)
 
-    def select_trigger(self, trigger: Any) -> Optional[str]:
-        """Fix this run's trigger and point the source at that trigger's table.
+    @property
+    def trigger(self) -> str:
+        """This run's trigger, as a ``str``.
 
-        ``trigger`` is the invocation's own value; ``None`` keeps the one from
-        ``IFC_RUN__TRIGGER``. A trigger is always required: the table holds only
-        attribute columns, so the trigger is what says which sub-type the rows
-        are published as.
+        ``run.trigger`` is optional in config because ``IFC_RUN__TRIGGER`` supplies
+        it per invocation; this is the one place a run without it fails. The
+        table holds only attribute columns, so the trigger is what says which
+        sub-type the rows are published as.
         """
-        if trigger is not None:
-            self.run.trigger = canonical_trigger(trigger)
-
         if not self.run.trigger:
             raise ValueError(
                 "No trigger specified: set IFC_RUN__TRIGGER (TRIGGER_8 | TRIGGER_9 | TRIGGER_21)"
             )
+        return self.run.trigger
 
-        if self.run.trigger in self.source.trigger_tables:
-            self.source.table = self.source.trigger_tables[self.run.trigger]
+    def select_trigger(self, trigger: Any) -> str:
+        """Fix this run's trigger and point the source at that trigger's table.
+
+        ``trigger`` is the invocation's own value; ``None`` keeps the one from
+        ``IFC_RUN__TRIGGER``.
+        """
+        if trigger is not None:
+            self.run.trigger = canonical_trigger(trigger)
+        selected = self.trigger
+
+        if selected in self.source.trigger_tables:
+            self.source.table = self.source.trigger_tables[selected]
 
         # The recon document lives per trigger too, and is looked up by the same
         # trigger, so the two cannot end up pointing at different triggers.
-        if self.run.trigger in self.recon.trigger_paths:
-            self.recon.path = self.recon.trigger_paths[self.run.trigger]
+        if selected in self.recon.trigger_paths:
+            self.recon.path = self.recon.trigger_paths[selected]
 
         if not self.source.table:
             raise ValueError(
-                f"No Athena table for trigger {self.run.trigger!r}: add it to source.trigger_tables"
+                f"No Athena table for trigger {selected!r}: add it to source.trigger_tables"
             )
-        return self.run.trigger
+        return selected
 
 
 

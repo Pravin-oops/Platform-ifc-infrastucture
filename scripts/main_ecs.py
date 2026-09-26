@@ -154,7 +154,7 @@ def _gate(settings, event: Dict[str, Any]) -> Tuple[Optional[Gate], Optional[str
     if not settings.gate_active:
         return None, None
 
-    gate = Gate(settings.run.trigger, RunMarker(settings.run_marker.path))
+    gate = Gate(settings.trigger, RunMarker(settings.run_marker.path))
     outcome = should_run(
         gate.trigger, gate.marker, force=event.get("force") or settings.run.force
     )
@@ -561,7 +561,7 @@ def _publish_zero_batch_notification(settings, run_id: str) -> None:
     notification = TriggerBatchNotification(
         Trigger_Originating_BU=settings.notifications.trigger_originating_bu,
         No_Of_Messages_Produced=0,
-        Trigger_Sub_Type=resolve_trigger(settings.run.trigger).published_sub_type,
+        Trigger_Sub_Type=resolve_trigger(settings.trigger).published_sub_type,
         Topic_Name=settings.kafka.topic,
         Trigger_Batch_Start_Timestamp=now,
         Trigger_Batch_End_Timestamp=now,

@@ -95,7 +95,7 @@ class ConnectorRunner:
 
         self._run_id = new_run_id()
         self._sequence = SequenceAllocator()
-        self._source = make_source(settings.source, trigger=settings.run.trigger)
+        self._source = make_source(settings.source, trigger=settings.trigger)
         self._audit = AuditWriter(settings.audit, run_id=self._run_id, environment=settings.app.environment)
         self._notifier = Notifier(
             sns_topic_arn=settings.notifications.sns_topic_arn,
