@@ -8,8 +8,8 @@ Config is layered, lowest precedence first:
      e.g. ``IFC_KAFKA__TOPIC``) so an ECS task definition can override any
      single value without republishing the config object to S3.
 
-Secrets never live here. CSM supplies the BSP system-account credentials at
-runtime; only the *location* of the secret is configuration.
+Secrets never live here. CyberArk CCP supplies the BSP system-account
+credentials at runtime; only the *location* of the secret is configuration.
 """
 
 from __future__ import annotations
@@ -292,18 +292,30 @@ class SchemaRegistrySettings(BaseModel):
         return self
 
 
-class CSMSettings(BaseModel):
+class CyberArkSettings(BaseModel):
+    """Where the BSP system-account credential lives in CyberArk.
+
+    Locations only. The client certificate and key are read from the Secrets
+    Manager secret named here; the account itself comes from CCP at runtime.
+    """
+
+    #: CCP host; the client-certificate endpoint path is appended by the fetcher.
     base_url: str
-    mount_point: str = "CSM"
-    secret_path: str
-    role_name: str
+    #: Application ID registered with CyberArk (``APP_<name>``).
+    app_id: str
+    #: Safe that holds the account.
+    safe: str
+    folder: str = "Root"
+    #: The account's object name in the Safe - not its username.
+    object: str
+    #: Secrets Manager name or ARN of the JSON client certificate secret.
+    client_cert_secret_id: str
+    secret_region: str = "eu-west-1"
+    #: Trust store for the CCP *server* certificate.
     ca_bundle_path: str = "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"
     ssl_verify: bool = True
-    sts_region: str = "us-east-1"
-    instance_region: str = "eu-west-1"
-    vault_server_id: str = "CSM_PROD"
     request_timeout: int = 30
-    #: Realm appended to the CSM username to form the BSP principal.
+    #: Realm appended to the CyberArk username to form the BSP principal.
     principal_realm: str = "@INTRANET.BARCAPINT.COM"
 
 
@@ -380,13 +392,22 @@ class ConnectorSettings(BaseModel):
     source: SourceSettings
     kafka: KafkaSettings
     schema_registry: SchemaRegistrySettings
-    csm: Optional[CSMSettings] = None
+    cyberark: Optional[CyberArkSettings] = None
     run_marker: RunMarkerSettings = Field(default_factory=RunMarkerSettings)
     audit: AuditSettings = Field(default_factory=AuditSettings)
     resilience: ResilienceSettings = Field(default_factory=ResilienceSettings)
     health: HealthSettings = Field(default_factory=HealthSettings)
     notifications: NotificationSettings = Field(default_factory=NotificationSettings)
     recon: ReconSettings = Field(default_factory=ReconSettings)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_retired_csm(cls, data: Any) -> Any:
+        # Unknown keys are otherwise ignored, so a config still carrying the old
+        # section would silently start without any credential source.
+        if isinstance(data, dict) and "csm" in data:
+            raise ValueError("the csm: section is retired; configure cyberark: instead")
+        return data
 
     @field_validator("app")
     @classmethod

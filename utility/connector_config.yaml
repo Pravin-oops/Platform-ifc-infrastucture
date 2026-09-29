@@ -91,18 +91,25 @@ schema_registry:
   token_refresh_margin_seconds: 300
   schema_path: utility/schema.json
 
-csm:
-  base_url: https://csm-uk1-stg.barcapint.com:8200
-  mount_point: CSM
-  # CONFIRM: the actual system account. The POC readiness assessment lists this
-  # as known-as-placeholder only.
-  secret_path: intranet/static-cred/snsvc0035333_sysdevaemeammtdevops
-  role_name: snsvc0035333_aws_ecs-csm-fetcher
+# CyberArk Central Credential Provider (CCP), client-certificate authentication.
+# Locations only: the client certificate and key are read from the Secrets
+# Manager secret below, and the account itself from CCP at runtime.
+cyberark:
+  # CONFIRM: PROD host from the CyberArk CCP KB article; UAT host to come from
+  # IAM PAM Engineering Onboarding.
+  base_url: https://cark-ccp.intranet.barcapint.com
+  # CONFIRM: all four are placeholders until the CyberArk onboarding CR
+  # (template NCTMP0001159) is implemented.
+  app_id: APP_PLACEHOLDER
+  safe: SAFE_PLACEHOLDER
+  folder: Root
+  object: OBJECT_PLACEHOLDER
+  # CONFIRM: Secrets Manager secret created by DevOps, holding
+  # {"client_cert_pem": ..., "client_key_pem": ...}.
+  client_cert_secret_id: ifc-trigger-connector/uat/cyberark-ccp-client-cert
+  secret_region: eu-west-1
   ca_bundle_path: /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
   ssl_verify: true
-  sts_region: us-east-1
-  instance_region: eu-west-1
-  vault_server_id: CSM_PROD
   request_timeout: 30
   principal_realm: "@INTRANET.BARCAPINT.COM"
 

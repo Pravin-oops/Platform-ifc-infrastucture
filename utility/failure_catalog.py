@@ -623,7 +623,7 @@ AUTHENTICATION_FAILURE = _register(
         producer_rtb_action="Validate BAM credentials, certificate validity, truststore path and producer auth config before escalating.",
         bsp_rtb_action="Support if the authentication infrastructure or BSP-side auth service is unavailable.",
         connector_behaviour=(
-            "CSM retrieval, BAM token acquisition and a Schema Registry call all happen in preflight, "
+            "CyberArk CCP retrieval, BAM token acquisition and a Schema Registry call all happen in preflight, "
             "so an expired certificate or rotated credential fails before any record is read. The JWT "
             "is validated for shape and its exp claim is tracked; the SR token is refreshed ahead of "
             "expiry so long service-mode runs do not fail mid-batch."

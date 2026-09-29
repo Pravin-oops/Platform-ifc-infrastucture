@@ -57,7 +57,7 @@ COPY --chown=connector:connector utility/ /app/ifc_trigger_connector/utility/
 COPY --chown=connector:connector scripts/ /app/ifc_trigger_connector/scripts/
 
 # The Barclays root CA is mounted or baked in per environment; the app searches
-# the candidate paths in utility/csm_aws_fetch.py and falls back to the system
+# the candidate paths in utility/cyberark_ccp_fetch.py and falls back to the system
 # store (/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem). To bake one in, add
 # it to the anchors directory and re-extract, before USER below:
 #
