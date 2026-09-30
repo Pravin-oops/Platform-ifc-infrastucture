@@ -45,6 +45,11 @@ class FakeMessage:
         return self._offset
 
 
+#: The trigger ID, and so the message key, of the first record of a June 2026
+#: Trigger 8 batch.
+FIRST_TRIGGER_ID = "TBD_KYCRefresh_NewHRCRelationship_2026-06-30T23:59:59.999999999Z_1"
+
+
 class FakeProducer:
     """Delivers synchronously; ``fail_keys`` forces a delivery error."""
 
@@ -216,13 +221,11 @@ class TestHappyPath:
         assert result.reconciliation.balanced
         assert producer.produced[0]["topic"] == "test_ifc_topic"
 
-    def test_the_record_carries_traceability_headers(self, runner_factory):
+    def test_the_record_carries_no_headers(self, runner_factory):
         runner, producer = runner_factory([VALID_EVENT])
         runner.run_batch()
 
-        headers = dict(producer.produced[0]["headers"])
-        assert headers["triggerSubType"] == b"NewHRCRelationship"
-        assert headers["runId"].decode() == runner.run_id
+        assert not producer.produced[0]["headers"]
 
     def test_the_wire_format_is_magic_byte_plus_schema_id(self, runner_factory):
         runner, producer = runner_factory([VALID_EVENT])
@@ -307,7 +310,7 @@ class TestSequenceNumbers:
 
 class TestFailureOutcomes:
     def test_a_delivery_failure_fails_reconciliation(self, runner_factory):
-        runner, _ = runner_factory([VALID_EVENT], fail_keys={"9912345678"})
+        runner, _ = runner_factory([VALID_EVENT], fail_keys={FIRST_TRIGGER_ID})
         result = runner.run_batch()
 
         assert not result.reconciliation.balanced
@@ -315,7 +318,7 @@ class TestFailureOutcomes:
         assert result.exit_code == catalog.RECONCILIATION_FAILURE.exit_code
 
     def test_the_dominant_failure_scenario_is_reported(self, runner_factory):
-        runner, _ = runner_factory([VALID_EVENT], fail_keys={"9912345678"})
+        runner, _ = runner_factory([VALID_EVENT], fail_keys={FIRST_TRIGGER_ID})
         result = runner.run_batch()
         assert result.delivery["by_scenario"] == {"BROKER_UNAVAILABLE": 1}
 

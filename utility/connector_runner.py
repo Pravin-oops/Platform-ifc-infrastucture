@@ -244,13 +244,8 @@ class ConnectorRunner:
             key=built.kafka_key,
             value=payload,
             trigger_id=built.trigger_id,
-            headers=[
-                ("triggerId", built.trigger_id.encode("utf-8")),
-                # Header mirrors the envelope field, so a consumer routing on
-                # headers and one decoding the record agree.
-                ("triggerSubType", built.definition.published_sub_type.encode("utf-8")),
-                ("runId", self._run_id.encode("utf-8")),
-            ],
+            # No Kafka headers: the Trigger Backbone reads everything from the
+            # envelope, and its reference records carry an empty header list.
         )
         counters.published += 1
 

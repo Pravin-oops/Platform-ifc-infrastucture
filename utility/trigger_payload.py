@@ -37,14 +37,14 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 
 
 class DataType(str, Enum):
-    """Values permitted in ``fieldDataType``."""
+    """Values permitted in ``fieldDataType``, upper case as the Trigger Backbone expects."""
 
-    STRING = "String"
-    INTEGER = "Integer"
-    DECIMAL = "Decimal"
-    DATE = "Date"
-    DATETIME = "DateTime"
-    BOOLEAN = "Boolean"
+    STRING = "STRING"
+    INTEGER = "INTEGER"
+    DECIMAL = "DECIMAL"
+    DATE = "DATE"
+    DATETIME = "DATETIME"
+    BOOLEAN = "BOOLEAN"
 
 
 # Tokenisation policies. NAME is from the payload specification on Confluence

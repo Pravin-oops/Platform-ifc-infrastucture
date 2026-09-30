@@ -16,24 +16,19 @@ Envelope values, as agreed with the Trigger Backbone:
   (``counterparty_csid_sds``). Nothing upstream supplies a separate customer id,
   so the input wrapper carries no identity at all.
 
-The single most important property here is that the same input event always
-produces the same ``triggerID``. The BUK Lambda derives its trigger ID from
-wall-clock time and an in-process counter, so a retried invocation republishes
-the same business event under a new ID and the consumer sees a duplicate. On
-ECS, where a task can be stopped and restarted mid-batch by a deployment or a
-spot interruption, that would happen routinely.
+The trigger ID follows the Trigger Backbone's format::
 
-So the ID is derived from the business key instead: system, trigger type and
-sub-type, business month, CSID, and the sub-event discriminator the definition
-nominates (the business date for Triggers 8 and 9). Re-running a month
-republishes identical IDs, so the consuming team can recognise a republished
-record as the one it already holds.
+    {system}_{triggerType}_{triggerSubType}_{timestamp}_{sequenceNumber}
+
+``timestamp`` is the business-month stamp, the same for every record in a run,
+and ``sequenceNumber`` is the record's position in the batch, so the ID is
+unique within a run. The file is read in order, so re-running the same file
+reproduces the same IDs. The trigger ID is also the Kafka message key.
 """
 
 from __future__ import annotations
 
 import calendar
-import hashlib
 import json
 import logging
 import re
@@ -66,8 +61,7 @@ ORIGINATING_BU = "UK-C and UK-ICB"
 ID_TYPE = "Customer"
 ID_SYSTEM = "Corelation id"
 
-#: BDP column holding the counterparty CSID: the envelope's idValue and the
-#: Kafka partition key.
+#: BDP column holding the counterparty CSID: the envelope's idValue.
 CSID_SOURCE = "counterparty_csid_sds"
 
 #: Avro int is signed 32-bit; sequence numbers must stay inside it.
@@ -122,15 +116,17 @@ def normalise_csid(value: Any) -> Optional[str]:
 
 
 class SequenceAllocator(Protocol):
-    """Returns the next occurrence number for a customer.
+    """Numbers the batch and counts each customer's occurrences.
 
-    Every call is a distinct event, so every call advances that customer's
-    count: the first event for a CSID is 1, a second is 2. Two events for one
-    customer must never be handed the same number, because the number is part of
-    their identity.
+    ``allocate`` returns the record's position in the batch (1, 2, 3...), which
+    is the envelope's sequenceNumber and the end of its trigger ID, so it must
+    never repeat within a run. ``occurrences`` is the customer's count so far,
+    used to tell two events for one customer apart in the business key.
     """
 
     def allocate(self, csid: str) -> int: ...
+
+    def occurrences(self, csid: str) -> int: ...
 
 
 @dataclass
@@ -200,13 +196,12 @@ class BuiltRecord:
 
     @property
     def kafka_key(self) -> str:
-        """Partition key.
+        """Message key: the trigger ID, as in the Trigger Backbone's reference records.
 
-        The CSID, not the trigger ID: all triggers for one counterparty must
-        land on one partition so a consumer sees them in order. The envelope's
-        sequenceNumber then orders related events within that partition.
+        Unique per record, so records spread across partitions and two events
+        for one counterparty are not guaranteed to stay in order.
         """
-        return self.record["idValue"]
+        return self.trigger_id
 
 
 class EnvelopeBuilder:
@@ -312,14 +307,18 @@ class EnvelopeBuilder:
             parts["occurrence"] = str(occurrence)
         return json.dumps(parts, sort_keys=True, separators=(",", ":"))
 
-    def trigger_id(self, business_key: str, definition: TriggerDefinition, event: TriggerEvent) -> str:
-        digest = hashlib.sha256(business_key.encode("utf-8")).hexdigest()[:16]
+    def trigger_id(self, definition: TriggerDefinition, sequence: int) -> str:
+        """``{system}_{triggerType}_{triggerSubType}_{timestamp}_{sequenceNumber}``.
+
+        The Trigger Backbone's format. ``timestamp`` is the envelope's, the same
+        for the whole run, so the sequence number is what makes the ID unique.
+        """
         return (
-            f"{ORIGINATING_SYSTEM}-"
-            f"{TRIGGER_TYPE}-"
-            f"{definition.published_sub_type}-"
-            f"{self._business_month}-"
-            f"{digest}"
+            f"{ORIGINATING_SYSTEM}_"
+            f"{TRIGGER_TYPE}_"
+            f"{definition.published_sub_type}_"
+            f"{self._event_timestamp}_"
+            f"{sequence}"
         )
 
     # -- construction ------------------------------------------------------
@@ -363,12 +362,12 @@ class EnvelopeBuilder:
                 },
             ) from exc
 
-        # Allocated before the key is built: the occurrence is part of the
-        # identity from the second event for a customer onwards, so it has to be
-        # known before the trigger ID is hashed.
+        # The batch position is the sequenceNumber and ends the trigger ID; the
+        # customer's occurrence count separates repeats in the business key.
         sequence = self._sequence.allocate(csid)
-        business_key = self.business_key(event, definition, occurrence=sequence)
-        trigger_id = self.trigger_id(business_key, definition, event)
+        occurrence = self._sequence.occurrences(csid)
+        business_key = self.business_key(event, definition, occurrence=occurrence)
+        trigger_id = self.trigger_id(definition, sequence)
 
         record = {
             "triggerID": trigger_id,
