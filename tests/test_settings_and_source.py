@@ -7,6 +7,7 @@ import json
 import pytest
 import yaml
 
+from tests.conftest import with_enum_subtype
 from utility.connector_utility import load_schema_document
 from utility.schema_registry_client import compare_schemas, value_subject
 from utility.connector_config import ConnectorSettings, load_settings
@@ -103,15 +104,27 @@ class TestSubTypeEnumDrift:
 
     @pytest.fixture(scope="class")
     def local(self):
-        return load_schema_document("utility/schema.json")
+        return with_enum_subtype(load_schema_document("utility/schema.json"))
 
     @staticmethod
     def _with_symbols(schema, symbols):
-        copied = json.loads(json.dumps(schema))
-        for field in copied["fields"]:
-            if field["name"] == "triggerSubType":
-                field["type"]["symbols"] = symbols
-        return copied
+        return with_enum_subtype(schema, symbols)
+
+    def test_the_bundled_string_schema_blocks_against_a_registered_enum(self):
+        """Publishing the symbol as text needs the registered subject changed first.
+
+        The producer writes with the local schema under the registered schema id,
+        so a consumer would decode the string's length prefix as an enum index.
+        """
+        bundled = load_schema_document("utility/schema.json")
+        compatible, findings = compare_schemas(bundled, with_enum_subtype(bundled))
+        assert not compatible
+        assert any("triggerSubType" in f and "enum on one side only" in f for f in findings)
+
+    def test_the_bundled_string_schema_matches_a_registered_string(self):
+        bundled = load_schema_document("utility/schema.json")
+        compatible, _ = compare_schemas(bundled, json.loads(json.dumps(bundled)))
+        assert compatible
 
     def test_symbol_order_and_docs_do_not_count_as_drift(self, local):
         registered = self._with_symbols(

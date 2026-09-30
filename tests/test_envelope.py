@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import io
 import json
 import re
 from datetime import date
 
 import pytest
+from fastavro import parse_schema, schemaless_reader
 
+from tests.conftest import REGISTERED_SUBTYPE_SYMBOLS, with_enum_subtype
 from utility import tb_outcome_schema
 from utility import trigger_definitions as definitions
 from utility.error_classifier import PreflightError, RecordRejected
+from utility.kafka_serializers import AvroSerializer
 from utility.connector_utility import load_schema_document
 from utility.tb_outcome_schema import (
     CSID_SOURCE,
@@ -382,8 +386,12 @@ class TestAllTriggers:
         assert len(fields) == 8
 
 
-class TestSubTypeEnum:
-    """triggerSubType is an Avro enum, so the published spelling is load-bearing."""
+class TestSubType:
+    """triggerSubType goes on the wire as the published symbol's text."""
+
+    def test_the_bundled_schema_types_the_sub_type_as_a_string(self, schema):
+        field = next(f for f in schema["fields"] if f["name"] == "triggerSubType")
+        assert field["type"] == "string"
 
     def test_the_published_symbol_is_written_not_the_internal_key(self, builder):
         record = builder.build(trigger_8_event()).record
@@ -398,10 +406,19 @@ class TestSubTypeEnum:
             ("TRIGGER_21", "MultipleTMSARs"),
         ],
     )
-    def test_every_definition_maps_to_a_registered_symbol(self, schema, internal, published):
-        symbols = _subtype_symbols(schema)
+    def test_every_definition_maps_to_a_registered_symbol(self, internal, published):
         assert definitions.DEFINITIONS[internal].published_sub_type == published
-        assert published in symbols
+        assert published in REGISTERED_SUBTYPE_SYMBOLS
+
+    @pytest.mark.parametrize("published", ["NewHRCRelationship", "AccountInactivity", "MultipleTMSARs"])
+    def test_the_serialised_record_carries_the_symbol_text(self, schema, published):
+        """An enum would be written as its index (0x00, 0x02, 0x04); a string as its text."""
+        record = make_builder(schema).build(trigger_8_event()).record
+        record["triggerSubType"] = published
+
+        body = AvroSerializer(schema, None)(record)
+        assert published.encode("utf-8") in body
+        assert schemaless_reader(io.BytesIO(body), parse_schema(schema))["triggerSubType"] == published
 
     def test_the_published_symbol_also_resolves_on_input(self):
         assert definitions.resolve("NewHRCRelationship").sub_type == definitions.TRIGGER_8
@@ -416,28 +433,11 @@ class TestSubTypeEnum:
         built = builder.build(trigger_8_event())
         assert "-NewHRCRelationship-" in built.trigger_id
 
-    def test_a_schema_missing_one_of_our_symbols_aborts_at_construction(self, schema):
-        narrowed = json.loads(json.dumps(schema))
-        for field in narrowed["fields"]:
-            if field["name"] == "triggerSubType":
-                field["type"]["symbols"] = ["NewHRCRelationship"]
-
+    def test_an_enum_schema_missing_one_of_our_symbols_aborts_at_construction(self, schema):
         with pytest.raises(PreflightError) as exc:
-            make_builder(narrowed)
+            make_builder(with_enum_subtype(schema, ["NewHRCRelationship"]))
         assert "AccountInactivity" in str(exc.value)
 
-    def test_a_plain_string_schema_still_works(self, schema):
-        relaxed = json.loads(json.dumps(schema))
-        for field in relaxed["fields"]:
-            if field["name"] == "triggerSubType":
-                field["type"] = "string"
-
-        builder = make_builder(relaxed)
+    def test_an_enum_schema_still_works(self, schema):
+        builder = make_builder(with_enum_subtype(schema))
         assert builder.build(trigger_8_event()).record["triggerSubType"] == "NewHRCRelationship"
-
-
-def _subtype_symbols(schema):
-    for field in schema["fields"]:
-        if field["name"] == "triggerSubType":
-            return set(field["type"]["symbols"])
-    raise AssertionError("triggerSubType not in schema")
