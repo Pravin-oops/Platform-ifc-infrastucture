@@ -73,3 +73,30 @@ def clean_ifc_env(monkeypatch) -> Iterator[None]:
         if key.startswith("IFC_") or key in {"APP_CONFIG_PATH", "IFC_HOME"}:
             monkeypatch.delenv(key, raising=False)
     yield
+
+
+#: The triggerSubType enum as the BSP registry defines it. The bundled schema
+#: publishes triggerSubType as a plain string, so tests that exercise the
+#: enum-handling code build this variant explicitly.
+REGISTERED_SUBTYPE_SYMBOLS = [
+    "NewHRCRelationship",
+    "AccountInactivity",
+    "MultipleTMSARs",
+    "UBOChanges",
+    "SigChanges",
+]
+
+
+def with_enum_subtype(schema, symbols=None):
+    """A copy of ``schema`` with triggerSubType typed as the registry's enum."""
+    import json
+
+    copied = json.loads(json.dumps(schema))
+    for field in copied["fields"]:
+        if field["name"] == "triggerSubType":
+            field["type"] = {
+                "type": "enum",
+                "name": "TriggerSubType",
+                "symbols": list(REGISTERED_SUBTYPE_SYMBOLS if symbols is None else symbols),
+            }
+    return copied
