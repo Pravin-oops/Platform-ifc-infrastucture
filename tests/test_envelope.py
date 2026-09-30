@@ -157,7 +157,10 @@ class TestEnvelope:
     def test_payload_is_a_json_string_not_an_object(self, builder):
         record = builder.build(trigger_8_event()).record
         assert isinstance(record["payload"], str)
-        assert "payload" in json.loads(record["payload"])
+        document = json.loads(record["payload"])
+        # The array itself, not a {"payload": [...]} wrapper inside the payload field.
+        assert isinstance(document, list)
+        assert {"fieldName", "fieldValue", "fieldEncryptionPolicy", "fieldDataType"} == set(document[0])
 
     def test_partition_key_is_the_csid_so_related_events_stay_ordered(self, builder):
         assert builder.build(trigger_8_event()).kafka_key == "9912345678"

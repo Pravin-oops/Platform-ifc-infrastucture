@@ -3,8 +3,12 @@
 BSP does not accept a domain object in the envelope's ``payload`` field. It
 accepts a JSON *string* holding a list of self-describing fields::
 
-    {"payload": [{"fieldName": ..., "fieldValue": ...,
-                  "fieldEncryptionPolicy": ..., "fieldDataType": ...}, ...]}
+    [{"fieldName": ..., "fieldValue": ...,
+      "fieldEncryptionPolicy": ..., "fieldDataType": ...}, ...]
+
+The string is the array itself. The envelope field is already called
+``payload``, so wrapping the array in a ``{"payload": ...}`` object would nest a
+payload inside the payload, which the Trigger Backbone consumer rejects.
 
 Every value travels as a string; ``fieldDataType`` tells the consumer how to
 read it. That is what lets one topic serve three business units without a schema
@@ -214,8 +218,9 @@ def build_fields(specs: Sequence[FieldSpec], attributes: Dict[str, Any]) -> List
     return fields
 
 
-def to_payload_document(fields: List[Dict[str, str]]) -> Dict[str, Any]:
-    return {"payload": fields}
+def to_payload_document(fields: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """The payload document: the field array itself, with no wrapping object."""
+    return fields
 
 
 def serialise(fields: List[Dict[str, str]]) -> str:

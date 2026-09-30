@@ -212,11 +212,12 @@ Records are written in **Confluent wire format**: `0x00` + 4-byte schema id + Av
 
 ### The payload field
 
-`payload` is a *JSON string*, not an object. Its content follows the BSP payload contract:
+`payload` is a *JSON string*, not an object. Its content follows the BSP payload contract and
+is the field array itself, with no `{"payload": ...}` wrapper around it:
 
 ```json
-{"payload": [{"fieldName": "...", "fieldValue": "...",
-              "fieldEncryptionPolicy": "...", "fieldDataType": "..."}]}
+[{"fieldName": "...", "fieldValue": "...",
+  "fieldEncryptionPolicy": "...", "fieldDataType": "..."}]
 ```
 
 Two details that bite:
