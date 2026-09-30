@@ -36,7 +36,6 @@ source:
     TRIGGER_8: ifc_trigger_db.bdp_corp_ifc_trigger_8
     TRIGGER_9: ifc_trigger_db.bdp_corp_ifc_trigger_9
     TRIGGER_21: ifc_trigger_db.bdp_corp_ifc_trigger_21
-  # Unset: every row of the month is published.
   athena:
     # CONFIRM: the workgroup the task role may use. Leave output_location unset
     # when the workgroup enforces its own result location and KMS key.
