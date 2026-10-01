@@ -419,8 +419,8 @@ top-level key is ignored.
 | `timestamp` | last instant of the **business month**, the month before the run date (UK time): a July 2026 run stamps every record `2026-06-30T23:59:59.999999999Z` |
 | `triggerPostingTimestamp` | when the record is posted, same RFC 3339 format (UTC, nanosecond precision) |
 | `sequenceNumber` | the record's position in the batch — 1, 2, 3… across all customers |
-| `triggerOriginatingSystem` | fixed: `TBD` |
-| `triggerOriginatingBU` | fixed: `UK-C and UK-ICB` |
+| `triggerOriginatingSystem` | fixed: `SNSVC0084378` |
+| `triggerOriginatingBU` | fixed: `UK-C` |
 | `idSystem` | fixed: `Corelation id` |
 | `idType` | fixed: `Customer` |
 | `idValue` | `counterparty_csid_sds`, as a string; a row without one is quarantined |
@@ -443,7 +443,7 @@ and the message it produces,
 
 ```
 {system}_{triggerType}_{triggerSubType}_{timestamp}_{sequenceNumber}
-TBD_KYCRefresh_NewHRCRelationship_2026-06-30T23:59:59.999999999Z_1
+SNSVC0084378_KYCRefresh_NewHRCRelationship_2026-06-30T23:59:59.999999999Z_1
 ```
 
 `timestamp` is the envelope's business-month stamp, the same for every record in a run, so the
@@ -517,10 +517,10 @@ python scripts/main.py validate --input samples/trigger_events.jsonl --show-payl
 ```
 
 ```
-OK          TBD-KYCRefresh-TRIGGER_8-2026-06-fca2cb7612657fc6  seq=1
-OK          TBD-KYCRefresh-TRIGGER_8-2026-06-5350ca3164deeae4  seq=2
-OK          TBD-KYCRefresh-TRIGGER_9-2026-06-4327d827f4ee2785  seq=3
-OK          TBD-KYCRefresh-TRIGGER_21-2026-06-ce5cde59d6253515 seq=4
+OK          SNSVC0084378_KYCRefresh_NewHRCRelationship_2026-06-30T23:59:59.999999999Z_1  seq=1
+OK          SNSVC0084378_KYCRefresh_NewHRCRelationship_2026-06-30T23:59:59.999999999Z_2  seq=2
+OK          SNSVC0084378_KYCRefresh_AccountInactivity_2026-06-30T23:59:59.999999999Z_3  seq=3
+OK          SNSVC0084378_KYCRefresh_MultipleTMSARs_2026-06-30T23:59:59.999999999Z_4  seq=4
 
 4 valid, 0 rejected
 ```

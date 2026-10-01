@@ -132,8 +132,8 @@ class TestTriggerIdUniqueness:
         records = [b.build(an_event(c)).record for c in (9912345678, 9912345679)]
 
         assert [r["triggerID"] for r in records] == [
-            "TBD_KYCRefresh_NewHRCRelationship_2026-08-31T23:59:59.999999999Z_1",
-            "TBD_KYCRefresh_NewHRCRelationship_2026-08-31T23:59:59.999999999Z_2",
+            "SNSVC0084378_KYCRefresh_NewHRCRelationship_2026-08-31T23:59:59.999999999Z_1",
+            "SNSVC0084378_KYCRefresh_NewHRCRelationship_2026-08-31T23:59:59.999999999Z_2",
         ]
 
     def test_the_first_occurrence_keeps_the_identity_it_always_had(self, builder):

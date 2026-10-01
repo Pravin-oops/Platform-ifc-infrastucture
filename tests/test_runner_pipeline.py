@@ -47,7 +47,7 @@ class FakeMessage:
 
 #: The trigger ID, and so the message key, of the first record of a June 2026
 #: Trigger 8 batch.
-FIRST_TRIGGER_ID = "TBD_KYCRefresh_NewHRCRelationship_2026-06-30T23:59:59.999999999Z_1"
+FIRST_TRIGGER_ID = "SNSVC0084378_KYCRefresh_NewHRCRelationship_2026-06-30T23:59:59.999999999Z_1"
 
 
 class FakeProducer:

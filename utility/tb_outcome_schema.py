@@ -56,8 +56,8 @@ logger = logging.getLogger(__name__)
 # Envelope constants, per the payload specification on Confluence. An input
 # event's own triggerType is ignored so upstream data cannot change them.
 TRIGGER_TYPE = "KYCRefresh"
-ORIGINATING_SYSTEM = "TBD"
-ORIGINATING_BU = "UK-C and UK-ICB"
+ORIGINATING_SYSTEM = "SNSVC0084378"
+ORIGINATING_BU = "UK-C"
 ID_TYPE = "Customer"
 ID_SYSTEM = "Corelation id"
 

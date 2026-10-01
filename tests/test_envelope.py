@@ -82,11 +82,11 @@ class TestEnvelope:
         built = builder.build(trigger_8_event(triggerType="SOMETHING_ELSE"))
         record = built.record
         assert record["triggerType"] == "KYCRefresh"
-        assert record["triggerOriginatingSystem"] == "TBD"
-        assert record["triggerOriginatingBU"] == "UK-C and UK-ICB"
+        assert record["triggerOriginatingSystem"] == "SNSVC0084378"
+        assert record["triggerOriginatingBU"] == "UK-C"
         assert record["idType"] == "Customer"
         assert record["idSystem"] == "Corelation id"
-        assert built.trigger_id.startswith("TBD_KYCRefresh_NewHRCRelationship_")
+        assert built.trigger_id.startswith("SNSVC0084378_KYCRefresh_NewHRCRelationship_")
 
     def test_only_client_relationship_owner_name_carries_an_encryption_policy(self, builder):
         fields = builder.build(trigger_8_event()).payload_fields
@@ -126,7 +126,7 @@ class TestEnvelope:
         event = trigger_8_event(
             attributes=trigger_8_row(client_relationship_owner_business_unit=business_unit)
         )
-        assert builder.build(event).record["triggerOriginatingBU"] == "UK-C and UK-ICB"
+        assert builder.build(event).record["triggerOriginatingBU"] == "UK-C"
 
     def test_timestamp_is_the_last_instant_of_the_business_month(self, builder):
         record = builder.build(trigger_8_event()).record
@@ -172,7 +172,7 @@ class TestEnvelope:
         assert record["idValue"] == "9912345678"
         assert record["idType"] == "Customer"
         assert record["timestamp"] == "2026-06-30T23:59:59.999999999Z"
-        assert record["triggerOriginatingBU"] == "UK-C and UK-ICB"
+        assert record["triggerOriginatingBU"] == "UK-C"
 
 
 class TestBusinessMonth:
@@ -221,7 +221,7 @@ class TestIdentity:
     def test_the_trigger_id_carries_the_envelope_timestamp_and_sequence(self, builder):
         record = builder.build(trigger_8_event()).record
         assert record["triggerID"] == (
-            f"TBD_KYCRefresh_NewHRCRelationship_{record['timestamp']}_{record['sequenceNumber']}"
+            f"SNSVC0084378_KYCRefresh_NewHRCRelationship_{record['timestamp']}_{record['sequenceNumber']}"
         )
 
     def test_sub_events_for_one_counterparty_get_distinct_ids(self, builder):
