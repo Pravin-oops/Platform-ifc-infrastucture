@@ -133,8 +133,13 @@ class Publisher:
 
                 self._metrics.incr("MessagesFailed")
                 logger.error(
-                    "Delivery failed",
+                    "Message NOT published: topic=%s trigger_id=%s scenario=%s error=%s",
+                    self._topic,
+                    trigger_id,
+                    key_name,
+                    err,
                     extra={
+                        "topic": self._topic,
                         "kafka_key": kafka_key,
                         "trigger_id": trigger_id,
                         **classification.to_dict(),
@@ -155,11 +160,30 @@ class Publisher:
 
             self.stats.acked[trigger_id] = (partition, offset)
 
+            latency = None
             sent_at = self._sent_at.pop(trigger_id, None)
             if sent_at is not None:
                 latency = (time.perf_counter() - sent_at) * 1000.0
                 self.stats.latency_ms_total += latency
                 self.stats.latency_ms_max = max(self.stats.latency_ms_max, latency)
+
+        # Logged on the broker's acknowledgement, not on produce(): only an ack
+        # means the record is on the topic.
+        logger.info(
+            "Message published: topic=%s partition=%s offset=%s trigger_id=%s",
+            self._topic,
+            partition,
+            offset,
+            trigger_id,
+            extra={
+                "topic": self._topic,
+                "partition": partition,
+                "offset": offset,
+                "trigger_id": trigger_id,
+                "kafka_key": kafka_key,
+                "ack_latency_ms": round(latency, 1) if latency is not None else None,
+            },
+        )
 
     # -- producing ---------------------------------------------------------
 

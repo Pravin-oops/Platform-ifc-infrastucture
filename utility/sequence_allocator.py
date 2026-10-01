@@ -1,23 +1,21 @@
-"""Per-customer occurrence numbers for the published envelope.
+"""Sequence numbers for the published envelope.
 
-``sequenceNumber`` counts how many times a customer has appeared in the batch
-being published: the first event for a CSID is 1, a second event for the same
-CSID is 2, and so on. It is what separates multiple events from one source, so
-the identity of the second event differs from the first.
+``sequenceNumber`` is the record's position in the batch being published:
+1, 2, 3... across every customer, the way the Trigger Backbone's reference
+producer numbers its batch. It is also the last segment of the trigger ID, so
+it must never repeat within a run - two records with one number would share a
+trigger ID and a Kafka key.
 
-Numbering is per CSID rather than global, so the number is readable on its own -
-"this is the second event for this customer this month" - instead of being a
-position in the file that says nothing about the customer.
+The allocator also counts each customer's occurrences. That count is not
+published; it goes into the business key, which is what tells two events for
+the same customer apart.
 
-It is allocated in process, for the life of the run. That is all the contract
-needs: one monthly batch is one file read by one run. De-duplication is the
-consuming team's, so nothing here has to survive a restart - a re-run of the
-same file numbers the same events the same way, because the file is read in
-order.
+It is allocated in process, for the life of the run. One monthly batch is one
+file read by one run, and the file is read in order, so a re-run of the same
+file numbers the same events the same way.
 
 Numbers wrap rather than overflow: ``sequenceNumber`` is an Avro ``int``, so a
-value past ``MAX_SEQUENCE`` would fail encoding rather than merely look odd. A
-customer would need more than two billion events in one batch to reach it.
+value past ``MAX_SEQUENCE`` would fail encoding rather than merely look odd.
 """
 
 from __future__ import annotations
@@ -29,26 +27,28 @@ from utility.tb_outcome_schema import MAX_SEQUENCE
 
 
 class SequenceAllocator:
-    """Counts occurrences of each CSID within one run.
+    """Numbers the batch, and counts occurrences of each CSID within it.
 
-    Every call advances that customer's count, because every call is a distinct
-    event: two events for one customer must not be handed the same number, which
-    is the whole reason the field is populated. Thread-safe, because the publish
-    loop and its delivery callbacks run on different threads.
+    Thread-safe, because the publish loop and its delivery callbacks run on
+    different threads.
     """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
+        self._position = 0
         self._seen: Dict[str, int] = {}
 
     def allocate(self, csid: str) -> int:
-        """The next occurrence number for this customer, starting at 1."""
+        """The next sequence number in the batch, starting at 1.
+
+        Also advances this customer's occurrence count.
+        """
         with self._lock:
-            count = self._seen.get(csid, 0) + 1
-            if count > MAX_SEQUENCE:
-                count = 1
-            self._seen[csid] = count
-            return count
+            self._position += 1
+            if self._position > MAX_SEQUENCE:
+                self._position = 1
+            self._seen[csid] = self._seen.get(csid, 0) + 1
+            return self._position
 
     def occurrences(self, csid: str) -> int:
         """How many times this customer has been numbered so far."""

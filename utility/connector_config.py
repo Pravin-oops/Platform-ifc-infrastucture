@@ -62,9 +62,9 @@ def expand_date_tokens(template: str, run_date: Optional[date] = None) -> str:
         return template
 
     if run_date is None:
-        from utility.run_gate import today
+        from utility.run_gate import execution_date
 
-        run_date = today()
+        run_date = execution_date()
 
     resolved = template
     for token, render in _DATE_TOKENS.items():
@@ -101,11 +101,27 @@ class RunSettings(BaseModel):
     #: Bypass the weekend and already-delivered gates. Operator decision for a
     #: re-delivery, never a scheduled value - see ``run_gate``.
     force: bool = False
+    #: Reprocess a past month instead of the current one: ``YYYY-MM`` (or the
+    #: folder's ``MONTH_YYYY``), normally ``IFC_RUN__MONTH`` on a one-off RunTask.
+    #: The run then reads that month's source and recon folders, stamps the
+    #: month before it as the business month, and records the outcome against
+    #: it - exactly as the run that month would have. Unset, the month is the
+    #: current one. A month already delivered still needs ``force``.
+    month: Optional[str] = None
 
     @field_validator("trigger", mode="before")
     @classmethod
     def _canonical_trigger(cls, v: Any) -> Optional[str]:
         return canonical_trigger(v)
+
+    @field_validator("month", mode="before")
+    @classmethod
+    def _month(cls, v: Any) -> Optional[str]:
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return None
+        from utility.run_gate import parse_month
+
+        return parse_month(v).strftime("%Y-%m")
 
 
 class RunMarkerSettings(BaseModel):
@@ -284,6 +300,10 @@ class SchemaRegistrySettings(BaseModel):
     #: Local .avsc used to serialise. Compared against the registered subject at
     #: preflight so producer/registry drift fails before any publish happens.
     schema_path: str = "utility/schema.json"
+    #: DEV only: the registry id to frame records with, since DEV does not look
+    #: it up. Consumers deserialise with Confluent's KafkaAvroDeserializer, which
+    #: needs the magic byte and id on every record, DEV or not.
+    schema_id: Optional[int] = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def _require_url_when_secure(self) -> "SchemaRegistrySettings":
@@ -531,4 +551,11 @@ def load_settings(config_path: str, *, reader=None) -> ConnectorSettings:
     if not isinstance(document, dict):
         raise ValueError(f"Config at {config_path} is not a YAML mapping")
 
-    return ConnectorSettings.model_validate(_deep_merge(document, _env_overlay()))
+    settings = ConnectorSettings.model_validate(_deep_merge(document, _env_overlay()))
+
+    # The month is read deep inside path expansion and the envelope builder,
+    # which are not handed the settings, so it is pinned for the process here.
+    from utility.run_gate import set_execution_month
+
+    set_execution_month(settings.run.month)
+    return settings

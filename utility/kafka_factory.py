@@ -9,7 +9,7 @@ only failures left are genuine runtime ones.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
 from utility.auth_helper import BSPClient, BSPTokenProvider, TokenProvider
@@ -70,9 +70,12 @@ class KafkaStack:
     serializer: AvroSerializer
     size_guard: SizeGuard
     token_provider: TokenProvider
-    schema_id: Optional[int]
+    schema_id: int
     preflight: Dict[str, Any]
     producer: Any
+    #: Where the schema id came from: the registry subject and version in SECURE
+    #: mode, or ``{"mode": "DEV", ...}`` when it is pinned in config.
+    schema_context: Dict[str, Any] = field(default_factory=dict)
 
 
 class KafkaStackFactory:
@@ -165,16 +168,27 @@ class KafkaStackFactory:
                 self._report, registry, label="schema_registry", timeout=timeout, require_all=True
             )
 
-    def _resolve_schema(self, tokens: TokenProvider) -> tuple[Dict[str, Any], Optional[int], Dict[str, Any]]:
+    def _resolve_schema(self, tokens: TokenProvider) -> tuple[Dict[str, Any], int, Dict[str, Any]]:
         settings = self._settings
         local_schema = load_schema_document(settings.schema_registry.schema_path)
 
         if settings.schema_registry.mode == "DEV":
+            schema_id = settings.schema_registry.schema_id
+            if schema_id is None:
+                # Unframed Avro is undecodable by KafkaAvroDeserializer, so refuse
+                # to start rather than publish records no consumer can read.
+                raise PreflightError(
+                    "schema_registry.mode is DEV but schema_registry.schema_id is not set; "
+                    "records must carry the Confluent wire-format header",
+                    catalog.SCHEMA_VALIDATION_FAILURE,
+                    context={"mode": "DEV"},
+                )
             logger.warning(
-                "Schema Registry mode is DEV: records are written unframed, without a schema id. "
-                "A BSP consumer expecting the Confluent wire format cannot decode them."
+                "Schema Registry mode is DEV: framing records with the configured schema id %s "
+                "without checking the local schema against the registry",
+                schema_id,
             )
-            return local_schema, None, {"mode": "DEV"}
+            return local_schema, schema_id, {"mode": "DEV", "schema_id": schema_id}
 
         client = SchemaRegistryClient(
             settings.schema_registry.url or "",
@@ -223,8 +237,11 @@ class KafkaStackFactory:
             return dict(context)
 
         pf.check_schema_registry(self._report, resolve=resolve)
+        # A failed lookup is recorded, not raised; raise it here so a missing
+        # schema id can never reach the serializer.
+        self._report.raise_if_failed()
 
-        return local_schema, context.get("schema_id"), context
+        return local_schema, context["schema_id"], context
 
     def _metadata_checks(self, producer: Any) -> None:
         timeout = float(self._settings.resilience.preflight_timeout_seconds)
@@ -279,7 +296,7 @@ class KafkaStackFactory:
         else:
             tokens = _NoTokenProvider()
 
-        local_schema, schema_id, _ = self._resolve_schema(tokens)
+        local_schema, schema_id, schema_context = self._resolve_schema(tokens)
         self._report.raise_if_failed()
 
         producer = self._producer_factory(config)
@@ -303,4 +320,5 @@ class KafkaStackFactory:
             schema_id=schema_id,
             preflight=self._report.to_dict(),
             producer=producer,
+            schema_context=schema_context,
         )

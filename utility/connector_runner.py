@@ -128,6 +128,11 @@ class ConnectorRunner:
         return self._run_id
 
     @property
+    def schema_id(self) -> Optional[int]:
+        """The id records were framed with; None if the run stopped before startup finished."""
+        return self._stack.schema_id if self._stack else None
+
+    @property
     def health(self) -> HealthState:
         return self._health
 
@@ -174,9 +179,43 @@ class ConnectorRunner:
         self._health.mark_startup_complete(
             {"schema_id": self._stack.schema_id, "topic": settings.kafka.topic}
         )
+        self._log_kafka_target()
+
+    def _log_kafka_target(self) -> None:
+        """One line that says where this run publishes and how records are framed."""
+        assert self._stack is not None
+        settings = self._settings
+        context = self._stack.schema_context
+        mode = settings.schema_registry.mode
+
+        if mode == "DEV":
+            schema_source = "pinned in config (not checked against the registry)"
+        else:
+            schema_source = (
+                f"registry subject {context.get('subject')} version {context.get('schema_version')}"
+            )
+        connection = "BSP" if settings.kafka.bsp_config_path else "direct (no BSP, local only)"
+        header = self._stack.serializer.header.hex(" ")
+
         logger.info(
-            "Connector ready",
-            extra={"schema_id": self._stack.schema_id, "run_mode": settings.run.mode},
+            "Kafka target ready: topic=%s schema_registry_mode=%s schema_id=%s "
+            "schema_source=%s wire_format_header=%s connection=%s run_mode=%s",
+            settings.kafka.topic,
+            mode,
+            self._stack.schema_id,
+            schema_source,
+            header,
+            connection,
+            settings.run.mode,
+            extra={
+                "topic": settings.kafka.topic,
+                "schema_registry_mode": mode,
+                "schema_id": self._stack.schema_id,
+                "schema_source": schema_source,
+                "wire_format_header": header,
+                "kafka_connection": connection,
+                "run_mode": settings.run.mode,
+            },
         )
 
     # -- per-record handling -----------------------------------------------
@@ -244,13 +283,8 @@ class ConnectorRunner:
             key=built.kafka_key,
             value=payload,
             trigger_id=built.trigger_id,
-            headers=[
-                ("triggerId", built.trigger_id.encode("utf-8")),
-                # Header mirrors the envelope field, so a consumer routing on
-                # headers and one decoding the record agree.
-                ("triggerSubType", built.definition.published_sub_type.encode("utf-8")),
-                ("runId", self._run_id.encode("utf-8")),
-            ],
+            # No Kafka headers: the Trigger Backbone reads everything from the
+            # envelope, and its reference records carry an empty header list.
         )
         counters.published += 1
 
@@ -423,6 +457,19 @@ class ConnectorRunner:
 
         reconciliation = reconcile(counters)
 
+        logger.info(
+            "Kafka publish summary: topic=%s schema_id=%s published=%d acked=%d "
+            "delivery_failed=%d unflushed=%d quarantined=%d",
+            settings.kafka.topic,
+            self._stack.schema_id,
+            counters.published,
+            counters.acked,
+            counters.delivery_failed,
+            counters.unflushed,
+            counters.quarantined,
+            extra={"topic": settings.kafka.topic, "schema_id": self._stack.schema_id, **counters.to_dict()},
+        )
+
         outcome, exit_code, classification = self._classify_outcome(
             outcome,
             exit_code,
@@ -568,7 +615,11 @@ class ConnectorRunner:
         self._metrics.emit({"run_id": self._run_id, "outcome": outcome})
 
         logger.info(
-            "Run finished",
+            "Run finished: outcome=%s exit_code=%s acked=%d quarantined=%d",
+            outcome,
+            exit_code,
+            counters.acked,
+            counters.quarantined,
             extra={"outcome": outcome, "exit_code": exit_code, **counters.to_dict()},
         )
 

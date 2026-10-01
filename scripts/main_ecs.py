@@ -13,6 +13,8 @@ Environment (all optional except the config path):
 
     APP_CONFIG_PATH   connector config YAML, local path or s3://   (required)
     IFC_RUN__MODE     batch | service - overrides the config file
+    IFC_RUN__MONTH    YYYY-MM (or AUGUST_2026) - reprocess that month instead of
+                      the current one; add IFC_RUN__FORCE=true if it was delivered
     IFC_LOG_LEVEL     overrides app.log_level
     IFC_*             any other setting, e.g. IFC_KAFKA__TOPIC
 
@@ -58,7 +60,7 @@ from utility.tb_outcome_schema import now_timestamp
 from utility.trigger_definitions import resolve as resolve_trigger
 from utility import recon_gate
 from utility import run_gate
-from utility.run_gate import RunMarker, month_of, should_run, today
+from utility.run_gate import RunMarker, execution_date, month_of, should_run
 from utility.trigger_batch_notifier import (
     TriggerBatchNotification,
     TriggerBatchNotifier,
@@ -168,7 +170,10 @@ def _gate(settings, event: Dict[str, Any]) -> Tuple[Optional[Gate], Optional[str
 
     gate = Gate(_trigger_for(settings), RunMarker(settings.run_marker.path))
     outcome = should_run(
-        gate.trigger, gate.marker, force=event.get("force") or settings.run.force
+        gate.trigger,
+        gate.marker,
+        month=month_of(execution_date()),
+        force=event.get("force") or settings.run.force,
     )
     logger.info("Run gate: %s - %s", "PROCEED" if outcome.proceed else "SKIP", outcome.reason)
 
@@ -187,7 +192,7 @@ def _record(gate: Optional[Gate], status: str, *, records: int = 0, reason: str 
     """
     if gate is None:
         return
-    month = month_of(today())
+    month = month_of(execution_date())
     try:
         gate.marker.record(gate.trigger, month, status=status, records=records, reason=reason)
         logger.info(
@@ -227,7 +232,7 @@ def _recon_gate(settings, config_path: str, task: Dict[str, Optional[str]],
         )
         return None
 
-    month = month_of(today())
+    month = month_of(execution_date())
     try:
         decision = recon_gate.evaluate(settings.recon, execution_month=month)
     except Exception as exc:
@@ -321,12 +326,12 @@ def _no_data_month(settings, decision, month: str, config_path: str,
             "RECON_GATE", decision.outcome, catalog.EXIT_OK, reason=decision.reason,
             gate={"execution_month": month, **decision.to_dict()},
         )
-    # Best-effort, like the publishing path's: a broken SNS topic must not turn
-    # a delivered month into a failed task.
     try:
-        _publish_zero_batch_notification(settings, summary.get("run_id") or new_run_id())
-    except Exception:
-        logger.exception("Trigger batch completion notification could not be sent")
+        summary["sns_batch_notification"] = _publish_zero_batch_notification(
+            settings, summary.get("run_id") or new_run_id()
+        )
+    except Exception as exc:
+        summary["sns_batch_notification"] = _sns_failed(exc)
     return summary
 
 
@@ -367,13 +372,35 @@ def ecs_handler(event: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     task = ecs_task_metadata()
     invocation = Invocation(settings)
 
+    if settings.run.month:
+        logger.warning(
+            "Reprocessing %s: run.month overrides the current month for the source "
+            "folder, the business month and the run marker",
+            settings.run.month,
+            extra={"run_month": settings.run.month, "force": settings.run.force},
+        )
+
+    registry = settings.schema_registry
     logger.info(
-        "Connector starting on ECS",
+        "Connector starting on ECS: trigger=%s run_mode=%s topic=%s schema_registry_mode=%s "
+        "schema_id=%s kafka_connection=%s environment=%s",
+        settings.run.trigger,
+        settings.run.mode,
+        settings.kafka.topic,
+        registry.mode,
+        # SECURE resolves the id from the registry at startup; the
+        # "Kafka target ready" line reports what it resolved to.
+        registry.schema_id if registry.mode == "DEV" else "from registry",
+        "BSP" if settings.kafka.bsp_config_path else "direct",
+        settings.app.environment,
         extra={
             "config_path": config_path,
-            "mode": settings.run.mode,
+            "run_mode": settings.run.mode,
             "topic": settings.kafka.topic,
             "trigger": settings.run.trigger,
+            "schema_registry_mode": registry.mode,
+            "schema_registry_url": registry.url,
+            "configured_schema_id": registry.schema_id,
             # Both: the template says what was configured, the resolved folder
             # says which month this invocation actually went to.
             "source_path": settings.source.path,
@@ -456,18 +483,26 @@ def ecs_handler(event: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         runner_started = True
         exit_code = runner.run()
 
-        # Best-effort, like the failure alert: a broken SNS topic must not turn
-        # a successful batch into a failed task.
         try:
-            _publish_batch_notification(settings, runner)
-        except Exception:
-            logger.exception("Trigger batch completion notification could not be sent")
+            sns_status = _publish_batch_notification(settings, runner)
+        except Exception as exc:
+            sns_status = _sns_failed(exc)
 
+        last = runner.last_result
         summary = {
             "run_id": runner.run_id,
             "exit_code": exit_code,
+            "outcome": last.outcome if last else "FAILED",
             "mode": settings.run.mode,
             "topic": settings.kafka.topic,
+            "schema_registry_mode": settings.schema_registry.mode,
+            # getattr: reporting must never be what fails a delivered run.
+            "schema_id": getattr(runner, "schema_id", None),
+            "published": last.counters.published if last else 0,
+            "acked": last.counters.acked if last else 0,
+            "delivery_failed": last.counters.delivery_failed if last else 0,
+            "quarantined": last.counters.quarantined if last else 0,
+            "sns_batch_notification": sns_status,
             "config_path": config_path,
             "environment": settings.app.environment,
             # Which month's folder, and which extract inside it. The stopped-task
@@ -482,7 +517,7 @@ def ecs_handler(event: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         # FAILURE, so the next date in the window retries and the file says
         # what happened rather than staying silent.
         delivered = runner.last_result.counters.acked if runner.last_result else 0
-        month = month_of(today())
+        month = month_of(execution_date())
         if exit_code == catalog.EXIT_OK and delivered:
             _record(gate, run_gate.STATUS_SUCCESS, records=delivered)
             summary["month_delivered"] = month
@@ -529,12 +564,14 @@ def _resolved_source(settings) -> Optional[str]:
 def _publish_batch_notification(
     settings,
     runner,
-) -> None:
+) -> Dict[str, Any]:
     """
     Publish successful Trigger Backbone batch notification.
 
     TBB starts downstream processing from this event,
     therefore publish only after a fully successful batch.
+
+    Returns what happened (SENT or SKIPPED) for the run summary.
     """
 
     result = runner.last_result
@@ -542,7 +579,7 @@ def _publish_batch_notification(
     skip_reason = _batch_notification_skip_reason(settings, result)
     if skip_reason:
         _log_batch_skip(settings, skip_reason, runner.run_id)
-        return
+        return {"status": "SKIPPED", "reason": skip_reason}
 
     notification = TriggerBatchNotification(
         Trigger_Originating_BU=
@@ -573,19 +610,35 @@ def _publish_batch_notification(
     )
 
     # The notifier logs the topic, full message and MessageId (or the error).
-    TriggerBatchNotifier(
+    response = TriggerBatchNotifier(
         sns_topic_arn=
             settings.notifications.batch_sns_topic_arn
     ).publish(notification)
+    return _sent_status(settings, response)
 
 
-def _publish_zero_batch_notification(settings, run_id: str) -> None:
+def _sent_status(settings, response: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "status": "SENT",
+        "topic_arn": settings.notifications.batch_sns_topic_arn,
+        "message_id": response.get("MessageId"),
+    }
+
+
+def _sns_failed(exc: Exception) -> Dict[str, Any]:
+    # Best-effort: a broken SNS topic must not turn a delivered batch into a
+    # failed task, but the summary still has to say the event never left.
+    logger.exception("Trigger batch completion notification could not be sent")
+    return {"status": "FAILED", "error": str(exc)}
+
+
+def _publish_zero_batch_notification(settings, run_id: str) -> Dict[str, Any]:
     """Announce a genuine empty month to TBB: the same body as a publishing
     run, with zero messages and the current time as the batch window."""
     skip_reason = _batch_config_skip_reason(settings)
     if skip_reason:
         _log_batch_skip(settings, skip_reason, run_id)
-        return
+        return {"status": "SKIPPED", "reason": skip_reason}
 
     now = now_timestamp()
     notification = TriggerBatchNotification(
@@ -598,9 +651,10 @@ def _publish_zero_batch_notification(settings, run_id: str) -> None:
         Event_Timestamp=datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
         Correlation_Id=run_id,
     )
-    TriggerBatchNotifier(
+    response = TriggerBatchNotifier(
         sns_topic_arn=settings.notifications.batch_sns_topic_arn
     ).publish(notification)
+    return _sent_status(settings, response)
 
 
 def _log_batch_skip(settings, skip_reason: str, run_id: Optional[str]) -> None:
@@ -690,8 +744,29 @@ def main(argv: Optional[List[str]] = None) -> int:
         logger.exception("ECS entry point failed before the run could start")
         return catalog.CONTAINER_FAILURE.exit_code
 
-    logger.info("Run summary: %s", json.dumps(result, default=str))
+    _log_run_summary(result)
     return int(result.get("exit_code", catalog.CONTAINER_FAILURE.exit_code))
+
+
+def _log_run_summary(result: Dict[str, Any]) -> None:
+    """The last line of every run: the answers first, the full summary after."""
+    sns = result.get("sns_batch_notification") or {}
+    headline = {
+        "outcome": result.get("outcome") or ("FAILED" if result.get("exit_code") else None),
+        "exit_code": result.get("exit_code"),
+        "topic": result.get("topic"),
+        "schema_registry_mode": result.get("schema_registry_mode"),
+        "schema_id": result.get("schema_id"),
+        "acked": result.get("acked"),
+        "sns_batch_notification": sns.get("status"),
+        "sns_message_id": sns.get("message_id"),
+    }
+    logger.info(
+        "Run summary: %s | %s",
+        " ".join(f"{k}={v}" for k, v in headline.items() if v is not None),
+        json.dumps(result, default=str),
+        extra={"summary": result},
+    )
 
 
 if __name__ == "__main__":

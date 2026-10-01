@@ -54,7 +54,7 @@ function, and each is a deliberate choice rather than an incidental one.
 |---|---|---|
 | **The batch is one large file** | Objects are streamed and the producer queue is capped; `BufferError` applies back-pressure instead of growing the heap | Loading a month's records eagerly is how a container gets OOM-killed (exit 137) |
 | **ECS stops tasks on every deployment** | `SIGTERM` stops intake, flushes what is in flight within the grace window, exits 75 | Without a drain, in-flight messages are lost on a routine scale-in |
-| **A record's identity has to be reproducible** | `triggerID` is a SHA-256 of the business key, not a timestamp and counter | A re-run publishing the same events under new IDs is a duplicate the consumer cannot recognise |
+| **A record's identity has to be reproducible** | `triggerID` is the business-month timestamp plus the record's position in the batch, not the wall clock | A re-run of the same file reproduces the same IDs, so the consumer can recognise a republished record |
 | **The task outlives its BAM token** | `exp` is tracked and the token refreshed at a margin | A month's batch must not fail halfway through on an expiry |
 | **The container is gone once it exits** | Classify, quarantine, reconcile, write the manifest, exit with a catalogue code | The evidence has to be written while the run is alive; afterwards there is only the stopped-task record |
 
@@ -121,7 +121,7 @@ ifc_trigger_connector/            # imports are ifc_trigger_connector.utility.*
 │   ├── trigger_source.py         # streaming Trigger BDP reader
 │   ├── recon_gate.py             # upstream reconciliation gate
 │   ├── run_gate.py               # weekend / already-delivered gate, run markers
-│   ├── sequence_allocator.py     # per-customer occurrence numbers
+│   ├── sequence_allocator.py     # batch sequence numbers
 │   ├── audit_utility.py          # quarantine, run manifest, reconciliation
 │   ├── health_utility.py         # /health/live, /ready, /startup, /metrics
 │   ├── resilience_utility.py     # backoff, circuit breaker, SIGTERM drain
@@ -214,15 +214,20 @@ refuses to run on a blocking difference — a field the registry does not know a
 registry field we do not populate, or a type change. Additive optional fields are logged and
 allowed.
 
-Records are written in **Confluent wire format**: `0x00` + 4-byte schema id + Avro body.
+Records are written in **Confluent wire format**: `0x00` + 4-byte schema id + Avro body, in every
+mode. That is the format `io.confluent.kafka.serializers.KafkaAvroDeserializer` (the consumer's
+Flink job) and `confluent_kafka.schema_registry.avro.AvroSerializer` both use; the connector's
+own serializer writes the same bytes, but returns them before `produce()` so the size guard can
+see them. A record whose first byte is not `0x00` was written without the header.
 
 ### The payload field
 
-`payload` is a *JSON string*, not an object. Its content follows the BSP payload contract:
+`payload` is a *JSON string*, not an object. Its content follows the BSP payload contract and
+is the field array itself, with no `{"payload": ...}` wrapper around it:
 
 ```json
-{"payload": [{"fieldName": "...", "fieldValue": "...",
-              "fieldEncryptionPolicy": "...", "fieldDataType": "..."}]}
+[{"fieldName": "...", "fieldValue": "...",
+  "fieldEncryptionPolicy": "...", "fieldDataType": "..."}]
 ```
 
 Two details that bite:
@@ -247,21 +252,21 @@ Every trigger publishes the **same eight fields**, in this order:
 
 | # | `fieldName` | `fieldDataType` | Source key | Policy |
 |---|---|---|---|---|
-| 1 | `Date of Request` | `Date` | `date_of_request` | — |
-| 2 | `Counterparty Full Legal Entity Name` | `String` | `counterparty_full_legal_entity_name` | — |
-| 3 | `Counterparty ID` | `String` | `counterparty_csid_sds` | — |
-| 4 | `Client Relationship Owner Name` | `String` | `client_relationship_owner_name` | `DPASS_POLICY_NAME` |
-| 5 | `Client Relationship Owner BRID` | `String` | `client_relationship_owner_brid` | — |
-| 6 | `Client Relationship Owner Business Unit` | `String` | `client_relationship_owner_business_unit` | — |
-| 7 | `Client Relationship Owner Location` | `String` | `client_relationship_owner_location` | — |
-| 8 | `Region` | `String` | `region` | — |
+| 1 | `Date of Request` | `DATE` | `date_of_request` | — |
+| 2 | `Counterparty Full Legal Entity Name` | `STRING` | `counterparty_full_legal_entity_name` | — |
+| 3 | `Counterparty ID` | `STRING` | `counterparty_csid_sds` | — |
+| 4 | `Client Relationship Owner Name` | `STRING` | `client_relationship_owner_name` | `DPASS_POLICY_NAME` |
+| 5 | `Client Relationship Owner BRID` | `STRING` | `client_relationship_owner_brid` | — |
+| 6 | `Client Relationship Owner Business Unit` | `STRING` | `client_relationship_owner_business_unit` | — |
+| 7 | `Client Relationship Owner Location` | `STRING` | `client_relationship_owner_location` | — |
+| 8 | `Region` | `STRING` | `region` | — |
 
 `Date of Request` is the date the trigger file was generated. Source rows carry a full timestamp;
 `DataType.DATE` renders the date part only (`2026-06-10T02:15:04.221Z` → `2026-06-10`). Every other
 field is a string taken from the source row unchanged.
 
 `Counterparty ID` is the counterparty's CSID SDS value. It also travels as the envelope's
-`idValue` and the Kafka key.
+`idValue`.
 
 `DPASS_POLICY_NAME` goes on `Client Relationship Owner Name` and on **nothing else** — every other
 field ships with an empty `fieldEncryptionPolicy`.
@@ -350,6 +355,15 @@ at load, so a resident service crossing a month boundary moves to the new folder
 restart, and the startup log and run summary both carry the resolved folder alongside the
 template.
 
+**Reprocessing a past month.** Set `IFC_RUN__MONTH` (`run.month`) on a one-off RunTask to run as
+that month instead of the current one. It takes `2026-08` or the folder's own `AUGUST_2026`. An
+October run with `IFC_RUN__MONTH=2026-08` behaves exactly as the August run did: it reads
+`AUGUST_2026` (source and recon), stamps records `2026-07-31T23:59:59.999999999Z`, and records its
+outcome against `2026-08` in the run marker. The day-only tokens (`{DD}`, `{YYYYMMDD}`) render the
+1st. Two things stay on the real date: the weekend check, and the marker line's `run_date`. A
+month already marked `SUCCESS` is still skipped unless `IFC_RUN__FORCE=true` is set too, so the
+override alone cannot republish a delivered month by accident. Leave it unset on the schedule.
+
 **Only the newest extract in that folder is read.** TED rewrites the month's extract rather than
 appending, so an older file beside it is a superseded draft; reading them all would republish
 stale content under fresh trigger IDs. Files are ordered by the timestamp *parsed* out of the
@@ -399,17 +413,17 @@ top-level key is ignored.
 
 | Envelope field | Value |
 |---|---|
-| `triggerID` | deterministic — see below |
+| `triggerID` (and the Kafka key) | `{system}_{triggerType}_{triggerSubType}_{timestamp}_{sequenceNumber}` — see below |
 | `triggerType` | fixed: `KYCRefresh` (the event's own `triggerType` is ignored) |
 | `triggerSubType` | the published enum symbol for the trigger |
 | `timestamp` | last instant of the **business month**, the month before the run date (UK time): a July 2026 run stamps every record `2026-06-30T23:59:59.999999999Z` |
 | `triggerPostingTimestamp` | when the record is posted, same RFC 3339 format (UTC, nanosecond precision) |
-| `sequenceNumber` | the customer's Nth event in this batch — 1, then 2 for a repeat CSID |
-| `triggerOriginatingSystem` | fixed: `TBD` |
-| `triggerOriginatingBU` | fixed: `UK-C and UK-ICB` |
+| `sequenceNumber` | the record's position in the batch — 1, 2, 3… across all customers |
+| `triggerOriginatingSystem` | fixed: `SNSVC0084378` |
+| `triggerOriginatingBU` | fixed: `UK-C` |
 | `idSystem` | fixed: `Corelation id` |
 | `idType` | fixed: `Customer` |
-| `idValue` (and the Kafka key) | `counterparty_csid_sds`, as a string; a row without one is quarantined |
+| `idValue` | `counterparty_csid_sds`, as a string; a row without one is quarantined |
 | `upstreamTriggerID` | the event's `upstreamTriggerId`, usually null |
 | `payload` | the eight contract fields above |
 
@@ -425,49 +439,40 @@ and the message it produces,
 
 ## Identity, idempotency and ordering
 
-**Trigger ID** is deterministic:
+**Trigger ID** follows the Trigger Backbone's format:
 
 ```
-{system}-{triggerType}-{triggerSubType}-{businessMonth}-{sha256(businessKey)[:16]}
-TBD-KYCRefresh-NewHRCRelationship-2026-06-<16 hex digits>
+{system}_{triggerType}_{triggerSubType}_{timestamp}_{sequenceNumber}
+SNSVC0084378_KYCRefresh_NewHRCRelationship_2026-06-30T23:59:59.999999999Z_1
 ```
 
-The business key is canonical sorted-key JSON of system, trigger type, sub-type, business month,
-`idType` (`Customer`), the CSID, the **sub-event discriminator** the definition nominates —
-`business_date` for Triggers 8 and 9 — and, **from the second event for a customer onwards, the
-occurrence number**.
+`timestamp` is the envelope's business-month stamp, the same for every record in a run, so the
+**sequence number is what makes the ID unique**. `sequenceNumber` is the record's position in the
+batch — **1, 2, 3… across all customers**, the way the reference producer numbers its batch:
 
-Two events from one source for the same customer share the discriminator, so without the
-occurrence they hash to one trigger ID and are published under a single identity. The occurrence
-joins the key only from the second event, so a record for a customer that appears once hashes
-exactly as it did before the field existed — no ordinary record's identity moves.
+```
+csid=9912345678  seq=1  triggerID=…_2026-06-30T23:59:59.999999999Z_1
+csid=9912345678  seq=2  triggerID=…_2026-06-30T23:59:59.999999999Z_2
+csid=9912345679  seq=3  triggerID=…_2026-06-30T23:59:59.999999999Z_3
+```
 
-Consequences: re-running a month reproduces identical IDs, so the consuming team can recognise a
-republished record as the one it already has. **The connector does not de-duplicate** — it keeps
-no durable record of what it sent, and a re-run republishes the month in full.
+It is allocated in process for the life of the run: one monthly batch is one file read by one run,
+and the file is read in order, so a re-run of the same file reproduces the same numbers and IDs.
+A re-run of a *changed* file can shift them. **The connector does not de-duplicate** — it keeps no
+durable record of what it sent, and a re-run republishes the month in full.
 
 The business month comes from the **run date**, not the data, so the same rows processed in a
 different calendar month get a different month, timestamp and trigger ID. A late re-delivery of
 June has to run in July; there is no config override for the month yet.
 
-**Partition key is the CSID**, not the trigger ID, so all triggers for one counterparty land on
-one partition and a consumer sees them in order. The occurrence separates identities, not
-partitions: a customer's repeats stay on the same partition, in order.
+**The Kafka key is the trigger ID**, as in the Trigger Backbone's reference records. It is unique
+per record, so records spread across partitions and a counterparty's events are not guaranteed to
+stay in order relative to each other. Records carry **no Kafka headers**.
 
-`sequenceNumber` carries that occurrence — **1 for a customer's first event in the batch, 2 for a
-second, and so on**, counted per CSID rather than as a position in the file, so the number reads
-as "this customer's Nth event" on its own:
-
-```
-csid=9912345678  seq=1  triggerID=…-655c7c276f67ecae
-csid=9912345678  seq=2  triggerID=…-ead2c0790fd4d43d
-csid=9912345679  seq=1  triggerID=…-52910d11600a0540
-csid=9912345678  seq=3  triggerID=…-8ca0e3aa97185346
-```
-
-It is allocated in process for the life of the run: one monthly batch is one file read by one run,
-so a re-run of the same file numbers the same events the same way, because the file is read in
-order.
+Each built record still carries a **business key** — canonical sorted-key JSON of system, trigger
+type, sub-type, business month, `idType`, the CSID, the sub-event discriminator (`business_date`
+for Triggers 8 and 9) and, from a customer's second event onwards, that customer's occurrence
+number. It is not published and no longer feeds the trigger ID.
 
 Only **acknowledged** messages are counted as published. An unacknowledged message is left for the
 next run rather than silently dropped.
@@ -512,10 +517,10 @@ python scripts/main.py validate --input samples/trigger_events.jsonl --show-payl
 ```
 
 ```
-OK          TBD-KYCRefresh-TRIGGER_8-2026-06-fca2cb7612657fc6  seq=1
-OK          TBD-KYCRefresh-TRIGGER_8-2026-06-5350ca3164deeae4  seq=2
-OK          TBD-KYCRefresh-TRIGGER_9-2026-06-4327d827f4ee2785  seq=3
-OK          TBD-KYCRefresh-TRIGGER_21-2026-06-ce5cde59d6253515 seq=4
+OK          SNSVC0084378_KYCRefresh_NewHRCRelationship_2026-06-30T23:59:59.999999999Z_1  seq=1
+OK          SNSVC0084378_KYCRefresh_NewHRCRelationship_2026-06-30T23:59:59.999999999Z_2  seq=2
+OK          SNSVC0084378_KYCRefresh_AccountInactivity_2026-06-30T23:59:59.999999999Z_3  seq=3
+OK          SNSVC0084378_KYCRefresh_MultipleTMSARs_2026-06-30T23:59:59.999999999Z_4  seq=4
 
 4 valid, 0 rejected
 ```
@@ -564,8 +569,7 @@ neither holds a credential.
 
 Three properties of this path are deliberate, and worth knowing before changing it:
 
-- **Partition key is the customer id**, not the trigger ID, so a customer's triggers stay ordered
-  on one partition.
+- **The Kafka key is the trigger ID**, as the Trigger Backbone expects, and no headers are sent.
 - **Records are serialised before `produce()`**, not by a `SerializingProducer`, so the size guard
   sees the exact on-the-wire bytes.
 - **A blocking schema drift aborts the run**, because records are written with the *local* schema
@@ -576,9 +580,11 @@ Three properties of this path are deliberate, and worth knowing before changing 
 
 `utility/connector_config_local.yaml` omits `bsp_config_path` and connects straight to
 `localhost:9092`. There is no BAM authentication on that path, which is why the config validator
-refuses it with `schema_registry.mode: SECURE`. Records are written **unframed** (no schema id),
-so a BSP consumer expecting the Confluent wire format cannot decode them — use it to exercise
-the pipeline, not to prove connectivity.
+refuses it with `schema_registry.mode: SECURE`. DEV does not look the schema id up, so it must be
+pinned with `schema_registry.schema_id` (or `IFC_SCHEMA_REGISTRY__SCHEMA_ID`); the connector
+refuses to start without one. Records are still written in Confluent wire format, because the
+consumer's `KafkaAvroDeserializer` rejects anything else. DEV skips the drift check, so the
+pinned id must belong to a schema that matches the bundled `.avsc`.
 
 ```bash
 python scripts/main_local.py --config utility/connector_config_local.yaml

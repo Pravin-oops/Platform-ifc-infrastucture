@@ -45,6 +45,11 @@ class FakeMessage:
         return self._offset
 
 
+#: The trigger ID, and so the message key, of the first record of a June 2026
+#: Trigger 8 batch.
+FIRST_TRIGGER_ID = "SNSVC0084378_KYCRefresh_NewHRCRelationship_2026-06-30T23:59:59.999999999Z_1"
+
+
 class FakeProducer:
     """Delivers synchronously; ``fail_keys`` forces a delivery error."""
 
@@ -216,13 +221,11 @@ class TestHappyPath:
         assert result.reconciliation.balanced
         assert producer.produced[0]["topic"] == "test_ifc_topic"
 
-    def test_the_record_carries_traceability_headers(self, runner_factory):
+    def test_the_record_carries_no_headers(self, runner_factory):
         runner, producer = runner_factory([VALID_EVENT])
         runner.run_batch()
 
-        headers = dict(producer.produced[0]["headers"])
-        assert headers["triggerSubType"] == b"NewHRCRelationship"
-        assert headers["runId"].decode() == runner.run_id
+        assert not producer.produced[0]["headers"]
 
     def test_the_wire_format_is_magic_byte_plus_schema_id(self, runner_factory):
         runner, producer = runner_factory([VALID_EVENT])
@@ -231,6 +234,40 @@ class TestHappyPath:
         value = producer.produced[0]["value"]
         assert value[0] == 0
         assert int.from_bytes(value[1:5], "big") == 101
+
+
+class TestRunLogs:
+    """The lines an operator reads in the ECS console to answer 'did it publish?'."""
+
+    def messages(self, caplog, prefix):
+        return [r.getMessage() for r in caplog.records if r.getMessage().startswith(prefix)]
+
+    def test_each_acknowledged_message_is_logged_as_published(self, runner_factory, caplog):
+        caplog.set_level("INFO")
+        runner, _ = runner_factory([VALID_EVENT])
+        runner.run_batch()
+
+        [published] = self.messages(caplog, "Message published:")
+        assert "topic=test_ifc_topic" in published
+        assert f"trigger_id={FIRST_TRIGGER_ID}" in published
+        assert "offset=1" in published
+
+    def test_a_failed_delivery_is_logged_as_not_published(self, runner_factory, caplog):
+        caplog.set_level("INFO")
+        runner, _ = runner_factory([VALID_EVENT], fail_keys={FIRST_TRIGGER_ID})
+        runner.run_batch()
+
+        assert self.messages(caplog, "Message published:") == []
+        [failed] = self.messages(caplog, "Message NOT published:")
+        assert f"trigger_id={FIRST_TRIGGER_ID}" in failed
+
+    def test_the_batch_ends_with_a_publish_summary(self, runner_factory, caplog):
+        caplog.set_level("INFO")
+        runner, _ = runner_factory([VALID_EVENT])
+        runner.run_batch()
+
+        [summary] = self.messages(caplog, "Kafka publish summary:")
+        assert "topic=test_ifc_topic schema_id=101 published=1 acked=1 delivery_failed=0" in summary
 
 
 class TestQuarantine:
@@ -307,7 +344,7 @@ class TestSequenceNumbers:
 
 class TestFailureOutcomes:
     def test_a_delivery_failure_fails_reconciliation(self, runner_factory):
-        runner, _ = runner_factory([VALID_EVENT], fail_keys={"9912345678"})
+        runner, _ = runner_factory([VALID_EVENT], fail_keys={FIRST_TRIGGER_ID})
         result = runner.run_batch()
 
         assert not result.reconciliation.balanced
@@ -315,7 +352,7 @@ class TestFailureOutcomes:
         assert result.exit_code == catalog.RECONCILIATION_FAILURE.exit_code
 
     def test_the_dominant_failure_scenario_is_reported(self, runner_factory):
-        runner, _ = runner_factory([VALID_EVENT], fail_keys={"9912345678"})
+        runner, _ = runner_factory([VALID_EVENT], fail_keys={FIRST_TRIGGER_ID})
         result = runner.run_batch()
         assert result.delivery["by_scenario"] == {"BROKER_UNAVAILABLE": 1}
 

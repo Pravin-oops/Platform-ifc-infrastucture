@@ -8,7 +8,7 @@ from datetime import date
 
 import pytest
 
-from utility import tb_outcome_schema
+from utility import run_gate
 from utility import trigger_definitions as definitions
 from utility.error_classifier import PreflightError, RecordRejected
 from utility.connector_utility import load_schema_document
@@ -82,11 +82,11 @@ class TestEnvelope:
         built = builder.build(trigger_8_event(triggerType="SOMETHING_ELSE"))
         record = built.record
         assert record["triggerType"] == "KYCRefresh"
-        assert record["triggerOriginatingSystem"] == "TBD"
-        assert record["triggerOriginatingBU"] == "UK-C and UK-ICB"
+        assert record["triggerOriginatingSystem"] == "SNSVC0084378"
+        assert record["triggerOriginatingBU"] == "UK-C"
         assert record["idType"] == "Customer"
         assert record["idSystem"] == "Corelation id"
-        assert built.trigger_id.startswith("TBD-KYCRefresh-NewHRCRelationship-")
+        assert built.trigger_id.startswith("SNSVC0084378_KYCRefresh_NewHRCRelationship_")
 
     def test_only_client_relationship_owner_name_carries_an_encryption_policy(self, builder):
         fields = builder.build(trigger_8_event()).payload_fields
@@ -110,7 +110,7 @@ class TestEnvelope:
     def test_date_of_request_is_published_as_a_date_not_a_timestamp(self, builder):
         fields = {f["fieldName"]: f for f in builder.build(trigger_8_event()).payload_fields}
         assert fields["Date of Request"]["fieldValue"] == "2026-06-10"
-        assert fields["Date of Request"]["fieldDataType"] == "Date"
+        assert fields["Date of Request"]["fieldDataType"] == "DATE"
 
     def test_id_type_is_customer_and_id_value_is_the_csid(self, builder):
         record = builder.build(trigger_8_event()).record
@@ -126,7 +126,7 @@ class TestEnvelope:
         event = trigger_8_event(
             attributes=trigger_8_row(client_relationship_owner_business_unit=business_unit)
         )
-        assert builder.build(event).record["triggerOriginatingBU"] == "UK-C and UK-ICB"
+        assert builder.build(event).record["triggerOriginatingBU"] == "UK-C"
 
     def test_timestamp_is_the_last_instant_of_the_business_month(self, builder):
         record = builder.build(trigger_8_event()).record
@@ -150,10 +150,14 @@ class TestEnvelope:
     def test_payload_is_a_json_string_not_an_object(self, builder):
         record = builder.build(trigger_8_event()).record
         assert isinstance(record["payload"], str)
-        assert "payload" in json.loads(record["payload"])
+        document = json.loads(record["payload"])
+        # The array itself, not a {"payload": [...]} wrapper inside the payload field.
+        assert isinstance(document, list)
+        assert {"fieldName", "fieldValue", "fieldEncryptionPolicy", "fieldDataType"} == set(document[0])
 
-    def test_partition_key_is_the_csid_so_related_events_stay_ordered(self, builder):
-        assert builder.build(trigger_8_event()).kafka_key == "9912345678"
+    def test_the_message_key_is_the_trigger_id(self, builder):
+        built = builder.build(trigger_8_event())
+        assert built.kafka_key == built.trigger_id
 
     def test_identity_keys_in_the_wrapper_are_ignored(self, builder):
         """Identity comes from the row and the run, never from the wrapper."""
@@ -168,7 +172,7 @@ class TestEnvelope:
         assert record["idValue"] == "9912345678"
         assert record["idType"] == "Customer"
         assert record["timestamp"] == "2026-06-30T23:59:59.999999999Z"
-        assert record["triggerOriginatingBU"] == "UK-C and UK-ICB"
+        assert record["triggerOriginatingBU"] == "UK-C"
 
 
 class TestBusinessMonth:
@@ -196,7 +200,7 @@ class TestBusinessMonth:
         assert month_end_timestamp(month) == expected
 
     def test_the_builder_defaults_to_the_month_before_today(self, schema, monkeypatch):
-        monkeypatch.setattr(tb_outcome_schema, "today", lambda: date(2026, 7, 15))
+        monkeypatch.setattr(run_gate, "today", lambda tz=None: date(2026, 7, 15))
         builder = make_builder(schema, business_month=None)
 
         assert builder.business_month == "2026-06"
@@ -214,8 +218,11 @@ class TestIdentity:
         second = make_builder(schema).build(trigger_8_event()).trigger_id
         assert first == second
 
-    def test_the_trigger_id_names_the_business_month(self, builder):
-        assert "-2026-06-" in builder.build(trigger_8_event()).trigger_id
+    def test_the_trigger_id_carries_the_envelope_timestamp_and_sequence(self, builder):
+        record = builder.build(trigger_8_event()).record
+        assert record["triggerID"] == (
+            f"SNSVC0084378_KYCRefresh_NewHRCRelationship_{record['timestamp']}_{record['sequenceNumber']}"
+        )
 
     def test_sub_events_for_one_counterparty_get_distinct_ids(self, builder):
         """Two business dates for one counterparty in a month are two triggers.
@@ -431,7 +438,7 @@ class TestSubTypeEnum:
 
     def test_the_trigger_id_carries_the_published_symbol(self, builder):
         built = builder.build(trigger_8_event())
-        assert "-NewHRCRelationship-" in built.trigger_id
+        assert "_NewHRCRelationship_" in built.trigger_id
 
     def test_a_schema_missing_one_of_our_symbols_aborts_at_construction(self, schema):
         narrowed = json.loads(json.dumps(schema))

@@ -19,9 +19,11 @@ Both skips exit 0: six no-op invocations a month is the scheme working.
 
 from __future__ import annotations
 
+import calendar
 import json
 import logging
 import os
+import re
 from datetime import date, datetime, timezone
 from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
@@ -38,6 +40,50 @@ def today(tz: str = TIMEZONE) -> date:
     from zoneinfo import ZoneInfo
 
     return datetime.now(ZoneInfo(tz)).date()
+
+
+_MONTH_NAMES = {calendar.month_name[n].upper(): n for n in range(1, 13)}
+
+#: ``run.month`` (``IFC_RUN__MONTH``) for this process, as the first of that
+#: month; ``None`` runs the current month. Set by ``load_settings``.
+_execution_month: Optional[date] = None
+
+
+def parse_month(value: Any) -> date:
+    """``2026-08``, ``AUGUST_2026`` or ``August 2026`` as the first of that month.
+
+    The second spelling is the source folder's name, so an operator can paste
+    the folder they want reprocessed.
+    """
+    text = str(value).strip()
+    match = re.fullmatch(r"(\d{4})-(\d{1,2})", text)
+    if match:
+        year, month = int(match.group(1)), int(match.group(2))
+    else:
+        match = re.fullmatch(r"([A-Za-z]+)[ _-](\d{4})", text)
+        if not match or match.group(1).upper() not in _MONTH_NAMES:
+            raise ValueError(f"run month must be YYYY-MM or MONTH_YYYY, got {value!r}")
+        year, month = int(match.group(2)), _MONTH_NAMES[match.group(1).upper()]
+    if not 1 <= month <= 12:
+        raise ValueError(f"run month must be YYYY-MM or MONTH_YYYY, got {value!r}")
+    return date(year, month, 1)
+
+
+def set_execution_month(value: Any) -> None:
+    """Pin the month this process runs as - a reprocess of a past month - or clear it."""
+    global _execution_month
+    _execution_month = parse_month(value) if value else None
+
+
+def execution_date(tz: str = TIMEZONE) -> date:
+    """The date the run's month is taken from.
+
+    Today, unless ``run.month`` pins another month, when it is the first of
+    that month. Everything keyed on the month - the source and recon folders,
+    the business month the records are stamped with, the marker's month - reads
+    this. The weekend check does not: it is about the day the task runs.
+    """
+    return _execution_month or today(tz)
 
 
 def is_weekend(day: date) -> bool:
@@ -284,11 +330,16 @@ def should_run(
     marker: RunMarker,
     *,
     day: Optional[date] = None,
+    month: Optional[str] = None,
     force: bool = False,
 ) -> GateOutcome:
-    """Decide whether to process. ``day`` is injectable so this is testable."""
+    """Decide whether to process. ``day`` is injectable so this is testable.
+
+    ``month`` is the month being delivered, ``YYYY-MM``; it defaults to
+    ``day``'s, and differs only when ``run.month`` reprocesses a past month.
+    """
     day = day or today()
-    month = month_of(day)
+    month = month or month_of(day)
 
     # Force first: it is the operator's deliberate re-delivery and overrides
     # both of the checks below, including a month already marked SUCCESS.

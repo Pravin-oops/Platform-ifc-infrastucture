@@ -182,7 +182,7 @@ class TestPayloadValidation:
         required = {"fieldName", "fieldValue", "fieldEncryptionPolicy", "fieldDataType"}
         valid_types = {t.value for t in DataType}
 
-        assert to_payload_document(fields) == {"payload": fields}
+        assert to_payload_document(fields) == fields
         for item in fields:
             assert set(item) == required
             assert all(isinstance(v, str) for v in item.values())
@@ -199,7 +199,11 @@ class TestPayloadValidation:
 
     def test_serialise_round_trips(self):
         fields = build_fields([FieldSpec(name="A", source="a")], {"a": "b"})
-        assert json.loads(serialise(fields)) == {"payload": fields}
+        assert json.loads(serialise(fields)) == fields
+
+    def test_the_serialised_payload_starts_with_the_array_not_a_wrapper(self):
+        fields = build_fields([FieldSpec(name="A", source="a")], {"a": "b"})
+        assert serialise(fields).startswith('[{"fieldName":"A"')
 
 
 class TestTriggerDefinitions:

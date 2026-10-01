@@ -16,7 +16,7 @@ from __future__ import annotations
 import io
 import logging
 import struct
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict
 
 from fastavro import parse_schema, schemaless_writer
 
@@ -32,7 +32,9 @@ _HEADER = struct.Struct(">bI")
 class AvroSerializer:
     """Serialises a dict to Confluent wire format under a fixed schema id."""
 
-    def __init__(self, schema: Dict[str, Any], schema_id: Optional[int], *, name: str = "value"):
+    def __init__(self, schema: Dict[str, Any], schema_id: int, *, name: str = "value"):
+        if schema_id is None:
+            raise ValueError("A schema id is required: every record is written in Confluent wire format")
         self._schema = schema
         self._parsed = parse_schema(schema)
         self._schema_id = schema_id
@@ -44,19 +46,17 @@ class AvroSerializer:
         return self._schema
 
     @property
-    def schema_id(self) -> Optional[int]:
+    def schema_id(self) -> int:
         return self._schema_id
 
     @property
-    def framed(self) -> bool:
-        """False in DEV mode, where there is no registry and so no id to frame with."""
-        return self._schema_id is not None
+    def header(self) -> bytes:
+        """The 5 bytes every record starts with; logged so a raw read can be checked."""
+        return _HEADER.pack(MAGIC_BYTE, self._schema_id)
 
     def __call__(self, record: Dict[str, Any]) -> bytes:
         buffer = io.BytesIO()
-
-        if self._schema_id is not None:
-            buffer.write(_HEADER.pack(MAGIC_BYTE, self._schema_id))
+        buffer.write(self.header)
 
         try:
             schemaless_writer(buffer, self._parsed, record)
@@ -111,13 +111,14 @@ class SizeGuard:
 def build_serializer(
     *,
     schema: Dict[str, Any],
-    schema_id: Optional[int],
+    schema_id: int,
     name: str = "value",
 ) -> AvroSerializer:
     serializer = AvroSerializer(schema, schema_id, name=name)
-    logger.info(
+    # DEBUG: the runner's "Kafka target ready" line carries the same facts.
+    logger.debug(
         "Avro serializer ready",
-        extra={"schema_name": schema.get("name"), "schema_id": schema_id, "framed": serializer.framed},
+        extra={"schema_name": schema.get("name"), "schema_id": schema_id},
     )
     return serializer
 

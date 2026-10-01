@@ -329,7 +329,6 @@ def ecs(main_ecs_script, monkeypatch, tmp_path, clean_ifc_env):
     import utility.run_gate as run_gate
 
     monkeypatch.setattr(run_gate, "today", lambda tz=None: date(2026, 9, 18))
-    monkeypatch.setattr(main_ecs_script, "today", lambda tz=None: date(2026, 9, 18))
     monkeypatch.setattr(
         main_ecs_script, "should_run", lambda *a, **k: GateOutcome(True, "due", False)
     )
