@@ -7,7 +7,7 @@
 #   ./run_tests.sh --no-install    skip dependency installation
 #   ./run_tests.sh -k envelope     pass anything else straight to pytest
 #
-# Nothing here touches AWS, BSP, CSM, BAM or a Kafka broker. Every check runs
+# Nothing here touches AWS, BSP, CyberArk, BAM or a Kafka broker. Every check runs
 # against the bundled schemas, so it is safe to run on a
 # laptop and in CI without credentials.
 

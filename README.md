@@ -34,7 +34,7 @@ watching the logs, has to leave evidence rather than assume someone saw it fail.
 
 **In scope.** Reading detected trigger events from the Trigger BDP; building the
 `TriggerBackboneTopicSchema` envelope and the BSP-format payload for Triggers 8, 9 and 21;
-authenticating to BSP through CSM and BAM; validating against the BSP Schema Registry;
+authenticating to BSP through CyberArk and BAM; validating against the BSP Schema Registry;
 publishing to the IFC topic; and handling every failure scenario that can be handled
 at the connector.
 
@@ -87,7 +87,7 @@ On-prem sources ─► EDP hydration ─► FDPs / CDPs + SDH
         │        ▼                        ▼                            │
         │  S3 run-marker JSON       S3 quarantine + manifest           │
         └──────────────┬─────────────────────────┬─────────────────────┘
-                       │ CSM → BAM → JWT         │
+                       │ CyberArk → BAM → JWT    │
                        ▼                         ▼
               BSP Schema Registry :8095    BSP Kafka :9095
                                                  │
@@ -126,7 +126,7 @@ ifc_trigger_connector/            # imports are ifc_trigger_connector.utility.*
 │   ├── health_utility.py         # /health/live, /ready, /startup, /metrics
 │   ├── resilience_utility.py     # backoff, circuit breaker, SIGTERM drain
 │   ├── observability_utility.py  # JSON logs, CloudWatch EMF metrics
-│   ├── csm_aws_fetch.py          # SigV4 -> Vault -> system-account credential
+│   ├── cyberark_ccp_fetch.py     # client cert -> CyberArk CCP -> system-account credential
 │   ├── auth_helper.py            # BSP client wrapper, BAM token lifecycle
 │   ├── kafka_factory.py          # assembles the stack, runs preflight
 │   ├── kafka_preflight.py        # DNS, TCP, auth, registry, metadata checks
@@ -142,7 +142,7 @@ ifc_trigger_connector/            # imports are ifc_trigger_connector.utility.*
 │   ├── trigger_batch_notifier.py # TBB batch-completion SNS event
 │   |
 │   ├── schema.json                      # TriggerBackboneTopicSchema (Avro)
-│   ├── connector_config.yaml            # deployed app config (ECS, CSM-backed)
+│   ├── connector_config.yaml            # deployed app config (ECS, CyberArk-backed)
 │   ├── connector_config_ecs_local.yaml  # ECS entry point against a local data folder
 │   ├── connector_config_local.yaml      # local app config (offline, DEV, localhost broker)
 │   ├── connector_config_local_bsp.yaml  # local app config against real BSP (BAM, SECURE)
@@ -187,7 +187,7 @@ action, an exit code, and what the connector does automatically.
 | **Broker Unavailable** | retry + backoff | Jittered backoff; after N consecutive failures the run is abandoned cleanly with the checkpoint intact |
 | **Topic Unavailable / Incorrect Topic** | preflight abort | Cluster metadata for the topic, with a partition-count assertion — a typo fails in seconds |
 | **Schema Registry Unavailable** | retry + backoff | Schema id resolved once and cached, so a mid-run outage does not stop publishing |
-| **Authentication Failure** | preflight abort | CSM, BAM and a registry call all happen before any record is read; JWT shape checked and `exp` tracked with pre-emptive refresh |
+| **Authentication Failure** | preflight abort | CyberArk CCP, BAM and a registry call all happen before any record is read; JWT shape checked and `exp` tracked with pre-emptive refresh |
 | **Authorisation Failure** | preflight abort | Metadata requested with the real producer principal, so a missing ACL is distinguishable from a missing topic |
 
 ### Classified and reported, not remediated
@@ -549,9 +549,9 @@ through `BSPAuthenticator`, fetch a **BAM token over REST** for the secure Schem
 resolve the subject's schema id, then build, serialise and publish, flush, and report the
 delivery tally.
 
-There is no CSM on this path: a laptop has no ECS task role, so the BSP system-account
+There is no CyberArk on this path: a laptop has no ECS task role, so the BSP system-account
 credentials come from the environment. `utility/kafka_factory.py` fetches the same values from
-CSM on the ECS path instead.
+CyberArk CCP on the ECS path instead.
 
 ```bash
 set -a && . .env && set +a
@@ -563,7 +563,7 @@ python scripts/main_local.py --config utility/connector_config_local_bsp.yaml --
 ```
 
 Two config files support it: [`utility/connector_config_local_bsp.yaml`](utility/connector_config_local_bsp.yaml)
-(SECURE registry, no `csm:` section) and [`utility/bsp_config_local.yaml`](utility/bsp_config_local.yaml)
+(SECURE registry, no `cyberark:` section) and [`utility/bsp_config_local.yaml`](utility/bsp_config_local.yaml)
 (the BSP client's own librdkafka YAML). Both name *environment variables* rather than values, so
 neither holds a credential.
 
@@ -673,7 +673,7 @@ RUN update-ca-trust extract
 ```
 
 That produces `/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem`, the path
-`utility/csm_aws_fetch.py` and the CSM config already expect.
+`utility/cyberark_ccp_fetch.py` and the CyberArk config already expect.
 
 `.dockerignore` stays at the context root, which is where both the classic builder and BuildKit
 look for it.
@@ -701,8 +701,9 @@ IFC_SOURCE__PATH=s3://bucket/prefix/
 That last layer is what lets one published config serve every task, with per-task overrides in
 the task definition and no redeployment of the config object.
 
-No secret is ever configuration. CSM supplies the BSP system-account credential at runtime using
-the ECS task role; only the secret's *path* is configured.
+No secret is ever configuration. CyberArk CCP supplies the BSP system-account credential at
+runtime, authenticated with a client certificate the ECS task role reads from Secrets Manager;
+only the Safe/object query and the certificate secret's *name* are configured.
 
 Supplied configs: [`utility/connector_config.yaml`](utility/connector_config.yaml) (UAT; values
 needing confirmation are marked `CONFIRM`) and
@@ -931,7 +932,7 @@ Artefacts in [`deploy/`](deploy):
 |---|---|
 | `ecs-task-definition.json` | Fargate task definition. `stopTimeout: 120` **must** exceed `run.shutdown_grace_seconds` (90), or SIGKILL wins and the drain is lost |
 | `iam-task-role-policy.json` | Least-privilege task role, including an explicit **Deny** on deleting from the Trigger BDP — the connector archives by copy, never deletes |
-| `infrastructure.json` | The run-marker file location, the three EventBridge trigger schedules *or* the continuous ECS service, egress security group (9095/8095/BAM/CSM), log retention |
+| `infrastructure.json` | The run-marker file location, the three EventBridge trigger schedules *or* the continuous ECS service, egress security group (9095/8095/BAM/CyberArk CCP), log retention |
 | `athena-run-markers.sql` | Athena table and latest-state view over the run marker file |
 | `cloudwatch-alarms.json` | One alarm per observable scenario, each naming the catalogue scenario it detects |
 
@@ -1037,7 +1038,7 @@ problem.
 |---|---|
 | Firewall rules implemented for AWS source → BSP destination CIDRs | Described, not confirmed implemented. Preflight will prove it in seconds |
 | DNS resolution and routing from BB BCA subnets to intranet BSP hosts | Needs confirmation |
-| Actual system account name and CSM secret path | Placeholder in `utility/connector_config.yaml` |
+| CyberArk App ID, Safe, object and client-certificate secret | Placeholder in `utility/connector_config.yaml` |
 | Confirmed IFC CDD topic name and registry subject | `tc01_fncmtrgrbb_ifc_tbb_kyc_refresh` assumed from the topic table |
 | Kafka ACLs for the producer principal on the topic | Needed; preflight distinguishes a missing ACL from a missing topic |
 | **Tokenisation policy names** for account fields | Only `DPASS_POLICY_NAME` (Client Relationship Owner Name) is confirmed on Confluence; `POLICY_ACCOUNT` in `utility/trigger_payload.py` is a placeholder |

@@ -15,6 +15,6 @@ local_out/
 
 # .env is tracked, exactly as produce_app tracks its own: it holds locations and
 # switches, never a credential. Real values go in .env.local, which is not
-# tracked - and secrets go in CSM, which is neither.
+# tracked - and secrets go in CyberArk, which is neither.
 .env.local
 *.env.secret

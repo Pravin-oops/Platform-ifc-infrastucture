@@ -24,7 +24,7 @@ UTILITY_MODULES = [
     "connector_config",
     "connector_runner",
     "connector_utility",
-    "csm_aws_fetch",
+    "cyberark_ccp_fetch",
     "error_classifier",
     "failure_catalog",
     "failure_notifier",

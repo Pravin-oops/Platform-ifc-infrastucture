@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
 from utility.auth_helper import BSPClient, BSPTokenProvider, TokenProvider
-from utility.csm_aws_fetch import CSMAuthenticator
+from utility.cyberark_ccp_fetch import CyberArkAuthenticator
 from utility import failure_catalog as catalog
 from utility.error_classifier import PreflightError
 from utility.connector_utility import (
@@ -110,11 +110,11 @@ class KafkaStackFactory:
             )
             return None
 
-        if settings.csm is not None:
-            CSMAuthenticator(settings.csm).export_to_environment(settings.csm.principal_realm)
+        if settings.cyberark is not None:
+            CyberArkAuthenticator(settings.cyberark).export_to_environment(settings.cyberark.principal_realm)
         else:
             logger.warning(
-                "No CSM section configured; relying on BSP_USERNAME/BSP_PASSWORD already in the environment"
+                "No CyberArk section configured; relying on BSP_USERNAME/BSP_PASSWORD already in the environment"
             )
 
         # package_resource anchors a relative path at the connector root, as
