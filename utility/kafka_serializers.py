@@ -16,7 +16,7 @@ from __future__ import annotations
 import io
 import logging
 import struct
-from typing import Any, Callable, Dict
+from typing import Any, Dict
 
 from fastavro import parse_schema, schemaless_writer
 
@@ -121,10 +121,3 @@ def build_serializer(
         extra={"schema_name": schema.get("name"), "schema_id": schema_id},
     )
     return serializer
-
-
-def make_key_serializer() -> Callable[[str], bytes]:
-    def serialize(key: str) -> bytes:
-        return str(key).encode("utf-8")
-
-    return serialize

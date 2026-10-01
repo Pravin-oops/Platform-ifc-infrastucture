@@ -18,7 +18,6 @@ BASE_CONFIG = {
     "source": {"type": "local", "path": "/tmp/x"},
     "kafka": {"topic": "t", "bsp_config_path": "b.yaml"},
     "schema_registry": {"mode": "DEV"},
-    "state": {"backend": "memory"},
 }
 
 
@@ -33,23 +32,18 @@ class TestSettings:
         with pytest.raises(ValueError, match="audit.bucket"):
             ConnectorSettings.model_validate(document)
 
-    def test_service_mode_rejects_a_local_source(self):
-        document = {**BASE_CONFIG, "run": {"mode": "service"}}
-        with pytest.raises(ValueError, match="service"):
-            ConnectorSettings.model_validate(document)
-
     def test_an_env_override_wins_over_the_yaml(self, monkeypatch, tmp_path):
         path = tmp_path / "c.yaml"
         path.write_text(yaml.safe_dump(BASE_CONFIG), encoding="utf-8")
 
         monkeypatch.setenv("IFC_KAFKA__TOPIC", "overridden_topic")
-        monkeypatch.setenv("IFC_RUN__POLL_INTERVAL_SECONDS", "900")
+        monkeypatch.setenv("IFC_RUN__SHUTDOWN_GRACE_SECONDS", "45")
         monkeypatch.setenv("IFC_HEALTH__ENABLED", "false")
 
         settings = load_settings(str(path), reader=lambda p: path.read_text(encoding="utf-8"))
 
         assert settings.kafka.topic == "overridden_topic"
-        assert settings.run.poll_interval_seconds == 900
+        assert settings.run.shutdown_grace_seconds == 45
         assert settings.health.enabled is False
 
     def test_unrelated_env_vars_are_ignored(self, monkeypatch, tmp_path):
@@ -179,26 +173,11 @@ class TestSource:
         assert len(list(self._source(tmp_path).stream())) == 10_000
 
     def test_an_explicit_limit_still_wins_over_no_cap(self, tmp_path):
-        """``main_local.py --limit`` bounds a developer's dry run."""
+        """``main.py validate`` bounds what it reads."""
         (tmp_path / "a.jsonl").write_text(
             "\n".join(json.dumps(VALID) for _ in range(10)), encoding="utf-8"
         )
         assert len(list(self._source(tmp_path).stream(limit=3))) == 3
-
-    def test_already_processed_objects_are_skipped_on_resume(self, tmp_path):
-        """Needs selection=all: under the default only one object is read, so a
-        skip would be a no-op and this would pass without proving anything."""
-        first = tmp_path / "a.jsonl"
-        second = tmp_path / "b.jsonl"
-        first.write_text(json.dumps(VALID), encoding="utf-8")
-        second.write_text(json.dumps(VALID), encoding="utf-8")
-
-        source = TriggerSource(
-            SourceSettings(type="local", path=str(tmp_path), selection="all")
-        )
-        items = list(source.stream(skip_objects={str(first)}))
-        assert len(items) == 1
-        assert items[0].source_object == str(second)
 
     def test_the_source_object_is_recorded_for_the_audit_trail(self, tmp_path):
         (tmp_path / "a.jsonl").write_text(json.dumps(VALID), encoding="utf-8")

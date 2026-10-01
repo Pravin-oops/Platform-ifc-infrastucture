@@ -12,7 +12,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
-from utility.auth_helper import BSPClient, BSPTokenProvider, TokenProvider
+from utility.auth_helper import BSPClient, TokenProvider
 from utility.cyberark_ccp_fetch import CyberArkAuthenticator
 from utility import failure_catalog as catalog
 from utility.error_classifier import PreflightError
@@ -117,8 +117,8 @@ class KafkaStackFactory:
                 "No CyberArk section configured; relying on BSP_USERNAME/BSP_PASSWORD already in the environment"
             )
 
-        # package_resource anchors a relative path at the connector root, as
-        # main_local.py does, so it does not depend on the working directory.
+        # package_resource anchors a relative path at the connector root, so it
+        # does not depend on the working directory.
         return BSPClient(materialise_local(package_resource(settings.kafka.bsp_config_path)))
 
     def _producer_config(self, bsp: Optional[BSPClient]) -> Dict[str, Any]:

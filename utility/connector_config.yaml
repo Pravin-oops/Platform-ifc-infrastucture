@@ -5,19 +5,16 @@
 #
 # Any value here can be overridden per task without republishing this file, by
 # setting an IFC_ environment variable in the ECS task definition. Sections are
-# separated by a double underscore, e.g. IFC_KAFKA__TOPIC, IFC_RUN__MODE.
+# separated by a double underscore, e.g. IFC_KAFKA__TOPIC, IFC_RUN__TRIGGER.
 
 app:
   name: ifc-trigger-connector
   environment: UAT
   log_level: INFO
 
+# Each invocation is one ECS RunTask on the trigger's monthly window: it drains
+# the month's source once and exits.
 run:
-  # batch   -> ECS RunTask on the trigger's monthly window (see 'schedule').
-  # service -> resident ECS service polling the prefix.
-  mode: batch
-  poll_interval_seconds: 300
-  max_batches: 0
   # Must be <= the task definition's stopTimeout (set to 120 in deploy/).
   shutdown_grace_seconds: 90
 
@@ -38,7 +35,6 @@ source:
     TRIGGER_8: s3://devaprocessedlayer-691850678096-emea/triggerbackbone/ifc/trigger-events/trigger_8/{MONTH}_{YYYY}/
     TRIGGER_9: s3://devaprocessedlayer-691850678096-emea/triggerbackbone/ifc/trigger-events/trigger_9/{MONTH}_{YYYY}/
     TRIGGER_21: s3://devaprocessedlayer-691850678096-emea/triggerbackbone/ifc/trigger-events/trigger_21/{MONTH}_{YYYY}/
-  archive_path: s3://devaprocessedlayer-691850678096-emea/triggerbackbone/ifc/trigger-events-archive/
   # Unset: ECS is handed one file holding the whole batch, so a cap would
   # silently drop its tail with no second object to pick the rest up from.
   max_records_per_batch: null
@@ -111,6 +107,8 @@ cyberark:
   ca_bundle_path: /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
   ssl_verify: true
   request_timeout: 30
+  # Retries a CCP 5xx/429 or a connection failure; a rejection fails at once.
+  max_attempts: 3
   principal_realm: "@INTRANET.BARCAPINT.COM"
 
 # Every invocation's outcome, appended as one JSON line to this file. The gate

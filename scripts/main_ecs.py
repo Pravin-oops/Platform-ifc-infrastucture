@@ -12,14 +12,13 @@ than the BAM token it started with.
 Environment (all optional except the config path):
 
     APP_CONFIG_PATH   connector config YAML, local path or s3://   (required)
-    IFC_RUN__MODE     batch | service - overrides the config file
     IFC_RUN__MONTH    YYYY-MM (or AUGUST_2026) - reprocess that month instead of
                       the current one; add IFC_RUN__FORCE=true if it was delivered
     IFC_LOG_LEVEL     overrides app.log_level
     IFC_*             any other setting, e.g. IFC_KAFKA__TOPIC
 
 ``ecs_handler()`` returns the run summary as a dict so the same code can be
-driven from a test, an ECS RunTask, or a resident ECS service. ``main()`` maps
+driven from a test or an ECS RunTask. ``main()`` maps
 that summary onto the process exit code, because the stopped-task record is the
 only thing left after the container is gone.
 """
@@ -382,10 +381,9 @@ def ecs_handler(event: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
 
     registry = settings.schema_registry
     logger.info(
-        "Connector starting on ECS: trigger=%s run_mode=%s topic=%s schema_registry_mode=%s "
+        "Connector starting on ECS: trigger=%s topic=%s schema_registry_mode=%s "
         "schema_id=%s kafka_connection=%s environment=%s",
         settings.run.trigger,
-        settings.run.mode,
         settings.kafka.topic,
         registry.mode,
         # SECURE resolves the id from the registry at startup; the
@@ -395,7 +393,6 @@ def ecs_handler(event: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         settings.app.environment,
         extra={
             "config_path": config_path,
-            "run_mode": settings.run.mode,
             "topic": settings.kafka.topic,
             "trigger": settings.run.trigger,
             "schema_registry_mode": registry.mode,
@@ -493,7 +490,6 @@ def ecs_handler(event: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
             "run_id": runner.run_id,
             "exit_code": exit_code,
             "outcome": last.outcome if last else "FAILED",
-            "mode": settings.run.mode,
             "topic": settings.kafka.topic,
             "schema_registry_mode": settings.schema_registry.mode,
             # getattr: reporting must never be what fails a delivered run.

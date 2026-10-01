@@ -18,7 +18,7 @@ import os
 import sys
 import threading
 import time
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Optional
 
 EMF_NAMESPACE = "IFC/TriggerConnector"
 
@@ -92,6 +92,11 @@ def configure_logging(level: str = "INFO") -> None:
 class Metrics:
     """Counters and timers for one connector process.
 
+    Counters are running totals, and ``emit`` writes the current totals each
+    time it is called - at every progress report and again at the end of the
+    run. CloudWatch alarms on them must therefore use the ``Maximum``
+    statistic: ``Sum`` adds the same records up once per emit.
+
     Thread-safe: the delivery-report callback fires on the librdkafka poll
     thread while the main loop is still producing.
     """
@@ -119,9 +124,6 @@ class Metrics:
     def snapshot(self) -> Dict[str, float]:
         with self._lock:
             return {**self._counters, **self._gauges}
-
-    def timer(self, name: str) -> "_Timer":
-        return _Timer(self, name)
 
     def emit(self, extra: Optional[Dict[str, Any]] = None) -> None:
         """Write one EMF record so CloudWatch ingests the current values."""
@@ -151,21 +153,6 @@ class Metrics:
 
         # Straight to stdout: the CloudWatch agent parses EMF out of the log stream.
         print(json.dumps(document, default=str), flush=True)
-
-
-class _Timer:
-    def __init__(self, metrics: Metrics, name: str):
-        self._metrics = metrics
-        self._name = name
-        self._start = 0.0
-
-    def __enter__(self) -> "_Timer":
-        self._start = time.perf_counter()
-        return self
-
-    def __exit__(self, *exc: Any) -> None:
-        elapsed_ms = (time.perf_counter() - self._start) * 1000.0
-        self._metrics.gauge(self._name, elapsed_ms)
 
 
 def process_rss_mb() -> Optional[float]:
@@ -203,19 +190,3 @@ def memory_limit_mb() -> Optional[float]:
         except (OSError, ValueError):
             continue
     return None
-
-
-def log_fields(**fields: Any) -> Dict[str, Any]:
-    """Convenience wrapper for ``logger.info(msg, extra=log_fields(...))``."""
-    return {k: v for k, v in fields.items() if v is not None}
-
-
-def iter_chunks(items: Iterable[Any], size: int) -> Iterable[list]:
-    chunk: list = []
-    for item in items:
-        chunk.append(item)
-        if len(chunk) >= size:
-            yield chunk
-            chunk = []
-    if chunk:
-        yield chunk

@@ -218,15 +218,10 @@ def build_fields(specs: Sequence[FieldSpec], attributes: Dict[str, Any]) -> List
     return fields
 
 
-def to_payload_document(fields: List[Dict[str, str]]) -> List[Dict[str, str]]:
-    """The payload document: the field array itself, with no wrapping object."""
-    return fields
-
-
 def serialise(fields: List[Dict[str, str]]) -> str:
     """The JSON string that goes into the envelope's ``payload`` field.
 
     Compact separators and preserved key order: the envelope is size limited, and
     a stable rendering keeps the trigger ID hash stable.
     """
-    return json.dumps(to_payload_document(fields), separators=(",", ":"), ensure_ascii=False)
+    return json.dumps(fields, separators=(",", ":"), ensure_ascii=False)

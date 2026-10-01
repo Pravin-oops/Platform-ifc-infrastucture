@@ -48,7 +48,7 @@ class Handling(str, Enum):
     RETRY_BACKOFF = "retry_backoff"
     #: The offending record is diverted to S3 quarantine; the run continues.
     QUARANTINE = "quarantine"
-    #: SIGTERM-driven drain: stop intake, flush, checkpoint, exit cleanly.
+    #: SIGTERM-driven drain: stop intake, flush, exit cleanly.
     GRACEFUL_DRAIN = "graceful_drain"
     #: Bounded memory: streaming reads and a capped producer queue.
     BACKPRESSURE = "backpressure"
@@ -149,9 +149,9 @@ CONTAINER_FAILURE = _register(
         bsp_rtb_action="No action unless a BSP-side issue caused repeated producer termination.",
         connector_behaviour=(
             "SIGTERM installs a drain: intake stops, in-flight messages are flushed within "
-            "run.shutdown_grace_seconds, the checkpoint is persisted, and the exit code says whether "
-            "work remains (75) or the batch completed (0). An uncaught defect still exits non-zero, "
-            "but the checkpoint means the restarted task resumes rather than republishes."
+            "run.shutdown_grace_seconds, and the exit code says whether work remains (75) or the "
+            "batch completed (0). An uncaught defect still exits non-zero; the month stays "
+            "undelivered in the run marker, so the next invocation republishes it."
         ),
     )
 )
@@ -539,8 +539,8 @@ BROKER_UNAVAILABLE = _register(
         connector_behaviour=(
             "Backoff with jitter up to resilience.backoff_max_seconds. After "
             "resilience.circuit_breaker_threshold consecutive failures the run is abandoned with exit "
-            "code 32 and the checkpoint intact, so nothing is lost and the next scheduled run resumes. "
-            "In service mode the breaker half-opens after circuit_breaker_reset_seconds."
+            "code 32 and the month stays undelivered in the run marker, so the next invocation in "
+            "the window republishes it."
         ),
     )
 )
@@ -626,7 +626,7 @@ AUTHENTICATION_FAILURE = _register(
             "CyberArk CCP retrieval, BAM token acquisition and a Schema Registry call all happen in preflight, "
             "so an expired certificate or rotated credential fails before any record is read. The JWT "
             "is validated for shape and its exp claim is tracked; the SR token is refreshed ahead of "
-            "expiry so long service-mode runs do not fail mid-batch."
+            "expiry so a long run does not fail mid-batch."
         ),
     )
 )

@@ -7,10 +7,8 @@ Nothing is de-duplicated here: the consuming team resolves duplicates, so a
 re-run republishes the month rather than the connector keeping durable state to
 recognise what it already sent.
 
-``batch`` mode does that once and exits - the shape that matches the monthly
-cadence under EventBridge Scheduler and ECS RunTask. ``service`` mode repeats it
-on an interval for a resident ECS service. The batch body is identical either
-way, so the two modes cannot drift apart.
+A run does that once and exits - the shape that matches the monthly cadence
+under EventBridge Scheduler and ECS RunTask.
 
 Every exit is deliberate and carries a catalogue exit code, so ECS's
 ``stoppedReason`` and exit code alone tell RTB which scenario fired.
@@ -22,7 +20,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional
 
 from utility.audit_utility import AuditWriter, RunCounters, build_manifest, new_run_id, reconcile
 from utility import failure_catalog as catalog
@@ -38,7 +36,7 @@ from utility.failure_notifier import Notifier
 from utility.health_utility import HealthState
 from utility.kafka_factory import KafkaStack, KafkaStackFactory
 from utility.observability_utility import Metrics, memory_limit_mb, process_rss_mb, set_log_context
-from utility.resilience_utility import CircuitBreaker, CircuitOpen, ShutdownSignal
+from utility.resilience_utility import BackoffPolicy, CircuitBreaker, CircuitOpen, ShutdownSignal, retry
 from utility.connector_config import ConnectorSettings
 from utility.trigger_source import ParseFailure, TriggerSource
 from utility.sequence_allocator import SequenceAllocator
@@ -110,6 +108,10 @@ class ConnectorRunner:
         self._breaker = CircuitBreaker(
             threshold=settings.resilience.circuit_breaker_threshold,
             reset_seconds=settings.resilience.circuit_breaker_reset_seconds,
+        )
+        self._backoff = BackoffPolicy(
+            base_seconds=settings.resilience.backoff_base_seconds,
+            max_seconds=settings.resilience.backoff_max_seconds,
         )
 
         self._stack: Optional[KafkaStack] = None
@@ -199,14 +201,13 @@ class ConnectorRunner:
 
         logger.info(
             "Kafka target ready: topic=%s schema_registry_mode=%s schema_id=%s "
-            "schema_source=%s wire_format_header=%s connection=%s run_mode=%s",
+            "schema_source=%s wire_format_header=%s connection=%s",
             settings.kafka.topic,
             mode,
             self._stack.schema_id,
             schema_source,
             header,
             connection,
-            settings.run.mode,
             extra={
                 "topic": settings.kafka.topic,
                 "schema_registry_mode": mode,
@@ -214,7 +215,6 @@ class ConnectorRunner:
                 "schema_source": schema_source,
                 "wire_format_header": header,
                 "kafka_connection": connection,
-                "run_mode": settings.run.mode,
             },
         )
 
@@ -279,14 +279,37 @@ class ConnectorRunner:
             event_date=built.business_month.replace("-", ""),
         )
 
-        self._stack.publisher.publish(
-            key=built.kafka_key,
-            value=payload,
-            trigger_id=built.trigger_id,
+        self._publish_with_retry(built, payload)
+        counters.published += 1
+
+    def _publish_with_retry(self, built: BuiltRecord, payload: bytes) -> None:
+        """Publish one record, retrying a retryable failure with backoff.
+
+        Every failed attempt counts towards the circuit breaker, so a total
+        outage abandons the batch after ``circuit_breaker_threshold`` attempts
+        rather than retrying each record in turn. A record that runs out of
+        attempts is not quarantined: it stays unpublished, and the
+        reconciliation fails the run.
+        """
+        assert self._stack is not None
+        publisher = self._stack.publisher
+
+        def worth_retrying(exc: BaseException) -> bool:
+            if not isinstance(exc, PublishError):
+                return False
+            self._breaker.record_failure(exc)
+            return exc.scenario.retryable and not self._breaker.is_open
+
+        retry(
             # No Kafka headers: the Trigger Backbone reads everything from the
             # envelope, and its reference records carry an empty header list.
+            lambda: publisher.publish(key=built.kafka_key, value=payload, trigger_id=built.trigger_id),
+            attempts=self._settings.resilience.max_publish_attempts,
+            policy=self._backoff,
+            retry_on=worth_retrying,
+            shutdown=self._shutdown,
+            description=f"publish of {built.trigger_id}",
         )
-        counters.published += 1
 
     # -- batch -------------------------------------------------------------
 
@@ -383,7 +406,7 @@ class ConnectorRunner:
 
         return outcome, exit_code, classification
 
-    def run_batch(self, *, skip_objects: Optional[Set[str]] = None) -> BatchResult:
+    def run_batch(self) -> BatchResult:
         assert self._stack is not None and self._envelopes is not None
 
         settings = self._settings
@@ -395,7 +418,7 @@ class ConnectorRunner:
         source_unreadable = False
 
         try:
-            for index, item in enumerate(self._source.stream(skip_objects=skip_objects), start=1):
+            for index, item in enumerate(self._source.stream(), start=1):
                 if self._shutdown.is_set:
                     logger.warning("Shutdown signalled; stopping intake and draining")
                     self._health.mark_draining()
@@ -518,11 +541,11 @@ class ConnectorRunner:
                 counters=counters,
             )
         except PublishError as exc:
-            self._breaker.record_failure(exc)
+            # The breaker has already counted every failed attempt.
             if not exc.scenario.retryable:
                 raise
             logger.error(
-                "Publish attempt failed",
+                "Record not published after retrying; the reconciliation will fail the run",
                 extra={"trigger_id": built.trigger_id, "scenario": exc.scenario.key},
             )
 
@@ -634,12 +657,8 @@ class ConnectorRunner:
 
         try:
             self.start()
-
-            if settings.run.mode == "batch":
-                result = self.run_batch()
-                outcome, exit_code = result.outcome, result.exit_code
-            else:
-                outcome, exit_code, result = self._run_service()
+            result = self.run_batch()
+            outcome, exit_code = result.outcome, result.exit_code
 
         except ConnectorError as exc:
             classification = classify(exc, operation="run", topic=settings.kafka.topic)
@@ -664,42 +683,3 @@ class ConnectorRunner:
             duration_seconds=time.perf_counter() - started,
         )
         return exit_code
-
-    def _run_service(self) -> Tuple[str, int, Optional[BatchResult]]:
-        """Poll the source until shutdown, or until ``max_batches`` is reached."""
-        settings = self._settings
-        batches = 0
-        last: Optional[BatchResult] = None
-
-        while not self._shutdown.is_set:
-            batches += 1
-            logger.info("Starting batch", extra={"batch": batches})
-            self._health.mark_ready()
-
-            last = self.run_batch()
-
-            # A zero-record poll is normal for a resident service; only a
-            # scheduled batch run treats it as an upstream failure.
-            if last.outcome == "ZERO_RECORDS":
-                last.outcome, last.exit_code = "IDLE", catalog.EXIT_OK
-
-            if last.exit_code not in (catalog.EXIT_OK, catalog.EXIT_WORK_REMAINING):
-                logger.error(
-                    "Batch ended with a blocking failure; stopping the service loop",
-                    extra={"outcome": last.outcome, "exit_code": last.exit_code},
-                )
-                return last.outcome, last.exit_code, last
-
-            if settings.run.max_batches and batches >= settings.run.max_batches:
-                logger.info("Reached max_batches", extra={"batches": batches})
-                break
-
-            if self._shutdown.sleep(settings.run.poll_interval_seconds):
-                break
-
-        if self._shutdown.is_set:
-            reason = self._shutdown.reason or "shutdown"
-            logger.info("Service loop stopped", extra={"reason": reason})
-            return "DRAINED", catalog.EXIT_OK, last
-
-        return (last.outcome if last else "SUCCESS"), catalog.EXIT_OK, last

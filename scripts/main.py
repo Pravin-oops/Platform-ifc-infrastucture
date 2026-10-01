@@ -4,7 +4,7 @@
 
 Also exposes two subcommands that are useful without a BSP connection:
 
-    python scripts/main.py validate --input samples/trigger_events.jsonl
+    python scripts/main.py validate --input <trigger_events.json>
     python scripts/main.py catalogue
 
 The process exit code is the catalogue exit code for whatever scenario ended the

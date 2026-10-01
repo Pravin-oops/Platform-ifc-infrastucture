@@ -101,8 +101,8 @@ class TestDateTokens:
         assert expand_date_tokens(plain, date(2026, 9, 15)) == plain
 
     def test_the_settings_expand_on_every_read(self, run_date):
-        """Expansion is lazy, so a resident service crossing a month boundary
-        moves to the new folder without a restart."""
+        """Expansion is lazy, so the folder follows the execution date in force
+        when the path is read."""
         settings = SourceSettings(type="s3", path="s3://loc/trigger_8/{MONTH}_{YYYY}/")
 
         run_date(date(2026, 9, 30))

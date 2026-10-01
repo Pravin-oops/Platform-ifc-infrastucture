@@ -276,7 +276,6 @@ def build_manifest(
         "task": ecs_task_identity(),
         "configuration": {
             "trigger": settings.run.trigger,
-            "run_mode": settings.run.mode,
             "source_path": settings.source.path,
             "topic": settings.kafka.topic,
             "schema_registry_mode": settings.schema_registry.mode,

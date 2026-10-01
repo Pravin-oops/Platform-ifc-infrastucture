@@ -21,10 +21,9 @@ In addition:
 * the CA bundle for the CCP server is resolved from candidate paths;
 * failures are classified onto the catalogue, so a rejected certificate
   reports as AUTHENTICATION_FAILURE rather than as a bare ``RuntimeError``;
-* the credential is cached for the process lifetime, because a service-mode
-  task must not re-hit CCP on every poll. ``get_credentials(refresh=True)``
-  re-reads both the certificate and the account, which picks up a rotated
-  password or a renewed certificate.
+* the credential is cached for the process lifetime, so CCP is called once
+  per run. ``get_credentials(refresh=True)`` re-reads both the certificate
+  and the account, which picks up a rotated password or a renewed certificate.
 """
 
 from __future__ import annotations
@@ -44,8 +43,9 @@ import requests
 from botocore.exceptions import BotoCoreError, ClientError
 
 from utility import failure_catalog as catalog
-from utility.error_classifier import PreflightError
+from utility.error_classifier import ConnectorError, PreflightError
 from utility.connector_config import CyberArkSettings
+from utility.resilience_utility import BackoffPolicy, retry
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +63,15 @@ CA_BUNDLE_CANDIDATES: List[str] = [
 
 _CERT_FIELD = "client_cert_pem"
 _KEY_FIELD = "client_key_pem"
+
+#: Between attempts at the credential. Short: this runs in preflight, before
+#: anything has been read, and a CCP that stays down fails the run.
+_BACKOFF = BackoffPolicy(base_seconds=2.0, max_seconds=15.0)
+
+
+def _transient(exc: BaseException) -> bool:
+    """A CCP or Secrets Manager outage is worth retrying; a rejection is not."""
+    return isinstance(exc, ConnectorError) and exc.scenario.retryable
 
 
 @dataclass(frozen=True)
@@ -249,10 +258,14 @@ class CyberArkAuthenticator:
                     error = {"error_code": body.get("ErrorCode"), "error_msg": body.get("ErrorMsg")}
             except ValueError:
                 error = {"response": response.text[:500]}
+            # A 5xx or a throttle is CCP (or the Vault behind it) being
+            # unavailable, which a retry can outlast; any other status is CCP
+            # rejecting this AppID, certificate or query.
+            unavailable = response.status_code >= 500 or response.status_code == 429
             raise PreflightError(
                 f"CyberArk CCP returned HTTP {response.status_code}"
                 + (f" ({error['error_code']})" if error.get("error_code") else ""),
-                catalog.AUTHENTICATION_FAILURE,
+                catalog.NETWORK_FAILURE if unavailable else catalog.AUTHENTICATION_FAILURE,
                 context={**self._context, "status": response.status_code, **error},
             )
 
@@ -279,7 +292,13 @@ class CyberArkAuthenticator:
         with self._lock:
             if self._cached is not None and not refresh:
                 return self._cached
-            self._cached = self._fetch_account(self._load_client_certificate())
+            self._cached = retry(
+                lambda: self._fetch_account(self._load_client_certificate()),
+                attempts=self._settings.max_attempts,
+                policy=_BACKOFF,
+                retry_on=_transient,
+                description="CyberArk credential retrieval",
+            )
             logger.info(
                 "CyberArk credentials retrieved",
                 extra={"cyberark_username": self._cached.username},

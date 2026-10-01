@@ -13,7 +13,6 @@ from utility.trigger_payload import (
     PayloadBuildError,
     build_fields,
     serialise,
-    to_payload_document,
 )
 
 
@@ -182,7 +181,6 @@ class TestPayloadValidation:
         required = {"fieldName", "fieldValue", "fieldEncryptionPolicy", "fieldDataType"}
         valid_types = {t.value for t in DataType}
 
-        assert to_payload_document(fields) == fields
         for item in fields:
             assert set(item) == required
             assert all(isinstance(v, str) for v in item.values())

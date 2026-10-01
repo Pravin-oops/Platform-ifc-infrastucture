@@ -68,8 +68,8 @@ USER connector
 
 EXPOSE 8080
 
-# Liveness only. Readiness is probed by the load balancer or the ECS service
-# health check, because a task that is draining is deliberately not ready.
+# Liveness only: a task that is draining is deliberately not ready, but must
+# stay alive until the drain completes.
 # Probed with the interpreter, so the image needs no curl (and no yum step).
 HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
     CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health/live', timeout=3).read()"]

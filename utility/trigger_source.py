@@ -34,7 +34,7 @@ import posixpath
 import re
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Iterator, List, Optional, Set, Tuple, Union
+from typing import Any, Iterator, List, Optional, Tuple, Union
 
 from utility import failure_catalog as catalog
 from utility.error_classifier import RecordRejected
@@ -216,21 +216,12 @@ class TriggerSource:
                 raw=json.dumps(item, default=str)[:2000] if isinstance(item, (dict, list)) else str(item)[:2000],
             )
 
-    def stream(self, *, skip_objects: Optional[Set[str]] = None, limit: Optional[int] = None) -> Iterator[SourceItem]:
-        """Yield events across the prefix, oldest key first.
-
-        ``skip_objects`` comes from the checkpoint of an interrupted run, so a
-        restarted task does not re-read objects it already drained.
-        """
-        skip = skip_objects or set()
+    def stream(self, *, limit: Optional[int] = None) -> Iterator[SourceItem]:
+        """Yield events from the selected objects, oldest key first."""
         emitted = 0
         max_records = limit or self._settings.max_records_per_batch
 
         for path in self.selected_objects():
-            if path in skip:
-                logger.debug("Skipping already-processed object", extra={"source_object": path})
-                continue
-
             logger.info("Reading source object", extra={"source_object": path})
             self._objects_read.append(path)
 

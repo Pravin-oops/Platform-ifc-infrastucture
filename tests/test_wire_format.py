@@ -34,7 +34,6 @@ def dev_settings(**registry) -> ConnectorSettings:
             "source": {"type": "local", "path": "/tmp/x"},
             "kafka": {"topic": "t", "bsp_config_path": "b.yaml"},
             "schema_registry": {"mode": "DEV", **registry},
-            "state": {"backend": "memory"},
         }
     )
 

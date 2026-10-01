@@ -110,14 +110,13 @@ ifc_trigger_connector/            # imports are ifc_trigger_connector.utility.*
 |
 ├── scripts/                      # Executable entry points
 │   ├── main.py                   # CLI: run, validate, catalogue
-│   ├── main_ecs.py               # ECS platform entry: APP_CONFIG_PATH -> exit code
-│   └── main_local.py             # Local developer run, with --dry-run
+│   └── main_ecs.py               # ECS platform entry: APP_CONFIG_PATH -> exit code
 |
 ├── utility/
 │   ├── __init__.py
 │   ├── connector_utility.py      # S3/local path handling, loaders, resource resolution
 │   ├── connector_config.py       # typed config; YAML + IFC_ env overlay
-│   ├── connector_runner.py       # the batch/service loop
+│   ├── connector_runner.py       # the batch run
 │   ├── trigger_source.py         # streaming Trigger BDP reader
 │   ├── recon_gate.py             # upstream reconciliation gate
 │   ├── run_gate.py               # weekend / already-delivered gate, run markers
@@ -143,16 +142,13 @@ ifc_trigger_connector/            # imports are ifc_trigger_connector.utility.*
 │   |
 │   ├── schema.json                      # TriggerBackboneTopicSchema (Avro)
 │   ├── connector_config.yaml            # deployed app config (ECS, CyberArk-backed)
-│   ├── connector_config_ecs_local.yaml  # ECS entry point against a local data folder
-│   ├── connector_config_local.yaml      # local app config (offline, DEV, localhost broker)
-│   ├── connector_config_local_bsp.yaml  # local app config against real BSP (BAM, SECURE)
-│   ├── bsp_config_local.yaml            # BSP client librdkafka YAML for a local run
 │   └── requirements.txt
 |
-├── data/                         # local stand-in for the Trigger BDP, per trigger
-├── samples/                      # worked examples, used by --dry-run
-└── deploy/                       # ECS task definition, IAM, infrastructure, alarms
+└── tests/                        # pytest suite; run_tests.sh / run_tests.ps1 run it
 ```
+
+The deployment artefacts referred to below as `deploy/` (task definition, IAM policy,
+infrastructure, alarms, Athena DDL) are not kept in this repository.
 
 The import root `ifc_trigger_connector` matches the directory on disk, so the app runs from a
 checkout with nothing on `PYTHONPATH` beyond the repository root — the directory *above*
@@ -173,7 +169,7 @@ action, an exit code, and what the connector does automatically.
 
 | Scenario | Handling | What the connector does |
 |---|---|---|
-| **Producer Container Failure** | graceful drain | SIGTERM stops intake, flushes in-flight messages within the grace window, persists the checkpoint, exits 75 so a restart resumes rather than republishes |
+| **Producer Container Failure** | graceful drain | SIGTERM stops intake, flushes in-flight messages within the grace window, exits 75; the month stays undelivered, so the next invocation republishes it |
 | **Producer Out Of Memory** | back-pressure | Streaming reads (never a full listing in memory), capped producer queue, `BufferError` waits instead of growing the heap; RSS and RSS/limit published so the alarm precedes exit 137 |
 | **Network Connectivity Failure** | preflight abort | DNS resolution and a TCP connect to every broker (9095) and the registry (8095) before authenticating — the exact evidence a firewall request needs |
 | **Trigger BDP Read Failure** | preflight abort | Source prefix listed before any BSP handshake, so a permission or path error is reported in seconds |
@@ -181,10 +177,10 @@ action, an exit code, and what the connector does automatically.
 | **FRED Audit Store Failure** | reconcile + report | The S3 quarantine and the run manifest are the audit record; a rejected record is recoverable from the quarantine object alone |
 | **Zero records (TED job failure / missing source data)** | reconcile + report | An empty source on a scheduled run exits non-zero as `ZERO_RECORDS`, so a silent upstream failure cannot look like a clean run |
 | **Producer Reconciliation Failure** | reconcile + report | Manifest with full counts, per-partition offset ranges, and a balance check that fails the run when it does not hold |
-| **High Kafka Publish Latency** | retry + backoff | Ack-latency and queue-depth metrics; delivery timeouts retried with jittered backoff; sustained failure trips the breaker rather than queuing unboundedly |
+| **High Kafka Publish Latency** | retry + backoff | Ack-latency and queue-depth metrics; a failed publish is retried with jittered backoff up to `resilience.max_publish_attempts`, every failed attempt counting towards the breaker; a record that still fails is not quarantined, so the reconciliation fails the run |
 | **Message Too Large** | quarantine | Serialised size measured against the 800 KB limit *before* `produce()`; oversized records quarantined with a payload/overhead breakdown |
 | **Kafka Partition Leader Failure** | retry + backoff | Idempotent producer + librdkafka metadata refresh; escalates only past the breaker threshold |
-| **Broker Unavailable** | retry + backoff | Jittered backoff; after N consecutive failures the run is abandoned cleanly with the checkpoint intact |
+| **Broker Unavailable** | retry + backoff | Jittered backoff; after N consecutive failed attempts the run is abandoned cleanly and the month stays undelivered for the next invocation |
 | **Topic Unavailable / Incorrect Topic** | preflight abort | Cluster metadata for the topic, with a partition-count assertion — a typo fails in seconds |
 | **Schema Registry Unavailable** | retry + backoff | Schema id resolved once and cached, so a mid-run outage does not stop publishing |
 | **Authentication Failure** | preflight abort | CyberArk CCP, BAM and a registry call all happen before any record is read; JWT shape checked and `exp` tracked with pre-emptive refresh |
@@ -351,8 +347,7 @@ s3://.../trigger-events/trigger_8/SEPTEMBER_2026/trigger8_20260930_143022_123456
 The date is the **run** month in `Europe/London` — the month the run gate keys on — not the
 business month the records describe. A run in September 2026 reads `SEPTEMBER_2026` and publishes
 records stamped `2026-08-31T23:59:59.999999999Z`. Expansion happens on each read rather than once
-at load, so a resident service crossing a month boundary moves to the new folder without a
-restart, and the startup log and run summary both carry the resolved folder alongside the
+at load, and the startup log and run summary both carry the resolved folder alongside the
 template.
 
 **Reprocessing a past month.** Set `IFC_RUN__MONTH` (`run.month`) on a one-off RunTask to run as
@@ -431,10 +426,6 @@ The sub-event discriminator is the row's `business_date`. Neither table has a su
 and the grain is one row per counterparty per business date, so without it a second row for one
 counterparty inside a business month would collide with the first on trigger ID.
 
-Worked examples: [`samples/trigger_events.jsonl`](samples/trigger_events.jsonl)
-and the message it produces,
-[`samples/expected/trigger_8_message.json`](samples/expected/trigger_8_message.json).
-
 ---
 
 ## Identity, idempotency and ordering
@@ -463,7 +454,7 @@ durable record of what it sent, and a re-run republishes the month in full.
 
 The business month comes from the **run date**, not the data, so the same rows processed in a
 different calendar month get a different month, timestamp and trigger ID. A late re-delivery of
-June has to run in July; there is no config override for the month yet.
+June runs as July with `IFC_RUN__MONTH=2026-07` (see *Reprocessing a past month* above).
 
 **The Kafka key is the trigger ID**, as in the Trigger Backbone's reference records. It is unique
 per record, so records spread across partitions and a counterparty's events are not guaranteed to
@@ -474,8 +465,8 @@ type, sub-type, business month, `idType`, the CSID, the sub-event discriminator 
 for Triggers 8 and 9) and, from a customer's second event onwards, that customer's occurrence
 number. It is not published and no longer feeds the trigger ID.
 
-Only **acknowledged** messages are counted as published. An unacknowledged message is left for the
-next run rather than silently dropped.
+Only **acknowledged** messages are counted as published. An unacknowledged message fails the
+reconciliation, so the month stays undelivered and the next invocation republishes it.
 
 ---
 
@@ -509,11 +500,10 @@ and report success.
 
 ### Offline contract check — no AWS, no BSP
 
-The fastest way to check a trigger definition change. Run it in CI whenever the definitions or
-sample data change:
+The fastest way to check a trigger definition change. Point it at a source extract:
 
 ```bash
-python scripts/main.py validate --input samples/trigger_events.jsonl --show-payload
+python scripts/main.py validate --input <trigger_events.json> --show-payload
 ```
 
 ```
@@ -531,43 +521,17 @@ OK          SNSVC0084378_KYCRefresh_MultipleTMSARs_2026-06-30T23:59:59.999999999
 python scripts/main.py catalogue
 ```
 
-### Local dry run — no broker, no BSP, no network
+### Without BSP — DEV registry mode
 
-```bash
-python scripts/main_local.py --dry-run
-python scripts/main_local.py --dry-run --input samples/trigger_events.jsonl --show-payload
-```
+A config that omits `kafka.bsp_config_path` and supplies `bootstrap.servers` in `kafka.overrides`
+connects straight to a broker. There is no BAM authentication on that path, which is why the
+config validator refuses it with `schema_registry.mode: SECURE`. DEV does not look the schema id
+up, so it must be pinned with `schema_registry.schema_id` (or `IFC_SCHEMA_REGISTRY__SCHEMA_ID`);
+the connector refuses to start without one. Records are still written in Confluent wire format,
+because the consumer's `KafkaAvroDeserializer` rejects anything else. DEV skips the drift check,
+so the pinned id must belong to a schema that matches the bundled `.avsc`.
 
-Envelopes are built with the same `EnvelopeBuilder` the runner uses, Avro-validated and
-size-checked, then counted. A record that passes here is a record the real pipeline would accept;
-the only thing skipped is the network.
-
-### Local run against BSP
-
-`scripts/main_local.py` without `--dry-run` publishes real records: authenticate to BSP Kafka
-through `BSPAuthenticator`, fetch a **BAM token over REST** for the secure Schema Registry,
-resolve the subject's schema id, then build, serialise and publish, flush, and report the
-delivery tally.
-
-There is no CyberArk on this path: a laptop has no ECS task role, so the BSP system-account
-credentials come from the environment. `utility/kafka_factory.py` fetches the same values from
-CyberArk CCP on the ECS path instead.
-
-```bash
-set -a && . .env && set +a
-export BSP_USERNAME='snsvc...@INTRANET.BARCAPINT.COM' BSP_PASSWORD='...'
-export BAM_URL='https://bamuat-auth.client.barclayscorp.com/authn/authenticate/sso/api'
-export BAM_NAME='BarclaysStreamingPlatform'
-
-python scripts/main_local.py --config utility/connector_config_local_bsp.yaml --limit 4
-```
-
-Two config files support it: [`utility/connector_config_local_bsp.yaml`](utility/connector_config_local_bsp.yaml)
-(SECURE registry, no `cyberark:` section) and [`utility/bsp_config_local.yaml`](utility/bsp_config_local.yaml)
-(the BSP client's own librdkafka YAML). Both name *environment variables* rather than values, so
-neither holds a credential.
-
-Three properties of this path are deliberate, and worth knowing before changing it:
+Three properties of the publish path are deliberate, and worth knowing before changing it:
 
 - **The Kafka key is the trigger ID**, as the Trigger Backbone expects, and no headers are sent.
 - **Records are serialised before `produce()`**, not by a `SerializingProducer`, so the size guard
@@ -575,55 +539,6 @@ Three properties of this path are deliberate, and worth knowing before changing 
 - **A blocking schema drift aborts the run**, because records are written with the *local* schema
   under the *registered* schema's id — publishing through a mismatch produces messages the
   consumer silently mis-reads.
-
-### Local broker
-
-`utility/connector_config_local.yaml` omits `bsp_config_path` and connects straight to
-`localhost:9092`. There is no BAM authentication on that path, which is why the config validator
-refuses it with `schema_registry.mode: SECURE`. DEV does not look the schema id up, so it must be
-pinned with `schema_registry.schema_id` (or `IFC_SCHEMA_REGISTRY__SCHEMA_ID`); the connector
-refuses to start without one. Records are still written in Confluent wire format, because the
-consumer's `KafkaAvroDeserializer` rejects anything else. DEV skips the drift check, so the
-pinned id must belong to a schema that matches the bundled `.avsc`.
-
-```bash
-python scripts/main_local.py --config utility/connector_config_local.yaml
-```
-
-### ECS entry point against a local data folder — no S3
-
-The Trigger Event BDP source is not built yet, so `utility/connector_config_ecs_local.yaml` runs
-`main_ecs.py` against [`data/`](data) instead of an S3 prefix. Everything downstream — envelope,
-payload contract, Avro, Schema Registry, topic — is the UAT path unchanged; only the source differs.
-
-```bash
-APP_CONFIG_PATH=utility/connector_config_ecs_local.yaml IFC_RUN__TRIGGER=TRIGGER_8 python scripts/main_ecs.py
-```
-
-Four things are switched off, all in config. **No code is commented out**: paths are read as S3
-when they start with `s3://` and as local files otherwise, and `AuditWriter` already degrades to
-log-only without a bucket.
-
-| Setting | Local value | Effect |
-|---|---|---|
-| `source.type` / `trigger_paths` | `local` / `data/trigger_<n>` | Each trigger reads its own folder, not the BDP prefix |
-| `source.archive_path` | `null` | Nothing to archive — a local file is not the regulatory record |
-| `audit.bucket` | `null` | Manifest to the log; no S3 writes |
-| `state.backend` | `memory` | No DynamoDB. Re-running the same data republishes it |
-| `run_marker.path` | `null` | The invocation gate is off; the run proceeds on any day |
-
-Each of those has its UAT value on the line below it, commented, so restoring the S3 source is
-uncommenting four blocks.
-
-`kafka.bsp_config_path` points at the **bundled** BSP client YAML,
-[`utility/bsp_config_local.yaml`](utility/bsp_config_local.yaml), for the same reason — the UAT
-value reads it over `s3://`. A relative path resolves against the connector root, so nothing
-needs copying. That file uses PLAINTEXT on 9092; confirm the UAT cluster accepts it from where you
-run.
-
-A run with no broker reachable still proves the source end: expect `records_parsed: 3`,
-`published: 3`, `acked: 0` in the manifest, and `RECONCILIATION_FAILED` because nothing was
-acknowledged. With the broker up, `acked` matches `published` and the outcome is `SUCCESS`.
 
 ### Container
 
@@ -638,7 +553,7 @@ That base already provides `python` 3.12 on PATH, so there is **no interpreter i
 the toolchain exists, the runtime image carries none.
 
 The build **context is the connector directory**, not `Docker/`. It has to be: every `COPY`
-reaches into `utility/`, `scripts/`, `samples/` and `data/`, and Docker refuses to copy from
+reaches into `utility/` and `scripts/`, and Docker refuses to copy from
 outside the context. Pass the file with `-f` and the context as the final argument.
 
 ```bash
@@ -654,10 +569,6 @@ docker build -f Docker/Dockerfile -t ifc-trigger-connector:0.0.4 .
 > `platform-ifc-infrastructure` application; the directory name is an *import path*, not the
 > deployment name. To make the two match, the package itself has to be renamed
 > (`platform_ifc_infrastructure`, underscores) across every import.
-
-`data/` must be copied too while the Trigger Event BDP source is unbuilt —
-`connector_config_ecs_local.yaml` reads `data` as its source, and without it a container run
-reports `ZERO_RECORDS`.
 
 `tzdata` is in `requirements.txt` deliberately: [`utility/run_gate.py`](utility/run_gate.py)
 resolves the weekday in `Europe/London` through `zoneinfo`, and a slim RHEL image may carry no
@@ -694,7 +605,7 @@ separates sections:
 
 ```
 IFC_KAFKA__TOPIC=tc01_fncmtrgrbb_ifc_tbb_kyc_refresh
-IFC_RUN__MODE=service
+IFC_RUN__TRIGGER=TRIGGER_8
 IFC_SOURCE__PATH=s3://bucket/prefix/
 ```
 
@@ -705,9 +616,8 @@ No secret is ever configuration. CyberArk CCP supplies the BSP system-account cr
 runtime, authenticated with a client certificate the ECS task role reads from Secrets Manager;
 only the Safe/object query and the certificate secret's *name* are configured.
 
-Supplied configs: [`utility/connector_config.yaml`](utility/connector_config.yaml) (UAT; values
-needing confirmation are marked `CONFIRM`) and
-[`utility/connector_config_local.yaml`](utility/connector_config_local.yaml).
+Supplied config: [`utility/connector_config.yaml`](utility/connector_config.yaml) (UAT; values
+needing confirmation are marked `CONFIRM`).
 
 ---
 
@@ -926,29 +836,27 @@ log archaeology. Grouped: **10–19** infrastructure, **20–29** data/contract,
 
 ## Deployment
 
-Artefacts in [`deploy/`](deploy):
+Deployment artefacts (`deploy/`, kept outside this repository):
 
 | File | Contents |
 |---|---|
 | `ecs-task-definition.json` | Fargate task definition. `stopTimeout: 120` **must** exceed `run.shutdown_grace_seconds` (90), or SIGKILL wins and the drain is lost |
-| `iam-task-role-policy.json` | Least-privilege task role, including an explicit **Deny** on deleting from the Trigger BDP — the connector archives by copy, never deletes |
-| `infrastructure.json` | The run-marker file location, the three EventBridge trigger schedules *or* the continuous ECS service, egress security group (9095/8095/BAM/CyberArk CCP), log retention |
+| `iam-task-role-policy.json` | Least-privilege task role, including an explicit **Deny** on deleting from the Trigger BDP — the connector only reads it |
+| `infrastructure.json` | The run-marker file location, the three EventBridge trigger schedules, egress security group (9095/8095/BAM/CyberArk CCP), log retention |
 | `athena-run-markers.sql` | Athena table and latest-state view over the run marker file |
 | `cloudwatch-alarms.json` | One alarm per observable scenario, each naming the catalogue scenario it detects |
 
-Two deployment modes, same image and task definition:
+The connector runs as a batch: EventBridge Scheduler starts one ECS RunTask per trigger, each
+firing on three consecutive dates (`cron(0 3 3,4,5 * ? *)` and so on). The container decides
+whether to process; see [The invocation gate](#the-invocation-gate). The task drains and exits.
 
-- **`run.mode: batch`** with EventBridge Scheduler — one schedule per trigger, each firing on
-  three consecutive dates (`cron(0 3 3,4,5 * ? *)` and so on). The container decides whether to
-  process; see [The invocation gate](#the-invocation-gate). The task drains and exits.
-- **`run.mode: service`** as a resident ECS service polling the prefix. Keep `desiredCount: 1`
-  unless the DynamoDB state backend is in use; the S3 backend cannot allocate sequence numbers
-  safely across concurrent tasks.
+**Alarms use the `Maximum` statistic.** The EMF counters (`MessagesAcked`, `MessagesFailed`,
+`RecordsQuarantined`, ...) are running totals for the run, re-emitted at every progress report
+and again at the end, so `Sum` over a period adds the same records up several times. `Maximum`
+is the run's final value.
 
-Health endpoints on `:8080` — `/health/live` (restart me), `/health/ready` (stop routing to me),
-`/health/startup` (preflight done), `/metrics`. A task that has lost its BSP connection but is
-still running reports **not ready**, which is the most dangerous form of container failure:
-nothing crashes, and nothing publishes.
+Health endpoints on `:8080` — `/health/live` (restart me), `/health/ready`, `/health/startup`
+(preflight done), `/metrics`. The container `HEALTHCHECK` probes `/health/live`.
 
 ---
 

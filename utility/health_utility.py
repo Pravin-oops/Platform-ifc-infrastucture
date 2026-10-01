@@ -1,7 +1,7 @@
-"""HTTP health endpoints for the ECS container health check and the ALB.
+"""HTTP health endpoints for the ECS container health check.
 
 ECS decides whether a task is healthy from the container's ``healthCheck``
-command or from a load balancer probe. Without one, a task that has lost its BSP
+command. Without one, a task that has lost its BSP
 connection but is still running looks perfectly healthy and quietly publishes
 nothing - the 'Producer Container Failure' scenario in its most dangerous form,
 where nothing crashes.
@@ -55,16 +55,6 @@ class HealthState:
             self._ready = True
             if detail:
                 self._detail.update(detail)
-
-    def mark_unready(self, reason: str) -> None:
-        with self._lock:
-            self._ready = False
-            self._detail["unready_reason"] = reason
-
-    def mark_ready(self) -> None:
-        with self._lock:
-            self._ready = True
-            self._detail.pop("unready_reason", None)
 
     def mark_draining(self) -> None:
         with self._lock:

@@ -8,7 +8,6 @@ what to do next - all lifted from the agreed catalogue rather than invented here
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any, Dict, Optional
 
@@ -91,7 +90,7 @@ def build_body(
     return "\n".join(lines)
 
 
-def _describe_error(exc: Exception) -> str:
+def describe_aws_error(exc: Exception) -> str:
     """``AuthorizationError: User ... is not authorized`` rather than a bare class name."""
     if isinstance(exc, ClientError):
         error = exc.response.get("Error", {})
@@ -186,7 +185,7 @@ class Notifier:
                 },
             )
         except (ClientError, BotoCoreError) as exc:
-            error = _describe_error(exc)
+            error = describe_aws_error(exc)
             logger.exception(
                 "SNS failure alert FAILED to send; alert remains in the log only: "
                 "topic=%s error=%s subject=%r message=\n%s",
@@ -206,15 +205,3 @@ class Notifier:
             )
 
         return {"subject": subject, "message": body}
-
-    def notify_json(self, classification: Classification, **kwargs: Any) -> str:
-        """Machine-readable variant, for an EventBridge or ticketing integration."""
-        return json.dumps(
-            {
-                "subject": build_subject(
-                    classification, application=self._application, environment=self._environment
-                ),
-                **classification.to_dict(),
-            },
-            default=str,
-        )

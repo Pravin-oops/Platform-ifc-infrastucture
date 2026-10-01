@@ -82,13 +82,8 @@ class AppSettings(BaseModel):
 
 
 class RunSettings(BaseModel):
-    #: ``batch``   - drain the source once and exit. Use with ECS RunTask /
-    #:               EventBridge Scheduler for the monthly cadence.
-    #: ``service`` - stay resident and re-poll the source. Use with an ECS
-    #:               service when triggers arrive continuously.
-    mode: Literal["batch", "service"] = "batch"
-    poll_interval_seconds: int = Field(default=300, ge=5)
-    max_batches: int = Field(default=0, ge=0, description="0 = unbounded (service mode only).")
+    """One invocation drains the month's source once and exits (ECS RunTask)."""
+
     shutdown_grace_seconds: int = Field(
         default=90,
         ge=5,
@@ -179,10 +174,6 @@ class SourceSettings(BaseModel):
     #: Per-trigger source location, keyed by trigger (any accepted spelling).
     #: The scheduler names the trigger; this decides where its data is read from.
     trigger_paths: Dict[str, str] = Field(default_factory=dict)
-    archive_path: Optional[str] = Field(
-        default=None,
-        description="Where a successfully drained object is copied. None = leave in place.",
-    )
     #: ``None`` (the default) publishes every record the source holds. A number
     #: caps the batch, which only makes sense when the remainder can be picked
     #: up later - that is, when the source is a prefix of several objects. The
@@ -225,9 +216,8 @@ class SourceSettings(BaseModel):
         entry can supply it, but by the time the source is read
         ``ConnectorSettings.select_trigger`` must have resolved it.
 
-        Expansion happens here rather than once at load, so a resident service
-        that crosses midnight - or a month boundary - moves to the new folder
-        without a restart.
+        Expansion happens here rather than once at load, so the folder always
+        follows the execution date in force when the source is read.
         """
         if not self.path:
             raise ValueError(
@@ -265,8 +255,8 @@ class ReconSettings(BaseModel):
     def resolved_path(self) -> str:
         """The recon location for this run, tokens still unexpanded.
 
-        ``ReconSource`` expands them, so a resident service crossing a month
-        boundary looks in the new month's folder without a restart.
+        ``ReconSource`` expands them when it reads, so the folder follows the
+        execution date in force at that point.
         """
         if not self.path:
             raise ValueError(
@@ -335,6 +325,9 @@ class CyberArkSettings(BaseModel):
     ca_bundle_path: str = "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"
     ssl_verify: bool = True
     request_timeout: int = 30
+    #: Attempts at the credential when CCP or Secrets Manager is unavailable.
+    #: A rejected certificate or query fails on the first attempt.
+    max_attempts: int = Field(default=3, ge=1)
     #: Realm appended to the CyberArk username to form the BSP principal.
     principal_realm: str = "@INTRANET.BARCAPINT.COM"
 
@@ -428,8 +421,6 @@ class ConnectorSettings(BaseModel):
 
     @model_validator(mode="after")
     def _cross_checks(self) -> "ConnectorSettings":
-        if self.run.mode == "service" and self.source.type == "local":
-            raise ValueError("run.mode=service is not supported with source.type=local")
         if self.audit.write_payloads and not self.audit.bucket:
             raise ValueError("audit.bucket is required when audit.write_payloads is true")
         if not self.kafka.bsp_config_path and not self.kafka.overrides.get("bootstrap.servers"):
@@ -461,11 +452,10 @@ class ConnectorSettings(BaseModel):
     def gate_active(self) -> bool:
         """Whether the entry-point run gate applies to this configuration.
 
-        Only a batch run with a marker file is gated: a ``service`` run is
-        resident and has no invocation to gate, and a local run leaves
+        Only a run with a marker file is gated: a local run leaves
         ``run_marker.path`` unset so it needs no trigger and no marker file.
         """
-        return self.run.mode == "batch" and bool(self.run_marker.path)
+        return bool(self.run_marker.path)
 
     def select_trigger(self, trigger: Any, *, data_path: Optional[str] = None) -> Optional[str]:
         """Fix this run's trigger and point the source at that trigger's data.

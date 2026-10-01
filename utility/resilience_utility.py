@@ -5,9 +5,9 @@ All three exist because the connector is long-lived and container-hosted:
 * retries have to be interruptible, or a SIGTERM lands in the middle of a
   60-second sleep and ECS escalates to SIGKILL;
 * a circuit breaker turns "BSP is down" from an infinite retry loop into a
-  clean, checkpointed exit that the next scheduled run resumes from;
+  clean exit that leaves the month undelivered for the next invocation;
 * shutdown is cooperative, so the drain path is the same whether the task is
-  stopped by a deployment, a scale-in or an operator.
+  stopped by a deployment or an operator.
 """
 
 from __future__ import annotations
@@ -113,7 +113,7 @@ def retry(
     for attempt in range(1, attempts + 1):
         try:
             return operation()
-        except BaseException as exc:  # noqa: BLE001 - re-raised below
+        except Exception as exc:  # noqa: BLE001 - re-raised below
             last_error = exc
 
             if not retry_on(exc):
@@ -177,7 +177,7 @@ class CircuitBreaker:
         with self._lock:
             if self._opened_at is None:
                 return False
-            if time.time() - self._opened_at >= self._reset_seconds:
+            if time.monotonic() - self._opened_at >= self._reset_seconds:
                 logger.info("Circuit '%s' half-opening after cooldown", self._name)
                 self._opened_at = None
                 self._failures = 0
@@ -199,7 +199,7 @@ class CircuitBreaker:
             self._failures += 1
             self._last_error = error or self._last_error
             if self._failures >= self._threshold and self._opened_at is None:
-                self._opened_at = time.time()
+                self._opened_at = time.monotonic()
                 logger.error(
                     "Circuit '%s' opened after %s consecutive failures",
                     self._name,

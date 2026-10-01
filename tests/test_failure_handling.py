@@ -75,11 +75,24 @@ class TestClassifier:
             (RuntimeError("SaslAuthenticationException: bad credentials"), "AUTHENTICATION_FAILURE"),
             (RuntimeError("leader not available"), "KAFKA_PARTITION_LEADER_FAILURE"),
             (RuntimeError("getaddrinfo failed"), "NETWORK_CONNECTIVITY_FAILURE"),
+            (RuntimeError("[Errno 110] Connection timed out"), "NETWORK_CONNECTIVITY_FAILURE"),
+            (
+                RuntimeError(
+                    "HTTPSConnectionPool(host='ccp', port=443): Max retries exceeded (Caused by "
+                    "ConnectTimeoutError('Connection to ccp timed out. (connect timeout=30)'))"
+                ),
+                "NETWORK_CONNECTIVITY_FAILURE",
+            ),
+            (FakeKafkaError("_TIMED_OUT", message="Local: Timed out"), "HIGH_KAFKA_PUBLISH_LATENCY"),
             (MemoryError(), "PRODUCER_OUT_OF_MEMORY"),
         ],
     )
     def test_known_signatures_map_to_the_right_scenario(self, error, expected):
         assert classify(error).scenario.key == expected
+
+    def test_an_error_that_merely_mentions_avro_is_not_a_schema_failure(self):
+        error = RuntimeError("Failed to download the avro extract from the landing bucket")
+        assert classify(error).scenario.key != "SCHEMA_VALIDATION_FAILURE"
 
     def test_separator_variants_match_the_same_pattern(self):
         assert classify(RuntimeError("NotLeaderForPartition")).scenario.key == (
