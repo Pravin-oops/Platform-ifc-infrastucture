@@ -165,7 +165,7 @@ class KafkaStackFactory:
                 self._report, registry, label="schema_registry", timeout=timeout, require_all=True
             )
 
-    def _resolve_schema(self, tokens: TokenProvider) -> tuple[Dict[str, Any], Optional[int], Dict[str, Any]]:
+    def _resolve_schema(self, tokens: TokenProvider) -> tuple[Dict[str, Any], int, Dict[str, Any]]:
         settings = self._settings
         local_schema = load_schema_document(settings.schema_registry.schema_path)
 
@@ -234,9 +234,11 @@ class KafkaStackFactory:
             return dict(context)
 
         pf.check_schema_registry(self._report, resolve=resolve)
+        # A failed lookup is recorded, not raised; raise it here so a missing
+        # schema id can never reach the serializer.
+        self._report.raise_if_failed()
 
-        # None only when the lookup failed, which build() raises on next.
-        return local_schema, context.get("schema_id"), context
+        return local_schema, context["schema_id"], context
 
     def _metadata_checks(self, producer: Any) -> None:
         timeout = float(self._settings.resilience.preflight_timeout_seconds)

@@ -52,7 +52,7 @@ class TestSerializer:
 
     def test_a_missing_schema_id_is_refused(self):
         with pytest.raises(ValueError, match="schema id"):
-            AvroSerializer(SCHEMA, None)
+            AvroSerializer(SCHEMA, None)  # pyright: ignore[reportArgumentType]
 
 
 class TestDevMode:
