@@ -227,6 +227,16 @@ class TestPublishBatchNotification:
         main_ecs_script._publish_batch_notification(a_settings(), runner)
         assert sent == [], reason
 
+    def test_the_outcome_is_returned_for_the_run_summary(self, main_ecs_script, sent):
+        clean = types.SimpleNamespace(last_result=a_result(), run_id="run-abc")
+        failed = types.SimpleNamespace(last_result=a_result(outcome="FAILED"), run_id="run-abc")
+
+        assert main_ecs_script._publish_batch_notification(a_settings(), clean)["status"] == "SENT"
+        assert main_ecs_script._publish_batch_notification(a_settings(), failed) == {
+            "status": "SKIPPED",
+            "reason": "run outcome is FAILED, not SUCCESS",
+        }
+
     def test_a_skipped_notification_logs_why(self, main_ecs_script, sent, caplog):
         runner = types.SimpleNamespace(last_result=a_result(outcome="FAILED"), run_id="run-abc")
         main_ecs_script._publish_batch_notification(a_settings(), runner)

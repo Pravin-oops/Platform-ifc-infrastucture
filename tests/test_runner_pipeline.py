@@ -236,6 +236,40 @@ class TestHappyPath:
         assert int.from_bytes(value[1:5], "big") == 101
 
 
+class TestRunLogs:
+    """The lines an operator reads in the ECS console to answer 'did it publish?'."""
+
+    def messages(self, caplog, prefix):
+        return [r.getMessage() for r in caplog.records if r.getMessage().startswith(prefix)]
+
+    def test_each_acknowledged_message_is_logged_as_published(self, runner_factory, caplog):
+        caplog.set_level("INFO")
+        runner, _ = runner_factory([VALID_EVENT])
+        runner.run_batch()
+
+        [published] = self.messages(caplog, "Message published:")
+        assert "topic=test_ifc_topic" in published
+        assert f"trigger_id={FIRST_TRIGGER_ID}" in published
+        assert "offset=1" in published
+
+    def test_a_failed_delivery_is_logged_as_not_published(self, runner_factory, caplog):
+        caplog.set_level("INFO")
+        runner, _ = runner_factory([VALID_EVENT], fail_keys={FIRST_TRIGGER_ID})
+        runner.run_batch()
+
+        assert self.messages(caplog, "Message published:") == []
+        [failed] = self.messages(caplog, "Message NOT published:")
+        assert f"trigger_id={FIRST_TRIGGER_ID}" in failed
+
+    def test_the_batch_ends_with_a_publish_summary(self, runner_factory, caplog):
+        caplog.set_level("INFO")
+        runner, _ = runner_factory([VALID_EVENT])
+        runner.run_batch()
+
+        [summary] = self.messages(caplog, "Kafka publish summary:")
+        assert "topic=test_ifc_topic schema_id=101 published=1 acked=1 delivery_failed=0" in summary
+
+
 class TestQuarantine:
     def test_a_poison_record_is_quarantined_and_the_batch_continues(self, runner_factory):
         poison = {**VALID_EVENT, "attributes": {"region": "EMEA"}}

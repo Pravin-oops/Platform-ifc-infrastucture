@@ -9,7 +9,7 @@ only failures left are genuine runtime ones.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
 from utility.auth_helper import BSPClient, BSPTokenProvider, TokenProvider
@@ -73,6 +73,9 @@ class KafkaStack:
     schema_id: int
     preflight: Dict[str, Any]
     producer: Any
+    #: Where the schema id came from: the registry subject and version in SECURE
+    #: mode, or ``{"mode": "DEV", ...}`` when it is pinned in config.
+    schema_context: Dict[str, Any] = field(default_factory=dict)
 
 
 class KafkaStackFactory:
@@ -293,7 +296,7 @@ class KafkaStackFactory:
         else:
             tokens = _NoTokenProvider()
 
-        local_schema, schema_id, _ = self._resolve_schema(tokens)
+        local_schema, schema_id, schema_context = self._resolve_schema(tokens)
         self._report.raise_if_failed()
 
         producer = self._producer_factory(config)
@@ -317,4 +320,5 @@ class KafkaStackFactory:
             schema_id=schema_id,
             preflight=self._report.to_dict(),
             producer=producer,
+            schema_context=schema_context,
         )

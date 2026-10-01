@@ -12,7 +12,10 @@ import struct
 import pytest
 from fastavro import parse_schema, schemaless_reader
 
+from tests.test_runner_pipeline import FakeProducer, VALID_EVENT, make_settings, write_events
 from utility.connector_config import ConnectorSettings
+from utility.connector_runner import ConnectorRunner
+from utility.connector_utility import load_schema_document
 from utility.error_classifier import PreflightError
 from utility.kafka_factory import KafkaStackFactory, _NoTokenProvider
 from utility.kafka_serializers import AvroSerializer
@@ -68,3 +71,28 @@ class TestDevMode:
     def test_schema_id_overlay_is_coerced_to_int(self):
         settings = dev_settings(schema_id="4711")
         assert settings.schema_registry.schema_id == 4711
+
+    def test_dev_pipeline_produces_wire_format(self, tmp_path, caplog):
+        """Through start() and the real factory, not an injected serializer."""
+        caplog.set_level("INFO")
+        write_events(tmp_path, [VALID_EVENT])
+        settings = make_settings(
+            tmp_path,
+            schema_registry={"mode": "DEV", "schema_id": 1299},
+            kafka={"bsp_config_path": None, "overrides": {"bootstrap.servers": "localhost:9092"}},
+        )
+        producer = FakeProducer()
+        runner = ConnectorRunner(settings, shutdown=ShutdownSignal(), producer_factory=lambda _: producer)
+
+        runner.start()
+        assert runner.run_batch().counters.published == 1
+
+        [ready] = [r.getMessage() for r in caplog.records if r.getMessage().startswith("Kafka target ready:")]
+        assert "schema_registry_mode=DEV schema_id=1299" in ready
+        assert "wire_format_header=00 00 00 05 13" in ready
+
+        value = producer.produced[0]["value"]
+        assert value[:5] == bytes([0, 0, 0, 0x05, 0x13])
+        schema = load_schema_document("utility/schema.json")
+        body = schemaless_reader(io.BytesIO(value[5:]), parse_schema(schema))
+        assert isinstance(body, dict) and body["triggerSubType"] == "NewHRCRelationship"

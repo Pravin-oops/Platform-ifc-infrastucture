@@ -49,9 +49,14 @@ class AvroSerializer:
     def schema_id(self) -> int:
         return self._schema_id
 
+    @property
+    def header(self) -> bytes:
+        """The 5 bytes every record starts with; logged so a raw read can be checked."""
+        return _HEADER.pack(MAGIC_BYTE, self._schema_id)
+
     def __call__(self, record: Dict[str, Any]) -> bytes:
         buffer = io.BytesIO()
-        buffer.write(_HEADER.pack(MAGIC_BYTE, self._schema_id))
+        buffer.write(self.header)
 
         try:
             schemaless_writer(buffer, self._parsed, record)
@@ -110,7 +115,8 @@ def build_serializer(
     name: str = "value",
 ) -> AvroSerializer:
     serializer = AvroSerializer(schema, schema_id, name=name)
-    logger.info(
+    # DEBUG: the runner's "Kafka target ready" line carries the same facts.
+    logger.debug(
         "Avro serializer ready",
         extra={"schema_name": schema.get("name"), "schema_id": schema_id},
     )
