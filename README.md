@@ -355,6 +355,15 @@ at load, so a resident service crossing a month boundary moves to the new folder
 restart, and the startup log and run summary both carry the resolved folder alongside the
 template.
 
+**Reprocessing a past month.** Set `IFC_RUN__MONTH` (`run.month`) on a one-off RunTask to run as
+that month instead of the current one. It takes `2026-08` or the folder's own `AUGUST_2026`. An
+October run with `IFC_RUN__MONTH=2026-08` behaves exactly as the August run did: it reads
+`AUGUST_2026` (source and recon), stamps records `2026-07-31T23:59:59.999999999Z`, and records its
+outcome against `2026-08` in the run marker. The day-only tokens (`{DD}`, `{YYYYMMDD}`) render the
+1st. Two things stay on the real date: the weekend check, and the marker line's `run_date`. A
+month already marked `SUCCESS` is still skipped unless `IFC_RUN__FORCE=true` is set too, so the
+override alone cannot republish a delivered month by accident. Leave it unset on the schedule.
+
 **Only the newest extract in that folder is read.** TED rewrites the month's extract rather than
 appending, so an older file beside it is a superseded draft; reading them all would republish
 stale content under fresh trigger IDs. Files are ordered by the timestamp *parsed* out of the

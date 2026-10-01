@@ -73,3 +73,14 @@ def clean_ifc_env(monkeypatch) -> Iterator[None]:
         if key.startswith("IFC_") or key in {"APP_CONFIG_PATH", "IFC_HOME"}:
             monkeypatch.delenv(key, raising=False)
     yield
+
+
+@pytest.fixture(autouse=True)
+def _no_pinned_month() -> Iterator[None]:
+    """``load_settings`` pins ``run.month`` for the process; never let it leak
+    from one test into the next."""
+    from utility import run_gate
+
+    run_gate.set_execution_month(None)
+    yield
+    run_gate.set_execution_month(None)

@@ -13,6 +13,8 @@ Environment (all optional except the config path):
 
     APP_CONFIG_PATH   connector config YAML, local path or s3://   (required)
     IFC_RUN__MODE     batch | service - overrides the config file
+    IFC_RUN__MONTH    YYYY-MM (or AUGUST_2026) - reprocess that month instead of
+                      the current one; add IFC_RUN__FORCE=true if it was delivered
     IFC_LOG_LEVEL     overrides app.log_level
     IFC_*             any other setting, e.g. IFC_KAFKA__TOPIC
 
@@ -58,7 +60,7 @@ from utility.tb_outcome_schema import now_timestamp
 from utility.trigger_definitions import resolve as resolve_trigger
 from utility import recon_gate
 from utility import run_gate
-from utility.run_gate import RunMarker, month_of, should_run, today
+from utility.run_gate import RunMarker, execution_date, month_of, should_run
 from utility.trigger_batch_notifier import (
     TriggerBatchNotification,
     TriggerBatchNotifier,
@@ -168,7 +170,10 @@ def _gate(settings, event: Dict[str, Any]) -> Tuple[Optional[Gate], Optional[str
 
     gate = Gate(_trigger_for(settings), RunMarker(settings.run_marker.path))
     outcome = should_run(
-        gate.trigger, gate.marker, force=event.get("force") or settings.run.force
+        gate.trigger,
+        gate.marker,
+        month=month_of(execution_date()),
+        force=event.get("force") or settings.run.force,
     )
     logger.info("Run gate: %s - %s", "PROCEED" if outcome.proceed else "SKIP", outcome.reason)
 
@@ -187,7 +192,7 @@ def _record(gate: Optional[Gate], status: str, *, records: int = 0, reason: str 
     """
     if gate is None:
         return
-    month = month_of(today())
+    month = month_of(execution_date())
     try:
         gate.marker.record(gate.trigger, month, status=status, records=records, reason=reason)
         logger.info(
@@ -227,7 +232,7 @@ def _recon_gate(settings, config_path: str, task: Dict[str, Optional[str]],
         )
         return None
 
-    month = month_of(today())
+    month = month_of(execution_date())
     try:
         decision = recon_gate.evaluate(settings.recon, execution_month=month)
     except Exception as exc:
@@ -367,6 +372,14 @@ def ecs_handler(event: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     task = ecs_task_metadata()
     invocation = Invocation(settings)
 
+    if settings.run.month:
+        logger.warning(
+            "Reprocessing %s: run.month overrides the current month for the source "
+            "folder, the business month and the run marker",
+            settings.run.month,
+            extra={"run_month": settings.run.month, "force": settings.run.force},
+        )
+
     registry = settings.schema_registry
     logger.info(
         "Connector starting on ECS: trigger=%s run_mode=%s topic=%s schema_registry_mode=%s "
@@ -504,7 +517,7 @@ def ecs_handler(event: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         # FAILURE, so the next date in the window retries and the file says
         # what happened rather than staying silent.
         delivered = runner.last_result.counters.acked if runner.last_result else 0
-        month = month_of(today())
+        month = month_of(execution_date())
         if exit_code == catalog.EXIT_OK and delivered:
             _record(gate, run_gate.STATUS_SUCCESS, records=delivered)
             summary["month_delivered"] = month

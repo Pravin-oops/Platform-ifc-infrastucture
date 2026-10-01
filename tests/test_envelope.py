@@ -8,7 +8,7 @@ from datetime import date
 
 import pytest
 
-from utility import tb_outcome_schema
+from utility import run_gate
 from utility import trigger_definitions as definitions
 from utility.error_classifier import PreflightError, RecordRejected
 from utility.connector_utility import load_schema_document
@@ -200,7 +200,7 @@ class TestBusinessMonth:
         assert month_end_timestamp(month) == expected
 
     def test_the_builder_defaults_to_the_month_before_today(self, schema, monkeypatch):
-        monkeypatch.setattr(tb_outcome_schema, "today", lambda: date(2026, 7, 15))
+        monkeypatch.setattr(run_gate, "today", lambda tz=None: date(2026, 7, 15))
         builder = make_builder(schema, business_month=None)
 
         assert builder.business_month == "2026-06"

@@ -42,7 +42,7 @@ from fastavro.validation import validate as avro_validate
 from utility import failure_catalog as catalog
 from utility.error_classifier import PreflightError, RecordRejected
 from utility import trigger_definitions as definitions
-from utility.run_gate import today
+from utility.run_gate import execution_date
 from utility.trigger_definitions import TriggerDefinition
 from utility.trigger_payload import (
     PayloadBuildError,
@@ -230,7 +230,7 @@ class EnvelopeBuilder:
         self._sequence = sequence_allocator
         # Fixed for the life of the builder, so every record of a run carries
         # the same business month even if the run crosses midnight.
-        self._business_month = business_month or previous_month(today())
+        self._business_month = business_month or previous_month(execution_date())
         self._event_timestamp = month_end_timestamp(self._business_month)
         self._assert_subtypes_encodable()
 
