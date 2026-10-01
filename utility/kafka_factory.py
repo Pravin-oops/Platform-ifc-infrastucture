@@ -70,7 +70,7 @@ class KafkaStack:
     serializer: AvroSerializer
     size_guard: SizeGuard
     token_provider: TokenProvider
-    schema_id: Optional[int]
+    schema_id: int
     preflight: Dict[str, Any]
     producer: Any
 
@@ -170,11 +170,22 @@ class KafkaStackFactory:
         local_schema = load_schema_document(settings.schema_registry.schema_path)
 
         if settings.schema_registry.mode == "DEV":
+            schema_id = settings.schema_registry.schema_id
+            if schema_id is None:
+                # Unframed Avro is undecodable by KafkaAvroDeserializer, so refuse
+                # to start rather than publish records no consumer can read.
+                raise PreflightError(
+                    "schema_registry.mode is DEV but schema_registry.schema_id is not set; "
+                    "records must carry the Confluent wire-format header",
+                    catalog.SCHEMA_VALIDATION_FAILURE,
+                    context={"mode": "DEV"},
+                )
             logger.warning(
-                "Schema Registry mode is DEV: records are written unframed, without a schema id. "
-                "A BSP consumer expecting the Confluent wire format cannot decode them."
+                "Schema Registry mode is DEV: framing records with the configured schema id %s "
+                "without checking the local schema against the registry",
+                schema_id,
             )
-            return local_schema, None, {"mode": "DEV"}
+            return local_schema, schema_id, {"mode": "DEV", "schema_id": schema_id}
 
         client = SchemaRegistryClient(
             settings.schema_registry.url or "",
@@ -224,6 +235,7 @@ class KafkaStackFactory:
 
         pf.check_schema_registry(self._report, resolve=resolve)
 
+        # None only when the lookup failed, which build() raises on next.
         return local_schema, context.get("schema_id"), context
 
     def _metadata_checks(self, producer: Any) -> None:

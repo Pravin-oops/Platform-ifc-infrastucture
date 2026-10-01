@@ -214,7 +214,11 @@ refuses to run on a blocking difference — a field the registry does not know a
 registry field we do not populate, or a type change. Additive optional fields are logged and
 allowed.
 
-Records are written in **Confluent wire format**: `0x00` + 4-byte schema id + Avro body.
+Records are written in **Confluent wire format**: `0x00` + 4-byte schema id + Avro body, in every
+mode. That is the format `io.confluent.kafka.serializers.KafkaAvroDeserializer` (the consumer's
+Flink job) and `confluent_kafka.schema_registry.avro.AvroSerializer` both use; the connector's
+own serializer writes the same bytes, but returns them before `produce()` so the size guard can
+see them. A record whose first byte is not `0x00` was written without the header.
 
 ### The payload field
 
@@ -567,9 +571,11 @@ Three properties of this path are deliberate, and worth knowing before changing 
 
 `utility/connector_config_local.yaml` omits `bsp_config_path` and connects straight to
 `localhost:9092`. There is no BAM authentication on that path, which is why the config validator
-refuses it with `schema_registry.mode: SECURE`. Records are written **unframed** (no schema id),
-so a BSP consumer expecting the Confluent wire format cannot decode them — use it to exercise
-the pipeline, not to prove connectivity.
+refuses it with `schema_registry.mode: SECURE`. DEV does not look the schema id up, so it must be
+pinned with `schema_registry.schema_id` (or `IFC_SCHEMA_REGISTRY__SCHEMA_ID`); the connector
+refuses to start without one. Records are still written in Confluent wire format, because the
+consumer's `KafkaAvroDeserializer` rejects anything else. DEV skips the drift check, so the
+pinned id must belong to a schema that matches the bundled `.avsc`.
 
 ```bash
 python scripts/main_local.py --config utility/connector_config_local.yaml

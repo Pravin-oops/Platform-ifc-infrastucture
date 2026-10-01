@@ -284,6 +284,10 @@ class SchemaRegistrySettings(BaseModel):
     #: Local .avsc used to serialise. Compared against the registered subject at
     #: preflight so producer/registry drift fails before any publish happens.
     schema_path: str = "utility/schema.json"
+    #: DEV only: the registry id to frame records with, since DEV does not look
+    #: it up. Consumers deserialise with Confluent's KafkaAvroDeserializer, which
+    #: needs the magic byte and id on every record, DEV or not.
+    schema_id: Optional[int] = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def _require_url_when_secure(self) -> "SchemaRegistrySettings":
