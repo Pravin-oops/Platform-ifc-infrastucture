@@ -32,9 +32,9 @@ source:
   #
   # database.table per trigger, as shared by DevOps (SIT synthetic data).
   trigger_tables:
-    TRIGGER_8: bdp_ifc_synthetic_data_test.bdp_corp_ifc_trigger_8
-    TRIGGER_9: bdp_ifc_synthetic_data_test.bdp_corp_ifc_trigger_9
-    TRIGGER_21: bdp_ifc_synthetic_data_test.bdp_corp_ifc_trigger_21
+    TRIGGER_8: bdb_ifc_synthetic_data_test.bdp_corp_ifc_trigger_8
+    TRIGGER_9: bdb_ifc_synthetic_data_test.bdp_corp_ifc_trigger_9
+    TRIGGER_21: bdb_ifc_synthetic_data_test.bdp_corp_ifc_trigger_21
   athena:
     # CONFIRM: the workgroup the task role may use.
     workgroup: primary
@@ -65,7 +65,7 @@ source:
 recon:
   enabled: true
   # The one batch recon table every trigger's rows are written to.
-  table: bdp_ifc_synthetic_data_test.batch_recon
+  table: bdb_ifc_synthetic_data_test.batch_recon
   # The target_table_name value each trigger's rows carry in batch_recon - the
   # Databricks table the trigger's model writes. A run reads only the rows
   # whose target_table_name is its own trigger's, matched ignoring backticks

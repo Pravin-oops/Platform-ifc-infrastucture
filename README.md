@@ -329,7 +329,7 @@ Two consequences worth knowing:
 named in `source.trigger_tables` as `database.table`. `IFC_RUN__TRIGGER` picks the table, so a
 run only ever reads its own trigger's data; an unmapped trigger fails at startup.
 
-The SIT tables are `bdp_ifc_synthetic_data_test.bdp_corp_ifc_trigger_8`, `_9` and `_21`. All
+The SIT tables are `bdb_ifc_synthetic_data_test.bdp_corp_ifc_trigger_8`, `_9` and `_21`. All
 three have the same columns:
 
 | Column | Type | Used for |
@@ -599,7 +599,7 @@ needing confirmation are marked `CONFIRM`, including the Athena workgroup).
 ## The upstream reconciliation gate
 
 Before any work, the connector asks whether upstream produced anything to run for. The Databricks
-recon job appends **one row per model run** to a single table, `bdp_ifc_synthetic_data_test.batch_recon`,
+recon job appends **one row per model run** to a single table, `bdb_ifc_synthetic_data_test.batch_recon`,
 shared by all three triggers. The connector reads it through Athena (`recon.table`, through
 `source.athena`'s workgroup, catalog and result location), and each run reads only the rows whose
 `target_table_name` is its own trigger's:
@@ -625,7 +625,7 @@ The `batch_recon` columns:
 A run of Trigger 9 reads the newest row for its own Databricks table:
 
 ```sql
-SELECT * FROM "bdp_ifc_synthetic_data_test"."batch_recon"
+SELECT * FROM "bdb_ifc_synthetic_data_test"."batch_recon"
 WHERE lower(replace(target_table_name, '`', '')) = ?
       -- 'sit_cds_snsvc0080860_prepared_db.bdb_ifc_synthetic_data_test.bdp_corp_ifc_trigger_9'
 ORDER BY last_modified_ts DESC

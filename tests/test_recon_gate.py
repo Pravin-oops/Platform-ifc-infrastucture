@@ -782,7 +782,7 @@ class TestGateActivation:
             settings = load_settings("utility/connector_config.yaml")
             settings.select_trigger(trigger)
             assert settings.recon_active
-            assert settings.recon.table == "bdp_ifc_synthetic_data_test.batch_recon"
+            assert settings.recon.table == "bdb_ifc_synthetic_data_test.batch_recon"
             assert settings.recon.target_table == (
                 f"`sit_cds_snsvc0080860_prepared_db`.bdb_ifc_synthetic_data_test.BDP_Corp_IFC_Trigger_{suffix}"
             )

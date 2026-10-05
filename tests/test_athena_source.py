@@ -359,9 +359,9 @@ class TestEndToEnd:
     @pytest.mark.parametrize(
         "run_trigger, table, published",
         [
-            ("TRIGGER_8", '"bdp_ifc_synthetic_data_test"."bdp_corp_ifc_trigger_8"', "NewHRCRelationship"),
-            ("TRIGGER_9", '"bdp_ifc_synthetic_data_test"."bdp_corp_ifc_trigger_9"', "AccountInactivity"),
-            ("TRIGGER_21", '"bdp_ifc_synthetic_data_test"."bdp_corp_ifc_trigger_21"', "MultipleTMSARs"),
+            ("TRIGGER_8", '"bdb_ifc_synthetic_data_test"."bdp_corp_ifc_trigger_8"', "NewHRCRelationship"),
+            ("TRIGGER_9", '"bdb_ifc_synthetic_data_test"."bdp_corp_ifc_trigger_9"', "AccountInactivity"),
+            ("TRIGGER_21", '"bdb_ifc_synthetic_data_test"."bdp_corp_ifc_trigger_21"', "MultipleTMSARs"),
         ],
     )
     def test_ifc_run_trigger_picks_the_table_and_the_published_sub_type(
