@@ -52,8 +52,7 @@ _execution_month: Optional[date] = None
 def parse_month(value: Any) -> date:
     """``2026-08``, ``AUGUST_2026`` or ``August 2026`` as the first of that month.
 
-    The second spelling is the source folder's name, so an operator can paste
-    the folder they want reprocessed.
+    The second spelling is accepted for convenience.
     """
     text = str(value).strip()
     match = re.fullmatch(r"(\d{4})-(\d{1,2})", text)
@@ -79,9 +78,11 @@ def execution_date(tz: str = TIMEZONE) -> date:
     """The date the run's month is taken from.
 
     Today, unless ``run.month`` pins another month, when it is the first of
-    that month. Everything keyed on the month - the source and recon folders,
-    the business month the records are stamped with, the marker's month - reads
-    this. The weekend check does not: it is about the day the task runs.
+    that month. Everything keyed on the run month - the Athena
+    ``business_date``, the business month the records are stamped with, the
+    marker's month - reads this. The weekend check and the recon check do not:
+    they are about the day the task runs, and upstream writes its recon row
+    when it runs.
     """
     return _execution_month or today(tz)
 

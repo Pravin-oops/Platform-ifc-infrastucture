@@ -11,7 +11,7 @@ import json
 import logging
 import os
 import tempfile
-from typing import Any, Dict, Iterator, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlparse
 
 import boto3
@@ -108,75 +108,6 @@ def write_json(path: str, document: Any) -> str:
         json.dumps(document, indent=2, default=str).encode("utf-8"),
         content_type="application/json",
     )
-
-
-def iter_object_paths(path: str, suffixes: Tuple[str, ...] | list[str]) -> Iterator[str]:
-    """Yield object paths under ``path``, sorted, without materialising the list.
-
-    Accepts a single object, a local directory or an S3 prefix.
-    """
-    wanted = tuple(s.lower() for s in suffixes)
-
-    if is_s3_path(path):
-        bucket, prefix = parse_s3_path(path)
-        if prefix.lower().endswith(wanted):
-            yield path
-            return
-
-        paginator = s3().get_paginator("list_objects_v2")
-        try:
-            for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
-                # Keys arrive lexicographically ordered within and across pages,
-                # so the stream is already deterministic - no buffering needed.
-                for item in page.get("Contents", []):
-                    key = item["Key"]
-                    if key.endswith("/") or not key.lower().endswith(wanted):
-                        continue
-                    yield f"s3://{bucket}/{key}"
-        except ClientError as exc:
-            raise SourceAccessError(
-                f"S3 list failed for {path}: {exc.response.get('Error', {}).get('Code')}",
-                path=path,
-                operation="list",
-                cause=exc,
-            ) from exc
-        return
-
-    if os.path.isfile(path):
-        if path.lower().endswith(wanted):
-            yield path
-        return
-
-    if os.path.isdir(path):
-        for name in sorted(os.listdir(path)):
-            if name.lower().endswith(wanted):
-                yield os.path.join(path, name)
-        return
-
-    raise SourceAccessError(f"Path not found: {path}", path=path, operation="list")
-
-
-def copy_object(source: str, destination: str) -> None:
-    """Copy one object, S3-to-S3 server side where possible."""
-    if is_s3_path(source) and is_s3_path(destination):
-        src_bucket, src_key = parse_s3_path(source)
-        dst_bucket, dst_key = parse_s3_path(destination)
-        try:
-            s3().copy_object(
-                Bucket=dst_bucket,
-                Key=dst_key,
-                CopySource={"Bucket": src_bucket, "Key": src_key},
-            )
-        except ClientError as exc:
-            raise SourceAccessError(
-                f"S3 copy failed {source} -> {destination}",
-                path=destination,
-                operation="write",
-                cause=exc,
-            ) from exc
-        return
-
-    write_bytes(destination, read_text(source).encode("utf-8"))
 
 
 def join_path(base: str, *parts: str) -> str:

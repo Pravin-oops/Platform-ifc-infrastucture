@@ -1,16 +1,13 @@
 """The connector run loop.
 
-One batch is: stream events from the Trigger BDP, build and validate each
-envelope, serialise, size-check, publish, flush, reconcile, write the manifest.
+One run is one batch: query the trigger's month from Athena, build and validate
+each envelope, serialise, size-check, publish, flush, reconcile, write the
+manifest, and exit - the shape that matches the monthly cadence under
+EventBridge Scheduler and ECS RunTask.
 
 Nothing is de-duplicated here: the consuming team resolves duplicates, so a
 re-run republishes the month rather than the connector keeping durable state to
 recognise what it already sent.
-
-``batch`` mode does that once and exits - the shape that matches the monthly
-cadence under EventBridge Scheduler and ECS RunTask. ``service`` mode repeats it
-on an interval for a resident ECS service. The batch body is identical either
-way, so the two modes cannot drift apart.
 
 Every exit is deliberate and carries a catalogue exit code, so ECS's
 ``stoppedReason`` and exit code alone tell RTB which scenario fired.
@@ -22,7 +19,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, Optional
 
 from utility.audit_utility import AuditWriter, RunCounters, build_manifest, new_run_id, reconcile
 from utility import failure_catalog as catalog
@@ -40,9 +37,11 @@ from utility.kafka_factory import KafkaStack, KafkaStackFactory
 from utility.observability_utility import Metrics, memory_limit_mb, process_rss_mb, set_log_context
 from utility.resilience_utility import CircuitBreaker, CircuitOpen, ShutdownSignal
 from utility.connector_config import ConnectorSettings
-from utility.trigger_source import ParseFailure, TriggerSource
+from utility.connector_utility import SourceAccessError
+from utility.trigger_source import make_source
+from utility.run_gate import execution_date
 from utility.sequence_allocator import SequenceAllocator
-from utility.tb_outcome_schema import BuiltRecord, EnvelopeBuilder, TriggerEvent
+from utility.tb_outcome_schema import BuiltRecord, EnvelopeBuilder, TriggerEvent, previous_month
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +61,8 @@ class BatchResult:
     outcome: str
     exit_code: int
     classification: Optional[Classification] = None
-    source_objects: List[str] = field(default_factory=list)
+    #: The table, business date and Athena query execution id this run read.
+    source: Dict[str, Any] = field(default_factory=dict)
     #: Earliest and latest ``triggerPostingTimestamp`` published by this batch,
     #: and the published sub-type they carried. The Trigger Backbone completion
     #: notification reports the window; none of them is set by a batch that
@@ -70,10 +70,6 @@ class BatchResult:
     batch_start_timestamp: Optional[str] = None
     batch_end_timestamp: Optional[str] = None
     published_trigger_subtype: Optional[str] = None
-
-    @property
-    def had_work(self) -> bool:
-        return self.counters.records_parsed > 0 or self.counters.parse_failures > 0
 
 
 class ConnectorRunner:
@@ -100,7 +96,12 @@ class ConnectorRunner:
 
         self._run_id = new_run_id()
         self._sequence = SequenceAllocator()
-        self._source = TriggerSource(settings.source)
+        # Fixed once, so the rows queried and the business month stamped on them
+        # cannot disagree even if the run crosses midnight at a month end.
+        self._business_month = previous_month(execution_date())
+        self._source = make_source(
+            settings.source, trigger=settings.trigger, business_month=self._business_month
+        )
         self._audit = AuditWriter(settings.audit, run_id=self._run_id, environment=settings.app.environment)
         self._notifier = Notifier(
             sns_topic_arn=settings.notifications.sns_topic_arn,
@@ -165,7 +166,7 @@ class ConnectorRunner:
         if settings.resilience.preflight_enabled:
             from utility import kafka_preflight as pf
 
-            pf.check_source(factory.report, path=settings.source.resolved_path, lister=self._source.first_object)
+            pf.check_source(factory.report, table=settings.source.resolved_table, probe=self._source.check_access)
             factory.report.raise_if_failed()
 
         self._stack = factory.build()
@@ -174,11 +175,10 @@ class ConnectorRunner:
         self._envelopes = EnvelopeBuilder(
             avro_schema=self._stack.serializer.schema,
             sequence_allocator=self._sequence,
+            business_month=self._business_month,
         )
 
-        self._health.mark_startup_complete(
-            {"schema_id": self._stack.schema_id, "topic": settings.kafka.topic}
-        )
+        self._health.update(schema_id=self._stack.schema_id, topic=settings.kafka.topic)
         self._log_kafka_target()
 
     def _log_kafka_target(self) -> None:
@@ -199,14 +199,13 @@ class ConnectorRunner:
 
         logger.info(
             "Kafka target ready: topic=%s schema_registry_mode=%s schema_id=%s "
-            "schema_source=%s wire_format_header=%s connection=%s run_mode=%s",
+            "schema_source=%s wire_format_header=%s connection=%s",
             settings.kafka.topic,
             mode,
             self._stack.schema_id,
             schema_source,
             header,
             connection,
-            settings.run.mode,
             extra={
                 "topic": settings.kafka.topic,
                 "schema_registry_mode": mode,
@@ -214,7 +213,6 @@ class ConnectorRunner:
                 "schema_source": schema_source,
                 "wire_format_header": header,
                 "kafka_connection": connection,
-                "run_mode": settings.run.mode,
             },
         )
 
@@ -298,49 +296,28 @@ class ConnectorRunner:
         counters: RunCounters,
         reconciliation,
         stream_exhausted: bool,
-        source_unreadable: bool = False,
     ):
         """Decide the final outcome of a run that did not fail outright.
 
-        Four ways a technically-successful batch is still not a clean run, in
-        priority order: its source could not be read, it found nothing, its
-        counts do not reconcile, or it rejected more than the tolerated
-        fraction. Returns ``(outcome, exit_code, classification)``.
+        Three ways a technically-successful batch is still not a clean run, in
+        priority order: it found nothing, its counts do not reconcile, or it
+        rejected more than the tolerated fraction. Returns
+        ``(outcome, exit_code, classification)``.
         """
         settings = self._settings
 
         if outcome != "SUCCESS":
             return outcome, exit_code, classification
 
-        if source_unreadable and not counters.records_parsed:
-            # An unreadable object arrives as a ParseFailure, which on its own
-            # would leave the run SUCCESS with one quarantined "record" - so a
-            # missing monthly file would exit 0 and look clean. Under the
-            # one-file contract that object *is* the batch, so failing to read
-            # it fails the run. BDP_READ_FAILURE names missing files among its
-            # causes and is a HIGH-severity abort.
-            return (
-                "SOURCE_UNREADABLE",
-                catalog.BDP_READ_FAILURE.exit_code,
-                classify(
-                    ConnectorError(
-                        f"Could not read the trigger source at {settings.source.path}; "
-                        "no records were published",
-                        catalog.BDP_READ_FAILURE,
-                    ),
-                    operation="run_batch",
-                ),
-            )
-
-        if stream_exhausted and not counters.records_parsed and not counters.parse_failures:
-            # An empty source on a scheduled run means TED or FRED produced
+        if stream_exhausted and not counters.records_parsed:
+            # No rows for the month on a scheduled run means upstream produced
             # nothing. That is a reportable condition, not a clean run.
             return (
                 "ZERO_RECORDS",
                 catalog.TED_MISSING_SOURCE_DATA.exit_code,
                 classify(
                     ZeroRecordsError(
-                        f"No trigger events found under {settings.source.path}",
+                        f"No trigger events found in {settings.source.table} for this month",
                         catalog.TED_MISSING_SOURCE_DATA,
                     ),
                     operation="run_batch",
@@ -362,9 +339,8 @@ class ConnectorRunner:
                 ),
             )
 
-        seen = counters.records_parsed + counters.parse_failures
-        rejected = counters.quarantined + counters.parse_failures
-        ratio = rejected / seen if seen else 0.0
+        seen = counters.records_parsed
+        ratio = counters.quarantined / seen if seen else 0.0
         if ratio > settings.resilience.max_quarantine_ratio:
             return (
                 "QUALITY_GATE_FAILED",
@@ -383,7 +359,7 @@ class ConnectorRunner:
 
         return outcome, exit_code, classification
 
-    def run_batch(self, *, skip_objects: Optional[Set[str]] = None) -> BatchResult:
+    def run_batch(self) -> BatchResult:
         assert self._stack is not None and self._envelopes is not None
 
         settings = self._settings
@@ -392,10 +368,9 @@ class ConnectorRunner:
         outcome = "SUCCESS"
         exit_code = catalog.EXIT_OK
         stream_exhausted = False
-        source_unreadable = False
 
         try:
-            for index, item in enumerate(self._source.stream(skip_objects=skip_objects), start=1):
+            for index, item in enumerate(self._source.stream(), start=1):
                 if self._shutdown.is_set:
                     logger.warning("Shutdown signalled; stopping intake and draining")
                     self._health.mark_draining()
@@ -405,20 +380,6 @@ class ConnectorRunner:
 
                 self._breaker.raise_if_open()
 
-                if isinstance(item, ParseFailure):
-                    counters.parse_failures += 1
-                    self._metrics.incr("ParseFailures")
-                    if item.scenario_key == catalog.BDP_READ_FAILURE.key:
-                        source_unreadable = True
-                    self._audit.quarantine(
-                        trigger_id=None,
-                        reason=item.error,
-                        scenario_key=item.scenario_key,
-                        detail={"source_object": item.source_object, "index": item.index},
-                        raw=item.raw,
-                    )
-                    continue
-
                 counters.records_parsed += 1
                 self._process_event(item, counters)
 
@@ -426,6 +387,14 @@ class ConnectorRunner:
                     self._progress(counters)
             else:
                 stream_exhausted = True
+
+        except SourceAccessError as exc:
+            # The Athena query could not be run: nothing was read, so nothing
+            # can be published. A HIGH-severity Trigger BDP read failure.
+            classification = classify(exc, operation="run_batch", topic=settings.kafka.topic)
+            outcome = "SOURCE_UNREADABLE"
+            exit_code = classification.exit_code
+            logger.error("Could not read the trigger table", extra=classification.to_dict())
 
         except CircuitOpen as exc:
             classification = classify(
@@ -453,7 +422,6 @@ class ConnectorRunner:
         stats = self._stack.publisher.stats
         counters.acked = stats.success
         counters.delivery_failed = stats.failure
-        counters.objects_read = len(self._source.objects_read)
 
         reconciliation = reconcile(counters)
 
@@ -477,7 +445,6 @@ class ConnectorRunner:
             counters,
             reconciliation,
             stream_exhausted,
-            source_unreadable=source_unreadable,
         )
 
         return BatchResult(
@@ -487,7 +454,7 @@ class ConnectorRunner:
             outcome=outcome,
             exit_code=exit_code,
             classification=classification,
-            source_objects=self._source.objects_read,
+            source=self._source.describe(),
             batch_start_timestamp=self._batch_start_timestamp,
             batch_end_timestamp=self._batch_end_timestamp,
             published_trigger_subtype=self._published_trigger_subtype,
@@ -590,7 +557,7 @@ class ConnectorRunner:
             outcome=outcome,
             exit_code=exit_code,
             classification=classification,
-            source_objects=result.source_objects if result else [],
+            source=result.source if result else self._source.describe(),
             quarantine_keys=self._audit.quarantine_keys,
             schema_id=self._stack.schema_id if self._stack else None,
         )
@@ -634,12 +601,8 @@ class ConnectorRunner:
 
         try:
             self.start()
-
-            if settings.run.mode == "batch":
-                result = self.run_batch()
-                outcome, exit_code = result.outcome, result.exit_code
-            else:
-                outcome, exit_code, result = self._run_service()
+            result = self.run_batch()
+            outcome, exit_code = result.outcome, result.exit_code
 
         except ConnectorError as exc:
             classification = classify(exc, operation="run", topic=settings.kafka.topic)
@@ -664,42 +627,3 @@ class ConnectorRunner:
             duration_seconds=time.perf_counter() - started,
         )
         return exit_code
-
-    def _run_service(self) -> Tuple[str, int, Optional[BatchResult]]:
-        """Poll the source until shutdown, or until ``max_batches`` is reached."""
-        settings = self._settings
-        batches = 0
-        last: Optional[BatchResult] = None
-
-        while not self._shutdown.is_set:
-            batches += 1
-            logger.info("Starting batch", extra={"batch": batches})
-            self._health.mark_ready()
-
-            last = self.run_batch()
-
-            # A zero-record poll is normal for a resident service; only a
-            # scheduled batch run treats it as an upstream failure.
-            if last.outcome == "ZERO_RECORDS":
-                last.outcome, last.exit_code = "IDLE", catalog.EXIT_OK
-
-            if last.exit_code not in (catalog.EXIT_OK, catalog.EXIT_WORK_REMAINING):
-                logger.error(
-                    "Batch ended with a blocking failure; stopping the service loop",
-                    extra={"outcome": last.outcome, "exit_code": last.exit_code},
-                )
-                return last.outcome, last.exit_code, last
-
-            if settings.run.max_batches and batches >= settings.run.max_batches:
-                logger.info("Reached max_batches", extra={"batches": batches})
-                break
-
-            if self._shutdown.sleep(settings.run.poll_interval_seconds):
-                break
-
-        if self._shutdown.is_set:
-            reason = self._shutdown.reason or "shutdown"
-            logger.info("Service loop stopped", extra={"reason": reason})
-            return "DRAINED", catalog.EXIT_OK, last
-
-        return (last.outcome if last else "SUCCESS"), catalog.EXIT_OK, last

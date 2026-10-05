@@ -5,7 +5,7 @@
 #
 # Any value here can be overridden per task without republishing this file, by
 # setting an IFC_ environment variable in the ECS task definition. Sections are
-# separated by a double underscore, e.g. IFC_KAFKA__TOPIC, IFC_RUN__MODE.
+# separated by a double underscore, e.g. IFC_KAFKA__TOPIC, IFC_RUN__TRIGGER.
 
 app:
   name: ifc-trigger-connector
@@ -13,63 +13,67 @@ app:
   log_level: INFO
 
 run:
-  # batch   -> ECS RunTask on the trigger's monthly window (see 'schedule').
-  # service -> resident ECS service polling the prefix.
-  mode: batch
-  poll_interval_seconds: 300
-  max_batches: 0
+  # One ECS RunTask per trigger invocation: publish the month, then exit.
+  # EventBridge Scheduler sets IFC_RUN__TRIGGER on every invocation.
   # Must be <= the task definition's stopTimeout (set to 120 in deploy/).
   shutdown_grace_seconds: 90
 
 source:
-  type: s3
-  # Trigger Event BDP output written by FRED, one location per trigger. The
-  # scheduler names the trigger ("trigger 9", IFC_RUN__TRIGGER=TRIGGER_9, ...)
-  # and the run reads only that trigger's location. No source.path fallback on
-  # purpose: an unmapped trigger fails rather than reading another trigger's data.
-  # CONFIRM: the real per-trigger prefixes with the data team.
+  # Athena is the only source: each trigger's Iceberg table (built by the dbt
+  # models on Databricks) is queried directly. The scheduler names the trigger
+  # ("trigger 9", IFC_RUN__TRIGGER=TRIGGER_9, ...) and the run queries only that
+  # trigger's table. No source.table fallback on purpose: an unmapped trigger
+  # fails rather than reading another trigger's data.
   #
-  # {MONTH}_{YYYY} expands at run time to the run month's folder - a run in
-  # September 2026 reads .../trigger_8/SEPTEMBER_2026/ - so this config does not
-  # need republishing each month. Expansion uses the *run* date (Europe/London),
-  # the same month the run gate keys on; the records inside still carry the
-  # previous month as their business month.
-  trigger_paths:
-    TRIGGER_8: s3://devaprocessedlayer-691850678096-emea/triggerbackbone/ifc/trigger-events/trigger_8/{MONTH}_{YYYY}/
-    TRIGGER_9: s3://devaprocessedlayer-691850678096-emea/triggerbackbone/ifc/trigger-events/trigger_9/{MONTH}_{YYYY}/
-    TRIGGER_21: s3://devaprocessedlayer-691850678096-emea/triggerbackbone/ifc/trigger-events/trigger_21/{MONTH}_{YYYY}/
-  archive_path: s3://devaprocessedlayer-691850678096-emea/triggerbackbone/ifc/trigger-events-archive/
-  # Unset: ECS is handed one file holding the whole batch, so a cap would
-  # silently drop its tail with no second object to pick the rest up from.
-  max_records_per_batch: null
-  file_suffixes: [".json", ".jsonl"]
-  # TED rewrites the month's extract rather than appending, so anything older in
-  # the folder is a superseded draft. Read only the newest; "all" opts out.
-  selection: latest
-  # Matches trigger8_20260930_143022_123456.json. Files are ordered by the
-  # parsed timestamp, never by name.
-  filename_timestamp_pattern: "(\\d{8}_\\d{6}_\\d+)"
-  filename_timestamp_format: "%Y%m%d_%H%M%S_%f"
+  # The tables hold only the attribute columns. Every envelope publishes
+  # triggerType "KYCRefresh", with triggerSubType by trigger:
+  # TRIGGER_8 -> NewHRCRelationship, TRIGGER_9 -> AccountInactivity,
+  # TRIGGER_21 -> MultipleTMSARs.
+  #
+  # database.table per trigger, as shared by DevOps (SIT synthetic data).
+  trigger_tables:
+    TRIGGER_8: bdb_ifc_synthetic_data_test.bdp_corp_ifc_trigger_8
+    TRIGGER_9: bdb_ifc_synthetic_data_test.bdp_corp_ifc_trigger_9
+    TRIGGER_21: bdb_ifc_synthetic_data_test.bdp_corp_ifc_trigger_21
+  athena:
+    # CONFIRM: the workgroup the task role may use.
+    workgroup: primary
+    catalog: AwsDataCatalog
+    # The DevOps stack's AthenaQueryResultsBucket + AthenaQureyResultsPrefix.
+    # A workgroup that enforces its own result location overrides this.
+    output_location: s3://sit1-logs-corpdeng-509153454187-eu-west-1/athena_output/
+    # business_date is always the last day of the month the rows describe, so a
+    # run reads the rows where it equals the last day of the previous month:
+    # any run in September 2026 queries business_date = 2026-08-31, and a rerun
+    # with IFC_RUN__MONTH=2026-08 queries 2026-07-31.
+    business_date_column: business_date
+    # Fixes row order, so a re-run allocates the same sequence numbers.
+    order_by: [date_of_request, counterparty_csid_sds]
+    poll_interval_seconds: 1.0
+    query_timeout_seconds: 300
 
-# Upstream reconciliation gate, checked BEFORE the run gate: the run gate asks
-# whether this month is due, this asks whether upstream produced anything to run
-# for. TED writes one recon document per trigger per month; the newest one in the
-# month's folder is read and it must say this month, SUCCESS, and non-zero counts.
-# SUCCESS with both counts zero is a genuine empty month: exit 0, no alert, the
-# month is recorded delivered and TBB gets a batch event with zero messages.
+# Upstream reconciliation gate, checked after the run gate's skips and before
+# any work: the run gate asks whether this month is due, this asks whether
+# upstream produced anything to run for. The Databricks recon job appends a row
+# per model run to the recon table; the newest row for the run's trigger
+# (matched on target_table_name) must be from the current month (UTC), SUCCESS,
+# with matching non-zero counts. FAILED (the dbt model did not run) and
+# RECON_FAILED block the run and alert with the row's details. SUCCESS with
+# both counts zero is a genuine empty month: exit 0, no alert, the month is
+# recorded delivered and TBB gets a batch event with zero messages.
+# The query runs through source.athena's workgroup, catalog and result location.
 recon:
   enabled: true
-  # Per-trigger recon prefixes, confirmed with the data team. Same
-  # {MONTH}_{YYYY} expansion as the source paths.
-  trigger_paths:
-    TRIGGER_8: s3://sit1-pre-cds01-509153454187-eu-west-1/dbx-sit-cds-snsvc0080860-prepared-db/ifc-bdp-audit-recon-json/trigger8/{MONTH}_{YYYY}/
-    TRIGGER_9: s3://sit1-pre-cds01-509153454187-eu-west-1/dbx-sit-cds-snsvc0080860-prepared-db/ifc-bdp-audit-recon-json/trigger9/{MONTH}_{YYYY}/
-    TRIGGER_21: s3://sit1-pre-cds01-509153454187-eu-west-1/dbx-sit-cds-snsvc0080860-prepared-db/ifc-bdp-audit-recon-json/trigger21/{MONTH}_{YYYY}/
-  file_suffixes: [".json"]
-  # Matches BDP_Corp_Trigger_8_recon_20260930_143022_123456.json, ordered by the
-  # parsed timestamp rather than by name.
-  filename_timestamp_pattern: "(\\d{8}_\\d{6}_\\d+)"
-  filename_timestamp_format: "%Y%m%d_%H%M%S_%f"
+  # The one batch recon table every trigger's rows are written to.
+  table: bdb_ifc_synthetic_data_test.batch_recon
+  # The target_table_name value each trigger's rows carry in batch_recon - the
+  # Databricks table the trigger's model writes. A run reads only the rows
+  # whose target_table_name is its own trigger's, matched ignoring backticks
+  # and case, and the one with the latest last_modified_ts decides.
+  trigger_targets:
+    TRIGGER_8: "`sit_cds_snsvc0080860_prepared_db`.bdb_ifc_synthetic_data_test.BDP_Corp_IFC_Trigger_8"
+    TRIGGER_9: "`sit_cds_snsvc0080860_prepared_db`.bdb_ifc_synthetic_data_test.BDP_Corp_IFC_Trigger_9"
+    TRIGGER_21: "`sit_cds_snsvc0080860_prepared_db`.bdb_ifc_synthetic_data_test.BDP_Corp_IFC_Trigger_21"
 
 kafka:
   # CONFIRM: the CDD trigger topic. The BSP topic table lists
@@ -89,6 +93,8 @@ schema_registry:
   ca_location: /apps/external/5/deva/bsp/bsp-installer/bsp/etc/CARoot.pem
   timeout_seconds: 30
   token_refresh_margin_seconds: 300
+  # Attempts at each registry request before preflight fails.
+  max_attempts: 5
   schema_path: utility/schema.json
 
 csm:
@@ -126,7 +132,6 @@ audit:
   write_payloads: true
 
 resilience:
-  max_publish_attempts: 5
   backoff_base_seconds: 1.0
   backoff_max_seconds: 60.0
   circuit_breaker_threshold: 20

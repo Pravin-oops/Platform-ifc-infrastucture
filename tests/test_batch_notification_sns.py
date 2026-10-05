@@ -213,6 +213,7 @@ class TestTheEcsPathReachesTheTopic:
             (
                 "the numbers do not add up",
                 a_result(
+                    outcome="RECONCILIATION_FAILED",
                     reconciliation=ReconciliationResult(
                         balanced=False, expected=412, accounted=400, findings=["short"]
                     )
@@ -220,11 +221,11 @@ class TestTheEcsPathReachesTheTopic:
             ),
             (
                 "a message failed delivery",
-                a_result(counters=RunCounters(published=412, acked=411, delivery_failed=1)),
+                a_result(outcome="RECONCILIATION_FAILED", counters=RunCounters(published=412, acked=411, delivery_failed=1)),
             ),
             (
                 "a message never left the queue",
-                a_result(counters=RunCounters(published=412, acked=411, unflushed=1)),
+                a_result(outcome="RECONCILIATION_FAILED", counters=RunCounters(published=412, acked=411, unflushed=1)),
             ),
             ("nothing was delivered", a_result(counters=RunCounters())),
             ("there was no batch at all", None),
