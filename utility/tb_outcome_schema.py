@@ -131,55 +131,21 @@ class SequenceAllocator(Protocol):
 
 @dataclass
 class TriggerEvent:
-    """One trigger event as read from the Trigger BDP.
+    """One row of a trigger's Athena table.
 
-    ``attributes`` is the BDP row verbatim. The wrapper carries only what the
-    row cannot say for itself: which trigger it belongs to.
+    ``attributes`` is the row's columns verbatim. The event carries only what the
+    row cannot say for itself: which trigger it belongs to, which is the run's.
     """
 
     trigger_sub_type: str
     attributes: Dict[str, Any]
     trigger_type: Optional[str] = None
-    upstream_trigger_id: Optional[str] = None
     source_object: Optional[str] = None
     source_index: int = 0
 
     @property
     def csid(self) -> Optional[str]:
         return normalise_csid(self.attributes.get(CSID_SOURCE))
-
-    @classmethod
-    def from_dict(cls, raw: Any, *, source_object: Optional[str] = None, index: int = 0) -> "TriggerEvent":
-        if not isinstance(raw, dict):
-            raise RecordRejected(
-                f"Trigger event must be a JSON object, got {type(raw).__name__}",
-                catalog.SCHEMA_VALIDATION_FAILURE,
-                detail={"source_object": source_object, "index": index},
-            )
-
-        if not raw.get("triggerSubType"):
-            raise RecordRejected(
-                "Trigger event missing required keys: ['triggerSubType']",
-                catalog.SCHEMA_VALIDATION_FAILURE,
-                detail={"source_object": source_object, "index": index, "missing": ["triggerSubType"]},
-            )
-
-        attributes = raw.get("attributes")
-        if not isinstance(attributes, dict):
-            raise RecordRejected(
-                "Trigger event 'attributes' must be an object",
-                catalog.SCHEMA_VALIDATION_FAILURE,
-                detail={"source_object": source_object, "index": index},
-            )
-
-        return cls(
-            trigger_sub_type=str(raw["triggerSubType"]),
-            attributes=attributes,
-            trigger_type=raw.get("triggerType"),
-            upstream_trigger_id=raw.get("upstreamTriggerId"),
-            source_object=source_object,
-            source_index=index,
-        )
 
 
 @dataclass
@@ -325,14 +291,8 @@ class EnvelopeBuilder:
 
     def build(self, event: TriggerEvent) -> BuiltRecord:
         """Build one envelope, or raise ``RecordRejected`` for quarantine."""
-        try:
-            definition = definitions.resolve(event.trigger_sub_type)
-        except KeyError as exc:
-            raise RecordRejected(
-                str(exc),
-                catalog.SCHEMA_VALIDATION_FAILURE,
-                detail={"triggerSubType": event.trigger_sub_type, "source_object": event.source_object},
-            ) from exc
+        # The run's trigger, already validated when the config was loaded.
+        definition = definitions.resolve(event.trigger_sub_type)
 
         csid = event.csid
         if csid is None:
@@ -384,7 +344,9 @@ class EnvelopeBuilder:
             "idType": ID_TYPE,
             "idValue": csid,
             "idSystem": ID_SYSTEM,
-            "upstreamTriggerID": event.upstream_trigger_id,
+            # Nullable in the schema, and the trigger tables carry no upstream
+            # trigger id: an IFC trigger is the origin, not a derived event.
+            "upstreamTriggerID": None,
             "payload": serialise(payload_fields),
         }
 

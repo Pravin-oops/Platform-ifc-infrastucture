@@ -19,6 +19,7 @@ from tests.conftest import APP_ROOT, DOCKERFILE, SCRIPTS_DIR, UTILITY_DIR
 
 #: Every module in utility/, i.e. what the flattening produced.
 UTILITY_MODULES = [
+    "athena_query",
     "audit_utility",
     "auth_helper",
     "connector_config",

@@ -199,7 +199,7 @@ class KafkaStackFactory:
                 base_seconds=settings.resilience.backoff_base_seconds,
                 max_seconds=settings.resilience.backoff_max_seconds,
             ),
-            attempts=settings.resilience.max_publish_attempts,
+            attempts=settings.schema_registry.max_attempts,
             shutdown=self._shutdown,
         )
 

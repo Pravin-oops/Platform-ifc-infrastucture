@@ -257,6 +257,6 @@ class TestReconciliation:
         counters = RunCounters(records_parsed=5, published=5, acked=5, unflushed=2)
         assert any("uncertain" in f for f in reconcile(counters).findings)
 
-    def test_parse_failures_are_accounted_for(self):
-        counters = RunCounters(records_parsed=8, parse_failures=2, published=8, acked=8)
+    def test_every_row_is_published_or_quarantined(self):
+        counters = RunCounters(records_parsed=10, quarantined=2, published=8, acked=8)
         assert reconcile(counters).balanced

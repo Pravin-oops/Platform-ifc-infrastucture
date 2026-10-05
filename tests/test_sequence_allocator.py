@@ -84,19 +84,17 @@ def builder(app_root):
 
 
 def an_event(csid, business_date="2026-08-31"):
-    return TriggerEvent.from_dict(
-        {
-            "triggerSubType": "TRIGGER_8",
-            "attributes": {
-                "date_of_request": "2026-08-31 00:00:00",
-                "counterparty_full_legal_entity_name": "Example Holdings Ltd",
-                "counterparty_csid_sds": csid,
-                "client_relationship_owner_name": "TOKENISED_NAME",
-                "client_relationship_owner_brid": "BR123456",
-                "business_date": business_date,
-                "region": "EMEA",
-            },
-        }
+    return TriggerEvent(
+        trigger_sub_type="TRIGGER_8",
+        attributes={
+            "date_of_request": "2026-08-31 00:00:00",
+            "counterparty_full_legal_entity_name": "Example Holdings Ltd",
+            "counterparty_csid_sds": csid,
+            "client_relationship_owner_name": "TOKENISED_NAME",
+            "client_relationship_owner_brid": "BR123456",
+            "business_date": business_date,
+            "region": "EMEA",
+        },
     )
 
 

@@ -12,7 +12,7 @@ import struct
 import pytest
 from fastavro import parse_schema, schemaless_reader
 
-from tests.test_runner_pipeline import FakeProducer, VALID_EVENT, make_settings, write_events
+from tests.test_runner_pipeline import FakeAthena, FakeProducer, VALID_ROW, make_settings
 from utility.connector_config import ConnectorSettings
 from utility.connector_runner import ConnectorRunner
 from utility.connector_utility import load_schema_document
@@ -31,7 +31,7 @@ SCHEMA = {
 def dev_settings(**registry) -> ConnectorSettings:
     return ConnectorSettings.model_validate(
         {
-            "source": {"type": "local", "path": "/tmp/x"},
+            "source": {"table": "ifc_trigger_db.trigger_8"},
             "kafka": {"topic": "t", "bsp_config_path": "b.yaml"},
             "schema_registry": {"mode": "DEV", **registry},
         }
@@ -71,17 +71,17 @@ class TestDevMode:
         settings = dev_settings(schema_id="4711")
         assert settings.schema_registry.schema_id == 4711
 
-    def test_dev_pipeline_produces_wire_format(self, tmp_path, caplog):
+    def test_dev_pipeline_produces_wire_format(self, caplog):
         """Through start() and the real factory, not an injected serializer."""
         caplog.set_level("INFO")
-        write_events(tmp_path, [VALID_EVENT])
         settings = make_settings(
-            tmp_path,
             schema_registry={"mode": "DEV", "schema_id": 1299},
             kafka={"bsp_config_path": None, "overrides": {"bootstrap.servers": "localhost:9092"}},
         )
         producer = FakeProducer()
         runner = ConnectorRunner(settings, shutdown=ShutdownSignal(), producer_factory=lambda _: producer)
+        runner._source._client = FakeAthena([VALID_ROW])
+        runner._source._sleep = lambda _s: None
 
         runner.start()
         assert runner.run_batch().counters.published == 1

@@ -1,16 +1,11 @@
 """HTTP health endpoints for the ECS container health check.
 
 ECS decides whether a task is healthy from the container's ``healthCheck``
-command. Without one, a task that has lost its BSP
-connection but is still running looks perfectly healthy and quietly publishes
-nothing - the 'Producer Container Failure' scenario in its most dangerous form,
-where nothing crashes.
+command. Without one, a task wedged on a stuck socket looks perfectly healthy
+and quietly publishes nothing - the 'Producer Container Failure' scenario in its
+most dangerous form, where nothing crashes.
 
-Three endpoints, with the meanings ECS and Kubernetes both expect:
-
-  /health/startup  preflight has completed  (gates the grace period)
   /health/live     the process is not wedged (a failure means restart me)
-  /health/ready    it can publish right now  (a failure means stop routing to me)
   /metrics         current counters, as JSON
 
 The server runs on a daemon thread and never blocks the run loop.
@@ -40,8 +35,6 @@ class HealthState:
         self._started_at = time.time()
         self._liveness_timeout = liveness_timeout
         self._last_heartbeat = time.time()
-        self._startup_complete = False
-        self._ready = False
         self._draining = False
         self._detail: Dict[str, Any] = {}
 
@@ -49,19 +42,10 @@ class HealthState:
         with self._lock:
             self._last_heartbeat = time.time()
 
-    def mark_startup_complete(self, detail: Optional[Dict[str, Any]] = None) -> None:
-        with self._lock:
-            self._startup_complete = True
-            self._ready = True
-            if detail:
-                self._detail.update(detail)
-
     def mark_draining(self) -> None:
+        # Stays live, so the drain completes rather than being killed halfway.
         with self._lock:
             self._draining = True
-            # Stop accepting traffic immediately, but stay live so the drain
-            # completes rather than being killed halfway through.
-            self._ready = False
 
     def update(self, **detail: Any) -> None:
         with self._lock:
@@ -71,8 +55,6 @@ class HealthState:
         with self._lock:
             since_heartbeat = time.time() - self._last_heartbeat
             return {
-                "startup_complete": self._startup_complete,
-                "ready": self._ready,
                 "draining": self._draining,
                 "live": since_heartbeat < self._liveness_timeout,
                 "uptime_seconds": round(time.time() - self._started_at, 1),
@@ -99,10 +81,6 @@ class _Handler(BaseHTTPRequestHandler):
 
         if path in ("/health/live", "/healthz", "/"):
             self._respond(200 if snapshot["live"] else 503, snapshot)
-        elif path == "/health/ready":
-            self._respond(200 if snapshot["ready"] else 503, snapshot)
-        elif path == "/health/startup":
-            self._respond(200 if snapshot["startup_complete"] else 503, snapshot)
         elif path == "/metrics":
             self._respond(200, {"health": snapshot, "metrics": self.metrics_provider()})
         else:

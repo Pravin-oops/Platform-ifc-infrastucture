@@ -150,8 +150,8 @@ CONTAINER_FAILURE = _register(
         connector_behaviour=(
             "SIGTERM installs a drain: intake stops, in-flight messages are flushed within "
             "run.shutdown_grace_seconds, and the exit code says whether work remains (75) or the "
-            "batch completed (0). An uncaught defect still exits non-zero; the month stays "
-            "undelivered in the run marker, so the next invocation republishes it."
+            "batch completed (0). The run marker records FAILURE, so the next date in the trigger's "
+            "window re-runs the month; the consumer resolves any duplicates."
         ),
     )
 )
@@ -396,8 +396,8 @@ TED_MISSING_SOURCE_DATA = _register(
         producer_rtb_action="Validate source availability and coordinate with upstream data owners.",
         bsp_rtb_action="No action.",
         connector_behaviour=(
-            "Same ZERO_RECORDS signal as a job failure. The manifest records the resolved source path "
-            "and execution month so the two causes can be told apart without guesswork."
+            "Same ZERO_RECORDS signal as a job failure. The manifest records the table, business date "
+            "and Athena query id so the two causes can be told apart without guesswork."
         ),
     )
 )
@@ -423,7 +423,7 @@ RECONCILIATION_FAILURE = _register(
         connector_behaviour=(
             "Every run writes a manifest to S3 with read / parsed / validated / published / acked / "
             "quarantined counts, the partition-offset range per topic and "
-            "the run identity. The run fails if read != published + quarantined + parse failures, so "
+            "the run identity. The run fails if read != published + quarantined, so "
             "an unexplained gap surfaces at the producer rather than at the consumer."
         ),
     )
@@ -539,8 +539,8 @@ BROKER_UNAVAILABLE = _register(
         connector_behaviour=(
             "Backoff with jitter up to resilience.backoff_max_seconds. After "
             "resilience.circuit_breaker_threshold consecutive failures the run is abandoned with exit "
-            "code 32 and the month stays undelivered in the run marker, so the next invocation in "
-            "the window republishes it."
+            "code 32 and the run marker records FAILURE, so the next date in the trigger's window "
+            "re-runs the month."
         ),
     )
 )

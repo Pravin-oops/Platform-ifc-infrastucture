@@ -7,7 +7,6 @@ losing the batch, and refusing to report success when the numbers do not add up.
 
 from __future__ import annotations
 
-import json
 from typing import Any, Callable, Dict, List, Optional
 
 import pytest
@@ -137,34 +136,82 @@ def build_stack(producer: FakeProducer, settings: ConnectorSettings, metrics: Me
 # Fixtures
 # ---------------------------------------------------------------------------
 
-VALID_EVENT = {
-    "triggerSubType": "TRIGGER_8",
-    "attributes": {
-        "date_of_request": "2026-06-10T02:15:04.221Z",
-        "counterparty_full_legal_entity_name": "AbCdEfGh12345",
-        "counterparty_csid_sds": 9912345678,
-        "customer_segment": "Corporate",
-        "client_relationship_owner_brid": "B0412775",
-        "client_relationship_owner_name": "XyZwVu67890",
-        "client_relationship_owner_business_unit": "UK Corporate",
-        "client_relationship_owner_location": "UK",
-        "region": "EMEA",
-        "business_date": "2026-06-30",
-    },
+#: One row of the trigger 8 table: the attribute columns and nothing else.
+VALID_ROW = {
+    "date_of_request": "2026-06-10T02:15:04.221Z",
+    "counterparty_full_legal_entity_name": "AbCdEfGh12345",
+    "counterparty_csid_sds": 9912345678,
+    "customer_segment": "Corporate",
+    "client_relationship_owner_brid": "B0412775",
+    "client_relationship_owner_name": "XyZwVu67890",
+    "client_relationship_owner_business_unit": "UK Corporate",
+    "client_relationship_owner_location": "UK",
+    "region": "EMEA",
+    "business_date": "2026-06-30",
 }
 
 
-def write_events(directory, events, name="events.jsonl"):
-    path = directory / name
-    path.write_text("\n".join(json.dumps(e) for e in events), encoding="utf-8")
-    return path
+def row(**overrides) -> Dict[str, Any]:
+    return {**VALID_ROW, **overrides}
 
 
-def make_settings(source_path, **overrides) -> ConnectorSettings:
+class FakeAthena:
+    """Answers the calls AthenaTriggerSource makes, serving ``rows``.
+
+    Columns are the union of the rows' keys; ints are typed bigint and
+    everything else varchar, and results are paged 1000 rows at a time, the way
+    GetQueryResults pages them.
+    """
+
+    def __init__(self, rows: List[Dict[str, Any]], *, state: str = "SUCCEEDED"):
+        self.rows = rows
+        self.state = state
+        self.queries: List[Dict[str, Any]] = []
+
+    def start_query_execution(self, **request):
+        self.queries.append(request)
+        return {"QueryExecutionId": "q-1"}
+
+    def get_query_execution(self, QueryExecutionId):
+        status = {"State": self.state, "StateChangeReason": "TABLE_NOT_FOUND"}
+        return {"QueryExecution": {"Status": status}}
+
+    def get_table_metadata(self, **_):
+        return {}
+
+    def get_paginator(self, _name):
+        names: List[str] = []
+        for r in self.rows:
+            names += [k for k in r if k not in names]
+        types = {
+            n: "bigint" if any(isinstance(r.get(n), int) for r in self.rows) else "varchar"
+            for n in names
+        }
+
+        def cell(value):
+            return {} if value is None else {"VarCharValue": str(value)}
+
+        data = [{"Data": [cell(r.get(n)) for n in names]} for r in self.rows]
+        header = {"Data": [{"VarCharValue": n} for n in names]}
+        chunks = [data[i:i + 1000] for i in range(0, len(data), 1000)] or [[]]
+        meta = {"ColumnInfo": [{"Name": n, "Type": types[n]} for n in names]}
+        pages = [
+            {"ResultSet": {"Rows": ([header] if i == 0 else []) + chunk, "ResultSetMetadata": meta}}
+            for i, chunk in enumerate(chunks)
+        ]
+
+        class Paginator:
+            def paginate(self, **_):
+                return iter(pages)
+
+        return Paginator()
+
+
+def make_settings(**overrides) -> ConnectorSettings:
     document = {
         "app": {"environment": "TEST", "log_level": "WARNING"},
-        "run": {"shutdown_grace_seconds": 5},
-        "source": {"type": "local", "path": str(source_path)},
+        "run": {"shutdown_grace_seconds": 5, "trigger": "TRIGGER_8"},
+        "source": {"trigger_tables": {"TRIGGER_8": "ifc_trigger_db.trigger_8"}},
         "kafka": {
             "topic": "test_ifc_topic",
             "bsp_config_path": "config/bsp_local_config.yaml",
@@ -176,26 +223,44 @@ def make_settings(source_path, **overrides) -> ConnectorSettings:
     }
     for section, values in overrides.items():
         document.setdefault(section, {}).update(values)
-    return ConnectorSettings.model_validate(document)
+    settings = ConnectorSettings.model_validate(document)
+    settings.select_trigger(None)
+    return settings
+
+
+def build_runner(rows, *, producer=None, athena=None, **overrides):
+    """A runner reading ``rows`` through the real Athena source, Kafka faked."""
+    from utility.tb_outcome_schema import EnvelopeBuilder
+    from utility.trigger_source import AthenaTriggerSource
+
+    settings = make_settings(**overrides)
+    metrics = Metrics()
+    # Not ``or``: a FakeProducer with an empty queue has len() 0 and is falsy.
+    if producer is None:
+        producer = FakeProducer()
+
+    runner = ConnectorRunner(settings, metrics=metrics, shutdown=ShutdownSignal())
+    runner._source = AthenaTriggerSource(
+        settings.source,
+        trigger=settings.run.trigger,
+        business_month="2026-06",
+        client=athena or FakeAthena(rows),
+        sleep=lambda _s: None,
+    )
+    runner._stack = build_stack(producer, settings, metrics)
+    runner._envelopes = EnvelopeBuilder(
+        avro_schema=runner._stack.serializer.schema,
+        sequence_allocator=runner._sequence,
+        business_month="2026-06",
+    )
+    return runner, producer, metrics
 
 
 @pytest.fixture
-def runner_factory(tmp_path):
-    def make(events, *, fail_keys=None, **overrides):
-        write_events(tmp_path, events)
-        settings = make_settings(tmp_path, **overrides)
-        metrics = Metrics()
-        producer = FakeProducer(fail_keys=fail_keys)
-
-        runner = ConnectorRunner(settings, metrics=metrics, shutdown=ShutdownSignal())
-        runner._stack = build_stack(producer, settings, metrics)
-
-        from utility.tb_outcome_schema import EnvelopeBuilder
-
-        runner._envelopes = EnvelopeBuilder(
-            avro_schema=runner._stack.serializer.schema,
-            sequence_allocator=runner._sequence,
-            business_month="2026-06",
+def runner_factory():
+    def make(rows, *, fail_keys=None, **overrides):
+        runner, producer, _ = build_runner(
+            rows, producer=FakeProducer(fail_keys=fail_keys), **overrides
         )
         return runner, producer
 
@@ -209,7 +274,7 @@ def runner_factory(tmp_path):
 
 class TestHappyPath:
     def test_a_valid_batch_publishes_and_reconciles(self, runner_factory):
-        runner, producer = runner_factory([VALID_EVENT])
+        runner, producer = runner_factory([VALID_ROW])
         result = runner.run_batch()
 
         assert result.outcome == "SUCCESS"
@@ -220,13 +285,13 @@ class TestHappyPath:
         assert producer.produced[0]["topic"] == "test_ifc_topic"
 
     def test_the_record_carries_no_headers(self, runner_factory):
-        runner, producer = runner_factory([VALID_EVENT])
+        runner, producer = runner_factory([VALID_ROW])
         runner.run_batch()
 
         assert not producer.produced[0]["headers"]
 
     def test_the_wire_format_is_magic_byte_plus_schema_id(self, runner_factory):
-        runner, producer = runner_factory([VALID_EVENT])
+        runner, producer = runner_factory([VALID_ROW])
         runner.run_batch()
 
         value = producer.produced[0]["value"]
@@ -242,7 +307,7 @@ class TestRunLogs:
 
     def test_each_acknowledged_message_is_logged_as_published(self, runner_factory, caplog):
         caplog.set_level("INFO")
-        runner, _ = runner_factory([VALID_EVENT])
+        runner, _ = runner_factory([VALID_ROW])
         runner.run_batch()
 
         [published] = self.messages(caplog, "Message published:")
@@ -252,7 +317,7 @@ class TestRunLogs:
 
     def test_a_failed_delivery_is_logged_as_not_published(self, runner_factory, caplog):
         caplog.set_level("INFO")
-        runner, _ = runner_factory([VALID_EVENT], fail_keys={FIRST_TRIGGER_ID})
+        runner, _ = runner_factory([VALID_ROW], fail_keys={FIRST_TRIGGER_ID})
         runner.run_batch()
 
         assert self.messages(caplog, "Message published:") == []
@@ -261,7 +326,7 @@ class TestRunLogs:
 
     def test_the_batch_ends_with_a_publish_summary(self, runner_factory, caplog):
         caplog.set_level("INFO")
-        runner, _ = runner_factory([VALID_EVENT])
+        runner, _ = runner_factory([VALID_ROW])
         runner.run_batch()
 
         [summary] = self.messages(caplog, "Kafka publish summary:")
@@ -270,8 +335,8 @@ class TestRunLogs:
 
 class TestQuarantine:
     def test_a_poison_record_is_quarantined_and_the_batch_continues(self, runner_factory):
-        poison = {**VALID_EVENT, "attributes": {"region": "EMEA"}}
-        runner, producer = runner_factory([poison, VALID_EVENT])
+        poison = {"region": "EMEA"}  # no CSID, so no idValue
+        runner, producer = runner_factory([poison, VALID_ROW])
 
         result = runner.run_batch()
 
@@ -279,22 +344,10 @@ class TestQuarantine:
         assert result.counters.published == 1
         assert result.reconciliation.balanced
 
-    def test_an_unparsable_line_is_counted_and_does_not_stop_the_batch(self, runner_factory, tmp_path):
-        runner, producer = runner_factory([VALID_EVENT])
-        (tmp_path / "events.jsonl").write_text(
-            "{not json}\n" + json.dumps(VALID_EVENT), encoding="utf-8"
-        )
-
-        result = runner.run_batch()
-
-        assert result.counters.parse_failures == 1
-        assert result.counters.published == 1
-        assert result.reconciliation.balanced
-
     def test_exceeding_the_quarantine_tolerance_fails_the_run(self, runner_factory):
-        poison = {**VALID_EVENT, "attributes": {}}
+        poison = {"region": "EMEA"}
         runner, _ = runner_factory(
-            [poison, VALID_EVENT], resilience={"max_quarantine_ratio": 0.1}
+            [poison, VALID_ROW], resilience={"max_quarantine_ratio": 0.1}
         )
 
         result = runner.run_batch()
@@ -308,11 +361,11 @@ class TestSequenceNumbers:
     republishes rather than the connector remembering what it sent."""
 
     def test_a_re_run_republishes_rather_than_suppressing(self, runner_factory):
-        runner, producer = runner_factory([VALID_EVENT])
+        runner, producer = runner_factory([VALID_ROW])
         runner.run_batch()
         assert len(producer.produced) == 1
 
-        runner2, producer2 = runner_factory([VALID_EVENT])
+        runner2, producer2 = runner_factory([VALID_ROW])
         result = runner2.run_batch()
 
         assert result.counters.published == 1
@@ -320,9 +373,8 @@ class TestSequenceNumbers:
         assert result.reconciliation.balanced
 
     def test_each_customer_starts_at_one(self, runner_factory):
-        second = json.loads(json.dumps(VALID_EVENT))
-        second["attributes"]["counterparty_csid_sds"] = 9912345679
-        runner, producer = runner_factory([VALID_EVENT, second])
+        second = row(counterparty_csid_sds=9912345679)
+        runner, producer = runner_factory([VALID_ROW, second])
         result = runner.run_batch()
 
         assert result.counters.acked == 2
@@ -332,7 +384,7 @@ class TestSequenceNumbers:
 
     def test_a_repeated_customer_counts_up(self, runner_factory):
         """Two events from one source for one customer: 1, then 2."""
-        runner, producer = runner_factory([VALID_EVENT, json.loads(json.dumps(VALID_EVENT))])
+        runner, producer = runner_factory([VALID_ROW, row()])
         result = runner.run_batch()
 
         assert result.counters.acked == 2
@@ -342,7 +394,7 @@ class TestSequenceNumbers:
 
 class TestFailureOutcomes:
     def test_a_delivery_failure_fails_reconciliation(self, runner_factory):
-        runner, _ = runner_factory([VALID_EVENT], fail_keys={FIRST_TRIGGER_ID})
+        runner, _ = runner_factory([VALID_ROW], fail_keys={FIRST_TRIGGER_ID})
         result = runner.run_batch()
 
         assert not result.reconciliation.balanced
@@ -350,13 +402,12 @@ class TestFailureOutcomes:
         assert result.exit_code == catalog.RECONCILIATION_FAILURE.exit_code
 
     def test_the_dominant_failure_scenario_is_reported(self, runner_factory):
-        runner, _ = runner_factory([VALID_EVENT], fail_keys={FIRST_TRIGGER_ID})
+        runner, _ = runner_factory([VALID_ROW], fail_keys={FIRST_TRIGGER_ID})
         result = runner.run_batch()
         assert result.delivery["by_scenario"] == {"BROKER_UNAVAILABLE": 1}
 
-    def test_an_empty_source_is_reported_as_zero_records_not_success(self, runner_factory, tmp_path):
+    def test_an_empty_month_is_reported_as_zero_records_not_success(self, runner_factory):
         runner, _ = runner_factory([])
-        (tmp_path / "events.jsonl").write_text("", encoding="utf-8")
 
         result = runner.run_batch()
 
@@ -391,7 +442,7 @@ class TestPublishRetry:
 
     def test_a_transient_failure_is_retried_and_the_record_published(self, runner_factory):
         runner, producer = runner_factory(
-            [VALID_EVENT], resilience={**self.FAST, "max_publish_attempts": 3}
+            [VALID_ROW], resilience={**self.FAST, "max_publish_attempts": 3}
         )
         calls = self.failing_publisher(runner, failures=1)
 
@@ -405,7 +456,7 @@ class TestPublishRetry:
 
     def test_a_persistent_failure_fails_the_reconciliation_without_quarantine(self, runner_factory):
         runner, producer = runner_factory(
-            [VALID_EVENT], resilience={**self.FAST, "max_publish_attempts": 3}
+            [VALID_ROW], resilience={**self.FAST, "max_publish_attempts": 3}
         )
         calls = self.failing_publisher(runner, failures=99)
 
@@ -420,9 +471,9 @@ class TestPublishRetry:
     def test_every_failed_attempt_counts_towards_the_circuit_breaker(self, runner_factory):
         """A total outage must not retry each record in turn: the breaker opens
         on attempts, so the second record is never tried."""
-        second = {**VALID_EVENT, "attributes": {**VALID_EVENT["attributes"], "business_date": "2026-06-15"}}
+        second = row(counterparty_csid_sds=9912345679)
         runner, _ = runner_factory(
-            [VALID_EVENT, second],
+            [VALID_ROW, second],
             resilience={**self.FAST, "max_publish_attempts": 5, "circuit_breaker_threshold": 2},
         )
         calls = self.failing_publisher(runner, failures=99)
@@ -436,11 +487,8 @@ class TestPublishRetry:
 
 class TestShutdown:
     def test_a_signal_stops_intake_and_drains_what_was_queued(self, runner_factory):
-        events = [
-            {**VALID_EVENT, "attributes": {**VALID_EVENT["attributes"], "business_date": f"2026-06-{i % 28 + 1:02d}"}}
-            for i in range(5)
-        ]
-        runner, producer = runner_factory(events)
+        rows = [row(counterparty_csid_sds=9900000000 + i) for i in range(5)]
+        runner, producer = runner_factory(rows)
         runner._shutdown.set("test")
 
         result = runner.run_batch()
@@ -450,34 +498,17 @@ class TestShutdown:
         assert producer.produced == []
 
     def test_health_reports_draining_after_a_signal(self, runner_factory):
-        runner, _ = runner_factory([VALID_EVENT])
+        runner, _ = runner_factory([VALID_ROW])
         runner._shutdown.set("test")
         runner.run_batch()
         assert runner.health.snapshot()["draining"] is True
 
 
 class TestBackpressure:
-    def test_a_full_local_queue_is_waited_out_rather_than_grown(self, runner_factory, tmp_path):
-        events = [
-            {**VALID_EVENT, "attributes": {**VALID_EVENT["attributes"], "business_date": f"2026-06-{i % 28 + 1:02d}"}}
-            for i in range(6)
-        ]
-        write_events(tmp_path, events)
-        settings = make_settings(tmp_path)
-        metrics = Metrics()
-
+    def test_a_full_local_queue_is_waited_out_rather_than_grown(self):
+        rows = [row(counterparty_csid_sds=9900000000 + i) for i in range(6)]
         # A queue that only holds two messages forces BufferError repeatedly.
-        producer = FakeProducer(queue_limit=2)
-        runner = ConnectorRunner(settings, metrics=metrics, shutdown=ShutdownSignal())
-        runner._stack = build_stack(producer, settings, metrics)
-
-        from utility.tb_outcome_schema import EnvelopeBuilder
-
-        runner._envelopes = EnvelopeBuilder(
-            avro_schema=runner._stack.serializer.schema,
-            sequence_allocator=runner._sequence,
-            business_month="2026-06",
-        )
+        runner, _, metrics = build_runner(rows, producer=FakeProducer(queue_limit=2))
 
         result = runner.run_batch()
 
@@ -488,9 +519,8 @@ class TestBatchCompletionWindow:
     """What the Trigger Backbone completion notification reports on."""
 
     def test_a_published_batch_reports_its_posting_window_and_sub_type(self, runner_factory):
-        second = json.loads(json.dumps(VALID_EVENT))
-        second["attributes"]["counterparty_csid_sds"] = 9912345679
-        runner, _ = runner_factory([VALID_EVENT, second])
+        second = row(counterparty_csid_sds=9912345679)
+        runner, _ = runner_factory([VALID_ROW, second])
         result = runner.run_batch()
 
         assert result.counters.acked == 2
@@ -513,8 +543,8 @@ class TestBatchCompletionWindow:
     def test_a_quarantined_record_does_not_widen_the_window(self, runner_factory):
         """Only records that reached the broker count: the window is what TBB
         is told was produced."""
-        poison = {"triggerSubType": "TRIGGER_8", "attributes": {"region": "EMEA"}}
-        runner, _ = runner_factory([VALID_EVENT, poison])
+        poison = {"region": "EMEA"}
+        runner, _ = runner_factory([VALID_ROW, poison])
         result = runner.run_batch()
 
         assert result.counters.quarantined == 1
@@ -522,41 +552,14 @@ class TestBatchCompletionWindow:
         assert result.batch_start_timestamp == result.batch_end_timestamp
 
 
-class TestTheSingleFileContract:
-    """ECS is handed one .json object holding the whole batch as an array."""
-
-    def _write_array(self, tmp_path, rows, name="batch.json"):
-        path = tmp_path / name
-        path.write_text(json.dumps(rows), encoding="utf-8")
-        return path
-
-    def _runner(self, path, **overrides):
-        settings = make_settings(path, **overrides)
-        metrics = Metrics()
-        producer = FakeProducer()
-        runner = ConnectorRunner(settings, metrics=metrics, shutdown=ShutdownSignal())
-        runner._stack = build_stack(producer, settings, metrics)
-
-        from utility.tb_outcome_schema import EnvelopeBuilder
-
-        runner._envelopes = EnvelopeBuilder(
-            avro_schema=runner._stack.serializer.schema,
-            sequence_allocator=runner._sequence,
-            business_month="2026-06",
-        )
-        return runner, producer
+class TestTheMonthIsOneBatch:
+    """One Athena query returns the whole month; every row of it is published."""
 
     def _rows(self, n):
-        rows = []
-        for i in range(n):
-            row = json.loads(json.dumps(VALID_EVENT))
-            row["attributes"]["counterparty_csid_sds"] = 9900000000 + i
-            rows.append(row)
-        return rows
+        return [row(counterparty_csid_sds=9900000000 + i) for i in range(n)]
 
-    def test_one_file_of_records_publishes_all_of_them(self, tmp_path):
-        path = self._write_array(tmp_path, self._rows(25))
-        runner, producer = self._runner(path)
+    def test_every_row_of_the_month_is_published(self):
+        runner, producer, _ = build_runner(self._rows(25))
         result = runner.run_batch()
 
         assert result.outcome == "SUCCESS"
@@ -564,52 +567,43 @@ class TestTheSingleFileContract:
         assert result.counters.acked == 25
         assert len(producer.produced) == 25
         assert result.reconciliation.balanced
-        assert result.source_objects == [str(path)]
-        assert result.counters.objects_read == 1
+        assert result.source == {
+            "table": "ifc_trigger_db.trigger_8",
+            "business_date": "2026-06-30",
+            "query_execution_id": "q-1",
+        }
 
-    def test_a_batch_larger_than_the_old_default_cap_is_published_whole(self, tmp_path):
-        """5000 was the old default; a cap would now silently drop the tail."""
-        path = self._write_array(tmp_path, self._rows(5_200))
-        runner, _ = self._runner(path)
+    def test_the_run_trigger_table_is_queried_for_the_month_end(self):
+        athena = FakeAthena([VALID_ROW])
+        runner, _, _ = build_runner([], athena=athena)
+        runner.run_batch()
+
+        (query,) = athena.queries
+        assert '"ifc_trigger_db"."trigger_8"' in query["QueryString"]
+        assert query["ExecutionParameters"] == ["'2026-06-30'"]
+
+    def test_a_month_spanning_several_result_pages_is_published_whole(self):
+        """Hundreds a month in practice; paging must still not drop a row."""
+        runner, _, _ = build_runner(self._rows(2_500))
         result = runner.run_batch()
 
-        assert result.counters.acked == 5_200
+        assert result.counters.acked == 2_500
         assert result.reconciliation.balanced
-        # The whole file is one batch, so the notification covers all of it.
         assert result.published_trigger_subtype == "NewHRCRelationship"
 
-    def test_a_bad_record_is_quarantined_and_the_rest_of_the_file_publishes(self, tmp_path):
+    def test_a_bad_row_is_quarantined_and_the_rest_of_the_month_publishes(self):
         rows = self._rows(5)
-        rows[2] = {"triggerType": "IFC_CDD"}  # no triggerSubType
-        path = self._write_array(tmp_path, rows)
-        runner, _ = self._runner(path)
+        rows[2] = {"region": "EMEA"}  # no CSID
+        runner, _, _ = build_runner(rows)
         result = runner.run_batch()
 
-        assert result.counters.parse_failures == 1
+        assert result.counters.quarantined == 1
         assert result.counters.acked == 4
         assert result.reconciliation.balanced
 
-    def test_an_unreadable_source_fails_the_run_rather_than_reporting_success(self, tmp_path):
-        """The hole the one-file contract opens: an unreadable object arrives as
-        a single ParseFailure, which on its own reconciles and would have left a
-        missing monthly file exiting 0."""
-        path = self._write_array(tmp_path, self._rows(3))
-        runner, _ = self._runner(path)
-
-        # Stand in for S3 NoSuchKey: the object lists but cannot be read.
-        from utility import trigger_source as source_module
-
-        def unreadable(_path):
-            raise source_module.SourceAccessError(
-                "S3 read failed: NoSuchKey", path=str(path), operation="read"
-            )
-
-        original = source_module.read_text
-        source_module.read_text = unreadable
-        try:
-            result = runner.run_batch()
-        finally:
-            source_module.read_text = original
+    def test_a_failed_query_fails_the_run_rather_than_reporting_success(self):
+        runner, _, _ = build_runner([], athena=FakeAthena(self._rows(3), state="FAILED"))
+        result = runner.run_batch()
 
         assert result.outcome == "SOURCE_UNREADABLE"
         assert result.exit_code != catalog.EXIT_OK
@@ -617,10 +611,9 @@ class TestTheSingleFileContract:
         assert result.classification is not None
         assert result.classification.scenario.key == catalog.BDP_READ_FAILURE.key
 
-    def test_an_empty_array_is_reported_as_zero_records(self, tmp_path):
-        """Distinct from unreadable: the file was there and held nothing."""
-        path = self._write_array(tmp_path, [])
-        runner, _ = self._runner(path)
+    def test_an_empty_month_is_reported_as_zero_records(self):
+        """Distinct from a failed query: the query ran and found nothing."""
+        runner, _, _ = build_runner([])
         result = runner.run_batch()
 
         assert result.outcome == "ZERO_RECORDS"
