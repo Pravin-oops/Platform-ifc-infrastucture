@@ -775,12 +775,14 @@ class TestGateActivation:
             _settings(table="recon_audit")
 
     def test_the_bundled_config_resolves_every_trigger(self, clean_ifc_env):
+        """One batch_recon table for every trigger; each trigger its own target."""
         from utility.connector_config import load_settings
 
         for trigger, suffix in (("TRIGGER_8", "8"), ("TRIGGER_9", "9"), ("TRIGGER_21", "21")):
             settings = load_settings("utility/connector_config.yaml")
             settings.select_trigger(trigger)
             assert settings.recon_active
+            assert settings.recon.table == "bdp_ifc_synthetic_data_test.batch_recon"
             assert settings.recon.target_table == (
                 f"`sit_cds_snsvc0080860_prepared_db`.bdb_ifc_synthetic_data_test.BDP_Corp_IFC_Trigger_{suffix}"
             )

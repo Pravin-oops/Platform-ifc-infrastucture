@@ -599,8 +599,18 @@ needing confirmation are marked `CONFIRM`, including the Athena workgroup).
 ## The upstream reconciliation gate
 
 Before any work, the connector asks whether upstream produced anything to run for. The Databricks
-recon job appends **one row per model run** to a recon table, which the connector reads through
-Athena (`recon.table`, through `source.athena`'s workgroup, catalog and result location):
+recon job appends **one row per model run** to a single table, `bdp_ifc_synthetic_data_test.batch_recon`,
+shared by all three triggers. The connector reads it through Athena (`recon.table`, through
+`source.athena`'s workgroup, catalog and result location), and each run reads only the rows whose
+`target_table_name` is its own trigger's:
+
+| `IFC_RUN__TRIGGER` | `target_table_name` in `batch_recon` (`recon.trigger_targets`) |
+|---|---|
+| `TRIGGER_8` | `` `sit_cds_snsvc0080860_prepared_db`.bdb_ifc_synthetic_data_test.BDP_Corp_IFC_Trigger_8 `` |
+| `TRIGGER_9` | `` `sit_cds_snsvc0080860_prepared_db`.bdb_ifc_synthetic_data_test.BDP_Corp_IFC_Trigger_9 `` |
+| `TRIGGER_21` | `` `sit_cds_snsvc0080860_prepared_db`.bdb_ifc_synthetic_data_test.BDP_Corp_IFC_Trigger_21 `` |
+
+The `batch_recon` columns:
 
 | Column | Type | Used for |
 |---|---|---|
@@ -615,7 +625,7 @@ Athena (`recon.table`, through `source.athena`'s workgroup, catalog and result l
 A run of Trigger 9 reads the newest row for its own Databricks table:
 
 ```sql
-SELECT * FROM "<recon database>"."<recon table>"
+SELECT * FROM "bdp_ifc_synthetic_data_test"."batch_recon"
 WHERE lower(replace(target_table_name, '`', '')) = ?
       -- 'sit_cds_snsvc0080860_prepared_db.bdb_ifc_synthetic_data_test.bdp_corp_ifc_trigger_9'
 ORDER BY last_modified_ts DESC
@@ -686,10 +696,6 @@ meant to happen at all; checking upstream on them would alert six times a month 
 `trigger_paths`, `file_suffixes`, …) are rejected at load, so a stale config cannot switch the gate
 off silently. The task role needs the same Athena and Glue permissions as the trigger tables, on
 the recon table too, plus read on its data.
-
-**Placeholder.** `recon.table` is `recon_database_placeholder.recon_table_placeholder` until the
-data team confirms the real name; until then every run blocks as `UPSTREAM_RECON_UNREADABLE`
-unless the gate is switched off.
 
 ---
 

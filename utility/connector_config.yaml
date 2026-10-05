@@ -64,12 +64,12 @@ source:
 # The query runs through source.athena's workgroup, catalog and result location.
 recon:
   enabled: true
-  # CONFIRM: the recon table's database and name - placeholder until the data
-  # team shares it. Until then a run blocks as UPSTREAM_RECON_UNREADABLE unless
-  # IFC_RECON__ENABLED=false.
-  table: recon_database_placeholder.recon_table_placeholder
-  # target_table_name per trigger: the Databricks table each trigger's model
-  # writes. Matched ignoring backticks and case.
+  # The one batch recon table every trigger's rows are written to.
+  table: bdp_ifc_synthetic_data_test.batch_recon
+  # The target_table_name value each trigger's rows carry in batch_recon - the
+  # Databricks table the trigger's model writes. A run reads only the rows
+  # whose target_table_name is its own trigger's, matched ignoring backticks
+  # and case, and the one with the latest last_modified_ts decides.
   trigger_targets:
     TRIGGER_8: "`sit_cds_snsvc0080860_prepared_db`.bdb_ifc_synthetic_data_test.BDP_Corp_IFC_Trigger_8"
     TRIGGER_9: "`sit_cds_snsvc0080860_prepared_db`.bdb_ifc_synthetic_data_test.BDP_Corp_IFC_Trigger_9"
