@@ -140,7 +140,6 @@ class TriggerEvent:
     trigger_sub_type: str
     attributes: Dict[str, Any]
     trigger_type: Optional[str] = None
-    upstream_trigger_id: Optional[str] = None
     source_object: Optional[str] = None
     source_index: int = 0
 
@@ -345,7 +344,9 @@ class EnvelopeBuilder:
             "idType": ID_TYPE,
             "idValue": csid,
             "idSystem": ID_SYSTEM,
-            "upstreamTriggerID": event.upstream_trigger_id,
+            # Nullable in the schema, and the trigger tables carry no upstream
+            # trigger id: an IFC trigger is the origin, not a derived event.
+            "upstreamTriggerID": None,
             "payload": serialise(payload_fields),
         }
 

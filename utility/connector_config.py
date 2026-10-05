@@ -208,10 +208,6 @@ class AthenaSettings(BaseModel):
     #: in the order rows arrive, so a re-run only reproduces them if the order
     #: is fixed.
     order_by: List[str] = Field(default_factory=list)
-    #: The column carrying the envelope's ``upstreamTriggerID``, which the JSON
-    #: extract supplied outside the row as ``upstreamTriggerId``. ``None``
-    #: publishes it as null.
-    upstream_trigger_id_column: Optional[str] = None
     poll_interval_seconds: float = Field(default=1.0, gt=0)
     query_timeout_seconds: int = Field(default=300, ge=10)
 
@@ -220,8 +216,6 @@ class AthenaSettings(BaseModel):
         sql_identifier(self.business_date_column, what="source.athena.business_date_column")
         for column in self.order_by:
             sql_identifier(column, what="source.athena.order_by column")
-        if self.upstream_trigger_id_column is not None:
-            sql_identifier(self.upstream_trigger_id_column, what="source.athena.upstream_trigger_id_column")
         return self
 
 

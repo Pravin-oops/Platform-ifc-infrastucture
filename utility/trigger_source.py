@@ -288,16 +288,10 @@ class AthenaTriggerSource:
 
     def _to_event(self, row: Dict[str, Any], index: int) -> TriggerEvent:
         # The table holds only the attribute columns; the trigger is the run's own.
-        upstream_id = (
-            row.get(self._athena.upstream_trigger_id_column)
-            if self._athena.upstream_trigger_id_column
-            else None
-        )
         return TriggerEvent(
             trigger_sub_type=self._trigger,
             attributes=row,
             trigger_type=TRIGGER_TYPE,
-            upstream_trigger_id=None if upstream_id is None else str(upstream_id),
             source_object=self.table,
             source_index=index,
         )

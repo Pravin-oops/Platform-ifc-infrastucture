@@ -6,7 +6,7 @@ answers the four calls the reader makes, so nothing here needs AWS.
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
@@ -28,8 +28,11 @@ from utility.trigger_source import (
 
 TABLE = "ifc_trigger_db.trigger_8_events"
 
+#: The trigger tables' columns as Athena reports them (a Glue ``string`` comes
+#: back as ``varchar``): date_of_request is text, the CSID a bigint and
+#: business_date a date.
 COLUMNS = [
-    ("date_of_request", "timestamp"),
+    ("date_of_request", "varchar"),
     ("counterparty_full_legal_entity_name", "varchar"),
     ("counterparty_csid_sds", "bigint"),
     ("customer_segment", "varchar"),
@@ -241,7 +244,8 @@ class TestStream:
 
         assert attributes["counterparty_csid_sds"] == 9912345678
         assert attributes["business_date"] == date(2026, 8, 31)
-        assert attributes["date_of_request"] == datetime(2026, 8, 10, 2, 15, 4, 221000)
+        # A string column in the table, so it stays text.
+        assert attributes["date_of_request"] == "2026-08-10 02:15:04.221"
         assert attributes["region"] == "EMEA"
 
     def test_a_null_cell_is_none(self):
@@ -262,12 +266,11 @@ class TestStream:
         client = FakeAthena(pages=[result_page([], header=True)])
         assert list(make(client).stream()) == []
 
-    def test_the_upstream_trigger_id_can_come_from_a_column(self):
-        event = list(make(FakeAthena(), upstream_trigger_id_column="counterparty_csid_sds").stream())[0]
-        assert event.upstream_trigger_id == "9912345678"
-
-    def test_without_that_column_the_upstream_id_is_none(self):
-        assert list(make(FakeAthena()).stream())[0].upstream_trigger_id is None
+    def test_a_stale_upstream_trigger_id_column_setting_is_ignored(self):
+        """The tables have no upstream trigger id, so the setting was removed. A
+        config that still carries it (null) must keep loading."""
+        settings = athena_settings(upstream_trigger_id_column=None)
+        assert not hasattr(settings.athena, "upstream_trigger_id_column")
 
 
 class TestFailures:
@@ -347,16 +350,21 @@ class TestEndToEnd:
         event = list(make(FakeAthena()).stream())[0]
 
         built = builder.build(event)
+        fields = {f["fieldName"]: f["fieldValue"] for f in built.payload_fields}
 
         assert built.record["triggerSubType"] == "NewHRCRelationship"
         assert built.record["idValue"] == "9912345678"
+        assert built.record["upstreamTriggerID"] is None
+        # date_of_request is a string column; the payload publishes its date part.
+        assert fields["Date of Request"] == "2026-08-10"
+        assert fields["Counterparty ID"] == "9912345678"
 
     @pytest.mark.parametrize(
         "run_trigger, table, published",
         [
-            ("TRIGGER_8", '"bdp_corp_ifc_trigger_8"', "NewHRCRelationship"),
-            ("TRIGGER_9", '"bdp_corp_ifc_trigger_9"', "AccountInactivity"),
-            ("TRIGGER_21", '"bdp_corp_ifc_trigger_21"', "MultipleTMSARs"),
+            ("TRIGGER_8", '"bdp_ifc_synthetic_data_test"."bdp_corp_ifc_trigger_8"', "NewHRCRelationship"),
+            ("TRIGGER_9", '"bdp_ifc_synthetic_data_test"."bdp_corp_ifc_trigger_9"', "AccountInactivity"),
+            ("TRIGGER_21", '"bdp_ifc_synthetic_data_test"."bdp_corp_ifc_trigger_21"', "MultipleTMSARs"),
         ],
     )
     def test_ifc_run_trigger_picks_the_table_and_the_published_sub_type(
@@ -376,7 +384,10 @@ class TestEndToEnd:
             avro_schema=load_schema_document("utility/schema.json"), business_month="2026-08"
         ).build(event)
 
-        assert table in client.started[0]["QueryString"]
+        assert f"FROM {table} " in client.started[0]["QueryString"]
         assert client.started[0]["ExecutionParameters"] == ["'2026-08-31'"]
+        assert client.started[0]["ResultConfiguration"] == {
+            "OutputLocation": "s3://sit1-logs-corpdeng-509153454187-eu-west-1/athena_output/"
+        }
         assert built.record["triggerType"] == "KYCRefresh"
         assert built.record["triggerSubType"] == published

@@ -185,7 +185,7 @@ TRIGGER_8_DEFINITION = TriggerDefinition(
 
 
 # ---------------------------------------------------------------------------
-# Trigger 9 - trigger_9_1
+# Trigger 9 - bdp_corp_ifc_trigger_9
 # ---------------------------------------------------------------------------
 
 TRIGGER_9_DEFINITION = TriggerDefinition(
@@ -198,11 +198,10 @@ TRIGGER_9_DEFINITION = TriggerDefinition(
 
 
 # ---------------------------------------------------------------------------
-# Trigger 21 - multiple TM alerts / SARs
+# Trigger 21 - bdp_corp_ifc_trigger_21 (multiple TM alerts / SARs)
 #
-# The BDP table for Trigger 21 has not been built yet, but the payload no longer
-# depends on it: the eight published fields are the same header columns Triggers
-# 8 and 9 already deliver, so nothing here is a guess at an alert-volume column.
+# The table has the same columns as Triggers 8 and 9, and publishes the same
+# eight header fields: there is no alert-volume column.
 # ---------------------------------------------------------------------------
 
 TRIGGER_21_DEFINITION = TriggerDefinition(

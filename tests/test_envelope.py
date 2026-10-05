@@ -81,6 +81,10 @@ class TestEnvelope:
         assert record["triggerSubType"] == "NewHRCRelationship"
         assert isinstance(record["sequenceNumber"], int)
 
+    def test_upstream_trigger_id_is_null(self, builder):
+        """The trigger tables have no upstream trigger id; an IFC trigger is the origin."""
+        assert builder.build(trigger_8_event()).record["upstreamTriggerID"] is None
+
     def test_envelope_constants_are_published_whatever_the_input_says(self, builder):
         built = builder.build(trigger_8_event(triggerType="SOMETHING_ELSE"))
         record = built.record

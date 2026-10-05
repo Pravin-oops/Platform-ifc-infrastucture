@@ -274,9 +274,8 @@ The trigger a message belongs to is already carried by the envelope's `triggerSu
 payload does not repeat it. Source rows may still carry those columns — `business_date` in
 particular is still read, as the sub-event discriminator — they simply do not go on the wire.
 
-Because Trigger 21 now publishes the same header columns as Triggers 8 and 9, its definition no
-longer depends on a BDP table that has not been built: nothing in it is a guess at an
-alert-volume column.
+Trigger 21 publishes the same header columns as Triggers 8 and 9, and its table has the same
+columns: nothing in its definition is a guess at an alert-volume column.
 
 **All eight fields are mandatory.** A source row missing — or blank in — any of the eight is
 quarantined with a `SCHEMA_VALIDATION_FAILURE`, naming the field and the source column; it is
@@ -328,6 +327,25 @@ Two consequences worth knowing:
 **Each trigger has its own Athena (Iceberg) table**, built by the dbt models on Databricks and
 named in `source.trigger_tables` as `database.table`. `IFC_RUN__TRIGGER` picks the table, so a
 run only ever reads its own trigger's data; an unmapped trigger fails at startup.
+
+The SIT tables are `bdp_ifc_synthetic_data_test.bdp_corp_ifc_trigger_8`, `_9` and `_21`. All
+three have the same columns:
+
+| Column | Type | Used for |
+|---|---|---|
+| `date_of_request` | `string` | Date of Request (date part published); first sort key |
+| `counterparty_full_legal_entity_name` | `string` | Counterparty Full Legal Entity Name |
+| `counterparty_csid_sds` | `bigint` | Counterparty ID and the envelope's `idValue`; second sort key |
+| `customer_segment` | `string` | not published |
+| `client_relationship_owner_brid` | `string` | Client Relationship Owner BRID |
+| `client_relationship_owner_name` | `string` | Client Relationship Owner Name (tokenised) |
+| `client_relationship_owner_business_unit` | `string` | Client Relationship Owner Business Unit |
+| `client_relationship_owner_location` | `string` | Client Relationship Owner Location |
+| `region` | `string` | Region |
+| `business_date` | `date` | the month filter, and the sub-event discriminator; not published |
+
+Query results go to `s3://sit1-logs-corpdeng-509153454187-eu-west-1/athena_output/`
+(`source.athena.output_location`, the DevOps stack's results bucket and prefix).
 
 **The tables hold only the attribute columns.** Nothing on a row says which trigger it belongs
 to: the run's trigger does. Each row's columns become the event's `attributes`, and the envelope
@@ -392,7 +410,7 @@ Upstream supplies no customer id, business unit or timestamp — the connector d
 | `idSystem` | fixed: `Corelation id` |
 | `idType` | fixed: `Customer` |
 | `idValue` | `counterparty_csid_sds`, as a string; a row without one is quarantined |
-| `upstreamTriggerID` | the `source.athena.upstream_trigger_id_column` value, or null when unset |
+| `upstreamTriggerID` | always null: the trigger tables carry no upstream trigger id |
 | `payload` | the eight contract fields above |
 
 The sub-event discriminator is the row's `business_date`. Neither table has a sub-event column,
@@ -572,7 +590,7 @@ No secret is ever configuration. CSM supplies the BSP system-account credential 
 the ECS task role; only the secret's *path* is configured.
 
 Supplied config: [`utility/connector_config.yaml`](utility/connector_config.yaml) (UAT; values
-needing confirmation are marked `CONFIRM`, including the three Athena table names).
+needing confirmation are marked `CONFIRM`, including the Athena workgroup).
 
 ---
 
@@ -903,9 +921,8 @@ problem.
 | Kafka ACLs for the producer principal on the topic | Needed; preflight distinguishes a missing ACL from a missing topic |
 | **Tokenisation policy names** for account fields | Only `DPASS_POLICY_NAME` (Client Relationship Owner Name) is confirmed on Confluence; `POLICY_ACCOUNT` in `utility/trigger_payload.py` is a placeholder |
 | Timestamp format agreement with TBB | See drift item 4 |
-| Trigger 9 and 21 data sources | Both marked "under investigation" in the business data product; the payload definitions are complete, the source keys may need remapping |
-| **Athena table names** for Triggers 8, 9 and 21 | Placeholders in `source.trigger_tables`; to be shared by the data team |
-| Athena workgroup, and the task role's Athena / Glue / S3 / Lake Formation permissions | `workgroup: primary` is a placeholder; the role needs `athena:StartQueryExecution`, `GetQueryExecution`, `GetQueryResults`, `StopQueryExecution`, `GetTableMetadata`, Glue `GetTable`/`GetPartitions`, read on the table data, read/write on the query results location, and `SELECT` if Lake Formation governs the tables |
+| Athena workgroup, and the task role's Athena / Glue / S3 / Lake Formation permissions | `workgroup: primary` is a placeholder; the role needs `athena:StartQueryExecution`, `GetQueryExecution`, `GetQueryResults`, `StopQueryExecution`, `GetTableMetadata`, Glue `GetTable`/`GetPartitions`, read on the table data, read/write on `s3://sit1-logs-corpdeng-509153454187-eu-west-1/athena_output/`, and `SELECT` if Lake Formation governs the tables |
+| `date_of_request` text format | A `string` column; the payload publishes its first ten characters, which is the date for ISO text (`2026-08-10 02:15:04`). Confirm upstream writes ISO |
 | Internal package index reachable from the image build, for `bsp_python_client` | Required; it is an ordinary pip requirement |
 | SNS topic for RTB alerting | `notifications.sns_topic_arn` is null; alerts currently log only |
 | SNS topic for the TBB batch-completion event | `notifications.batch_sns_topic_arn` is null; the event currently logs only. Confirm the topic and the `Trigger_Originating_BU` value with TBB |
