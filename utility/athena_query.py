@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
@@ -31,6 +31,50 @@ _FLOAT_TYPES = {"double", "float", "real"}
 _NESTED_TYPES = ("array", "map", "row", "struct", "json")
 
 _TERMINAL_STATES = {"SUCCEEDED", "FAILED", "CANCELLED"}
+
+
+def parse_timestamp(text: str) -> Optional[datetime]:
+    """Timestamp text as a naive UTC datetime, or ``None`` if it is not one.
+
+    Accepts every form the recon and trigger tables produce:
+
+    * Athena ``timestamp``: ``2026-10-05 06:12:13.790087``
+    * Athena ``timestamp with time zone``: ``2026-10-05 06:12:13.790087 UTC``
+      (or a region such as ``Europe/London``)
+    * ISO 8601 as Databricks writes it: ``2026-10-05T06:12:13.790+00:00``,
+      ``...Z``
+
+    A value carrying a zone or an offset is converted to UTC; one without is
+    taken as UTC already. Naive UTC throughout, so values from either form
+    compare and render alike.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return None
+    value = text.strip()
+
+    zone = None
+    head, sep, tail = value.rpartition(" ")
+    if sep and tail[:1].isalpha():
+        # A trailing zone name: Athena renders timestamp with time zone as
+        # '<timestamp> UTC'. fromisoformat does not read names.
+        try:
+            from zoneinfo import ZoneInfo
+
+            zone = ZoneInfo(tail)
+        except Exception:
+            return None
+        value = head
+
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+    if zone is not None and parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=zone)
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed
 
 
 def coerce(value: Optional[str], athena_type: str) -> Any:
@@ -54,8 +98,11 @@ def coerce(value: Optional[str], athena_type: str) -> Any:
             return value.strip().lower() == "true"
         if kind == "date":
             return date.fromisoformat(value)
-        if kind == "timestamp":
-            return datetime.fromisoformat(value.replace(" ", "T", 1))
+        if kind.startswith("timestamp"):
+            # timestamp, timestamp(3), timestamp with time zone - the last
+            # renders with a zone name ('... UTC') that fromisoformat cannot read.
+            parsed = parse_timestamp(value)
+            return value if parsed is None else parsed
         if kind.startswith(_NESTED_TYPES):
             # Only JSON-typed or json_format()'d columns come back as JSON; a
             # raw struct renders as {a=1, b=2}, which stays a string.

@@ -6,7 +6,7 @@ answers the four calls the reader makes, so nothing here needs AWS.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
@@ -332,7 +332,10 @@ class TestCoerce:
             ('{"a": 1}', "json", {"a": 1}),
             ("{a=1, b=2}", "row(a integer, b integer)", "{a=1, b=2}"),
             ("not-a-number", "bigint", "not-a-number"),
-            ("2026-08-10 02:15:04.221 UTC", "timestamp with time zone", "2026-08-10 02:15:04.221 UTC"),
+            ("2026-08-10 02:15:04.221 UTC", "timestamp with time zone", datetime(2026, 8, 10, 2, 15, 4, 221000)),
+            ("2026-08-10 03:15:04.221 Europe/London", "timestamp with time zone", datetime(2026, 8, 10, 2, 15, 4, 221000)),
+            ("2026-08-10 02:15:04.221 Not/AZone", "timestamp with time zone", "2026-08-10 02:15:04.221 Not/AZone"),
+            ("2026-08-10 02:15:04.221", "timestamp(3)", datetime(2026, 8, 10, 2, 15, 4, 221000)),
         ],
     )
     def test_values_take_their_column_type(self, value, kind, expected):

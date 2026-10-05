@@ -41,10 +41,9 @@ assumption. A status outside the three is untrusted, never a green light.
 from __future__ import annotations
 
 import logging
-import re
 import time
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from itertools import islice
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -56,14 +55,6 @@ from utility.connector_config import athena_table
 from utility.connector_utility import SourceAccessError
 
 logger = logging.getLogger(__name__)
-
-#: ``2026-09-30T14:30:22.123``, or Athena's ``2026-09-30 14:30:22.123``.
-_LAST_MODIFIED_FORMATS = (
-    "%Y-%m-%dT%H:%M:%S.%f",
-    "%Y-%m-%dT%H:%M:%S",
-    "%Y-%m-%d %H:%M:%S.%f",
-    "%Y-%m-%d %H:%M:%S",
-)
 
 #: The one status that lets a run proceed.
 STATUS_SUCCESS = "SUCCESS"
@@ -148,26 +139,20 @@ def _blocked(outcome: str, scenario, reason: str, **extra) -> ReconDecision:
 
 
 def parse_last_modified(value: Any) -> Optional[datetime]:
-    """The row's ``last_modified_ts`` as a datetime, or ``None`` if unreadable.
+    """The row's ``last_modified_ts`` as a naive UTC datetime, or ``None``.
 
-    Athena returns a ``timestamp`` column already typed; text is accepted too.
-    A trailing ``Z`` or an offset is tolerated: the value is UTC and only its
-    month is read.
+    Athena returns the column already typed; text is accepted too, in every
+    form ``athena_query.parse_timestamp`` reads - including Athena's
+    ``2026-10-05 06:12:13.790087 UTC`` for a ``timestamp with time zone``
+    column and Databricks' ``2026-10-05T06:12:13.790+00:00``.
     """
     if isinstance(value, datetime):
+        if value.tzinfo is not None:
+            return value.astimezone(timezone.utc).replace(tzinfo=None)
         return value
-    if not isinstance(value, str) or not value.strip():
+    if not isinstance(value, str):
         return None
-
-    text = value.strip()
-    text = re.sub(r"(Z|[+-]\d{2}:?\d{2})$", "", text).strip()
-
-    for fmt in _LAST_MODIFIED_FORMATS:
-        try:
-            return datetime.strptime(text, fmt)
-        except ValueError:
-            continue
-    return None
+    return athena_query.parse_timestamp(value)
 
 
 def _as_int(value: Any) -> Optional[int]:

@@ -88,8 +88,10 @@ class FakeReconAthena:
     test only has to put rows in the table.
     """
 
-    def __init__(self, rows=None, *, state="SUCCEEDED", reason=None, start_error=None):
+    def __init__(self, rows=None, *, state="SUCCEEDED", reason=None, start_error=None,
+                 columns=None):
         self.rows: List[Dict[str, Any]] = rows if rows is not None else []
+        self.columns = columns or RECON_COLUMNS
         self.state = state
         self.reason = reason
         self.start_error = start_error
@@ -122,12 +124,12 @@ class FakeReconAthena:
         def cell(value):
             return {} if value is None else {"VarCharValue": str(value)}
 
-        header = {"Data": [{"VarCharValue": n} for n, _ in RECON_COLUMNS]}
-        data = [{"Data": [cell(r.get(n)) for n, _ in RECON_COLUMNS]} for r in matching[:1]]
+        header = {"Data": [{"VarCharValue": n} for n, _ in self.columns]}
+        data = [{"Data": [cell(r.get(n)) for n, _ in self.columns]} for r in matching[:1]]
         page = {
             "ResultSet": {
                 "Rows": [header] + data,
-                "ResultSetMetadata": {"ColumnInfo": [{"Name": n, "Type": t} for n, t in RECON_COLUMNS]},
+                "ResultSetMetadata": {"ColumnInfo": [{"Name": n, "Type": t} for n, t in self.columns]},
             }
         }
         return FakePaginator([page])
@@ -388,6 +390,22 @@ class TestMalformedRows:
         assert decision.outcome == "UPSTREAM_RECON_UNREADABLE"
         assert field in decision.reason
 
+    def test_a_timestamp_with_time_zone_column_is_read(self):
+        """The SIT failure: batch_recon.last_modified_ts is a timestamp with time
+        zone, which Athena renders as '2026-10-05 06:12:13.790087 UTC'."""
+        columns = [(n, "timestamp with time zone" if n == "last_modified_ts" else t)
+                   for n, t in RECON_COLUMNS]
+        client = FakeReconAthena([a_row(
+            target_table_name=TARGET_9,
+            last_modified_ts="2026-10-05 06:12:13.790087 UTC",
+        )], columns=columns)
+        decision = recon_gate.evaluate(
+            ReconSettings(table=TABLE, target_table=TARGET_9), AthenaSettings(),
+            execution_month="2026-10", client=client, sleep=lambda _s: None,
+        )
+        assert decision.proceed, decision.reason
+        assert decision.document["last_modified_ts"] == "2026-10-05T06:12:13.790087"
+
     def test_an_unreadable_timestamp_blocks(self, recon):
         recon.write(a_row(last_modified_ts="not a date"))
         assert recon.evaluate().outcome == "UPSTREAM_RECON_UNREADABLE"
@@ -427,12 +445,21 @@ class TestTimestampParsing:
             ("2026-09-30T14:30:22.123", datetime(2026, 9, 30, 14, 30, 22, 123000)),
             ("2026-09-30T14:30:22.123Z", datetime(2026, 9, 30, 14, 30, 22, 123000)),
             ("2026-09-30T14:30:22.123+00:00", datetime(2026, 9, 30, 14, 30, 22, 123000)),
+            # Athena's rendering of a timestamp with time zone column.
+            ("2026-10-05 06:12:13.790087 UTC", datetime(2026, 10, 5, 6, 12, 13, 790087)),
+            # Databricks' own rendering of the same instant.
+            ("2026-10-05T06:12:13.790+00:00", datetime(2026, 10, 5, 6, 12, 13, 790000)),
+            # An offset or zone is converted to UTC, which can change the month.
+            ("2026-11-01T00:30:00+01:00", datetime(2026, 10, 31, 23, 30)),
+            ("2026-10-05 07:12:13 Europe/London", datetime(2026, 10, 5, 6, 12, 13)),
         ],
     )
     def test_accepted_forms(self, value, expected):
         assert recon_gate.parse_last_modified(value) == expected
 
-    @pytest.mark.parametrize("value", [None, "", "  ", 20260930, "30/09/2026", []])
+    @pytest.mark.parametrize(
+        "value", [None, "", "  ", 20260930, "30/09/2026", [], "2026-10-05 06:12:13 Not/AZone"]
+    )
     def test_rejected_forms(self, value):
         assert recon_gate.parse_last_modified(value) is None
 
