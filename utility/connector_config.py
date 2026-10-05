@@ -16,11 +16,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import date
 from typing import Any, Dict, List, Literal, Optional
 
 import yaml
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from utility.trigger_definitions import resolve as resolve_trigger
 
@@ -29,14 +30,13 @@ from utility.trigger_definitions import resolve as resolve_trigger
 DEFAULT_MAX_MESSAGE_BYTES = 800 * 1024
 
 
-#: Date tokens accepted in ``source.path`` / ``source.trigger_paths``, so one
-#: config points at a new folder every month without being republished. TED
-#: writes ``trigger_8/SEPTEMBER_2026/``, which is ``{MONTH}_{YYYY}``.
+#: Date tokens accepted in ``recon.path`` / ``recon.trigger_paths``, so one
+#: config points at a new recon folder every month without being republished.
+#: TED writes ``trigger8/SEPTEMBER_2026/``, which is ``{MONTH}_{YYYY}``.
 #:
 #: The date substituted is the *run* date, so a run in September 2026 reads
 #: ``SEPTEMBER_2026``. That is the execution month the run gate keys on, not the
-#: business month the records describe - a September run publishes August
-#: business data out of the September folder.
+#: business month the records describe.
 _DATE_TOKENS = {
     "{MONTH}": lambda d: d.strftime("%B").upper(),
     "{Month}": lambda d: d.strftime("%B"),
@@ -53,7 +53,7 @@ _DATE_TOKENS = {
 
 
 def expand_date_tokens(template: str, run_date: Optional[date] = None) -> str:
-    """Substitute the date tokens in a source path.
+    """Substitute the date tokens in a recon path.
 
     ``%B`` is locale-sensitive in principle; the container runs under the C
     locale, where it is English, which is what TED writes.
@@ -82,31 +82,27 @@ class AppSettings(BaseModel):
 
 
 class RunSettings(BaseModel):
-    #: ``batch``   - drain the source once and exit. Use with ECS RunTask /
-    #:               EventBridge Scheduler for the monthly cadence.
-    #: ``service`` - stay resident and re-poll the source. Use with an ECS
-    #:               service when triggers arrive continuously.
-    mode: Literal["batch", "service"] = "batch"
-    poll_interval_seconds: int = Field(default=300, ge=5)
-    max_batches: int = Field(default=0, ge=0, description="0 = unbounded (service mode only).")
+    """One invocation publishes one trigger's month and exits (ECS RunTask
+    under EventBridge Scheduler)."""
+
     shutdown_grace_seconds: int = Field(
         default=90,
         ge=5,
         description="Must be <= the ECS task definition stopTimeout, or SIGKILL wins.",
     )
-    #: Which trigger this invocation publishes. Normally supplied per-invocation
-    #: by the scheduler's RunTask override (``IFC_RUN__TRIGGER``) rather than set here; the
-    #: config value is the local-run convenience.
+    #: Which trigger this invocation publishes. EventBridge Scheduler supplies it
+    #: on every invocation as ``IFC_RUN__TRIGGER``; a run without it fails.
     trigger: Optional[str] = None
     #: Bypass the weekend and already-delivered gates. Operator decision for a
     #: re-delivery, never a scheduled value - see ``run_gate``.
     force: bool = False
     #: Reprocess a past month instead of the current one: ``YYYY-MM`` (or the
-    #: folder's ``MONTH_YYYY``), normally ``IFC_RUN__MONTH`` on a one-off RunTask.
-    #: The run then reads that month's source and recon folders, stamps the
-    #: month before it as the business month, and records the outcome against
-    #: it - exactly as the run that month would have. Unset, the month is the
-    #: current one. A month already delivered still needs ``force``.
+    #: recon folder's ``MONTH_YYYY``), normally ``IFC_RUN__MONTH`` on a one-off
+    #: RunTask. The run then queries the month before it (``2026-08`` reads
+    #: ``business_date = 2026-07-31``), stamps that as the business month, reads
+    #: that month's recon folder and records the outcome against it - exactly as
+    #: the run that month would have. Unset, the month is the current one. A
+    #: month already delivered still needs ``force``.
     month: Optional[str] = None
 
     @field_validator("trigger", mode="before")
@@ -172,77 +168,120 @@ def canonical_trigger(value: Any) -> Optional[str]:
         raise ValueError(str(exc)) from None
 
 
-class SourceSettings(BaseModel):
-    type: Literal["s3", "local"] = "s3"
-    #: Fallback location, used when the run's trigger has no ``trigger_paths`` entry.
-    path: Optional[str] = None
-    #: Per-trigger source location, keyed by trigger (any accepted spelling).
-    #: The scheduler names the trigger; this decides where its data is read from.
-    trigger_paths: Dict[str, str] = Field(default_factory=dict)
-    archive_path: Optional[str] = Field(
-        default=None,
-        description="Where a successfully drained object is copied. None = leave in place.",
-    )
-    #: ``None`` (the default) publishes every record the source holds. A number
-    #: caps the batch, which only makes sense when the remainder can be picked
-    #: up later - that is, when the source is a prefix of several objects. The
-    #: ECS contract is one file holding the whole batch, where a cap would
-    #: silently drop its tail, so production leaves this unset and a cap is a
-    #: developer convenience for bounding a local run.
-    max_records_per_batch: Optional[int] = Field(default=None, ge=1)
-    file_suffixes: List[str] = Field(default_factory=lambda: [".json", ".jsonl"])
-    #: ``latest`` reads only the newest object under the resolved folder;
-    #: ``all`` reads every one. TED writes the whole month as one timestamped
-    #: extract and rewrites it rather than appending, so an older file in the
-    #: folder is a superseded draft - reading them all would republish it.
-    selection: Literal["latest", "all"] = "latest"
-    #: How the timestamp is found in a filename, and how to read it. The default
-    #: matches ``trigger8_20260930_143022_123456.json``. Filenames are ordered by
-    #: the *parsed* timestamp, never by name: a day-first or month-first format
-    #: does not sort lexicographically, and a name sort would quietly select a
-    #: month-old extract.
-    filename_timestamp_pattern: str = r"(\d{8}_\d{6}_\d+)"
-    filename_timestamp_format: str = "%Y%m%d_%H%M%S_%f"
+#: A bare SQL identifier. Table and column names cannot be bound as query
+#: parameters, so they are checked against this before being quoted into SQL.
+_SQL_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
-    @field_validator("trigger_paths", mode="before")
+
+def sql_identifier(value: str, *, what: str) -> str:
+    """``value`` double-quoted for Athena, or ``ValueError`` if it is not a plain name."""
+    if not isinstance(value, str) or not _SQL_IDENTIFIER.match(value):
+        raise ValueError(f"{what} {value!r} is not a plain SQL identifier")
+    return f'"{value}"'
+
+
+def athena_table(name: str) -> str:
+    """``database.table`` as a quoted, validated SQL table reference."""
+    parts = name.split(".") if isinstance(name, str) else []
+    if len(parts) != 2:
+        raise ValueError(f"Athena source {name!r} must be named as database.table")
+    database, table = parts
+    return (
+        f"{sql_identifier(database, what='Athena database')}."
+        f"{sql_identifier(table, what='Athena table')}"
+    )
+
+
+class AthenaSettings(BaseModel):
+    """How the trigger tables are queried through Athena."""
+
+    workgroup: str = "primary"
+    catalog: str = "AwsDataCatalog"
+    #: Where Athena writes result files. ``None`` defers to the workgroup, which
+    #: is the right place to enforce the location and its KMS key.
+    output_location: Optional[str] = None
+    #: The column the Databricks jobs filtered on. Upstream stamps every row of
+    #: a month with that month's last day, so a run reads the rows equal to the
+    #: last day of the previous month (a September run reads the 31 August rows).
+    business_date_column: str = "business_date"
+    #: Optional deterministic row order. Sequence numbers are allocated per CSID
+    #: in the order rows arrive, so a re-run only reproduces them if the order
+    #: is fixed.
+    order_by: List[str] = Field(default_factory=list)
+    #: The column carrying the envelope's ``upstreamTriggerID``, which the JSON
+    #: extract supplied outside the row as ``upstreamTriggerId``. ``None``
+    #: publishes it as null.
+    upstream_trigger_id_column: Optional[str] = None
+    poll_interval_seconds: float = Field(default=1.0, gt=0)
+    query_timeout_seconds: int = Field(default=300, ge=10)
+
+    @model_validator(mode="after")
+    def _identifiers(self) -> "AthenaSettings":
+        sql_identifier(self.business_date_column, what="source.athena.business_date_column")
+        for column in self.order_by:
+            sql_identifier(column, what="source.athena.order_by column")
+        if self.upstream_trigger_id_column is not None:
+            sql_identifier(self.upstream_trigger_id_column, what="source.athena.upstream_trigger_id_column")
+        return self
+
+
+class SourceSettings(BaseModel):
+    """Where trigger events come from: one Athena (Iceberg) table per trigger.
+
+    Athena is the only source this project may read. Unknown keys are rejected,
+    so a config still carrying the old S3 extract settings (``type``, ``path``,
+    ``trigger_paths``, ``file_suffixes`` ...) fails at load instead of being
+    silently ignored.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    athena: AthenaSettings = Field(default_factory=AthenaSettings)
+    #: Per-trigger table as ``database.table``, keyed by trigger (any accepted
+    #: spelling). ``IFC_RUN__TRIGGER`` decides which one a run queries.
+    trigger_tables: Dict[str, str] = Field(default_factory=dict)
+    #: Fallback table, used when the run's trigger has no ``trigger_tables``
+    #: entry. Production leaves it unset, so an unmapped trigger fails rather
+    #: than reading another trigger's table.
+    table: Optional[str] = None
+
+    @field_validator("trigger_tables", mode="before")
     @classmethod
     def _canonical_keys(cls, v: Any) -> Any:
         if not isinstance(v, dict):
             return v
-        return {canonical_trigger(key): path for key, path in v.items()}
+        return {canonical_trigger(key): table for key, table in v.items()}
 
     @model_validator(mode="after")
-    def _require_a_location(self) -> "SourceSettings":
-        if not self.path and not self.trigger_paths:
-            raise ValueError("source.path or source.trigger_paths is required")
+    def _require_a_table(self) -> "SourceSettings":
+        if not self.table and not self.trigger_tables:
+            raise ValueError("source.trigger_tables (or source.table) is required")
+        for name in [self.table, *self.trigger_tables.values()]:
+            if name is not None:
+                athena_table(name)
         return self
 
     @property
-    def resolved_path(self) -> str:
-        """The location this run reads, with its date tokens expanded.
+    def resolved_table(self) -> str:
+        """The ``database.table`` this run queries.
 
-        ``path`` is optional in config because a trigger's ``trigger_paths``
-        entry can supply it, but by the time the source is read
+        ``table`` is optional in config because a trigger's ``trigger_tables``
+        entry supplies it, but by the time the source is read
         ``ConnectorSettings.select_trigger`` must have resolved it.
-
-        Expansion happens here rather than once at load, so a resident service
-        that crosses midnight - or a month boundary - moves to the new folder
-        without a restart.
         """
-        if not self.path:
+        if not self.table:
             raise ValueError(
-                "source.path is not resolved: set IFC_RUN__TRIGGER so the trigger's "
-                "source.trigger_paths entry is used, or set source.path"
+                "source.table is not resolved: set IFC_RUN__TRIGGER so the trigger's "
+                "source.trigger_tables entry is used"
             )
-        return expand_date_tokens(self.path)
+        return self.table
 
 
 class ReconSettings(BaseModel):
     """Where the upstream reconciliation document for a trigger lives.
 
-    Same shape as ``SourceSettings``: a per-trigger location carrying the same
-    ``{MONTH}_{YYYY}`` date tokens, and the same newest-file-wins rule keyed on
-    the timestamp in the filename. ``enabled: false`` switches the gate off for
+    A per-trigger S3 location carrying ``{MONTH}_{YYYY}`` date tokens, read
+    newest-file-wins by the timestamp in the filename. ``enabled: false`` switches the gate off for
     a local run that has no recon feed.
     """
 
@@ -265,8 +304,7 @@ class ReconSettings(BaseModel):
     def resolved_path(self) -> str:
         """The recon location for this run, tokens still unexpanded.
 
-        ``ReconSource`` expands them, so a resident service crossing a month
-        boundary looks in the new month's folder without a restart.
+        ``ReconSource`` expands them against the run date.
         """
         if not self.path:
             raise ValueError(
@@ -297,6 +335,9 @@ class SchemaRegistrySettings(BaseModel):
     timeout_seconds: int = Field(default=30, ge=1)
     #: Refresh the SR bearer token this many seconds before its ``exp`` claim.
     token_refresh_margin_seconds: int = Field(default=300, ge=30)
+    #: Attempts at each registry request (schema lookup) before preflight fails,
+    #: backing off per ``resilience.backoff_*_seconds``.
+    max_attempts: int = Field(default=5, ge=1)
     #: Local .avsc used to serialise. Compared against the registered subject at
     #: preflight so producer/registry drift fails before any publish happens.
     schema_path: str = "utility/schema.json"
@@ -361,7 +402,6 @@ class AuditSettings(BaseModel):
 
 
 class ResilienceSettings(BaseModel):
-    max_publish_attempts: int = Field(default=5, ge=1)
     backoff_base_seconds: float = Field(default=1.0, gt=0)
     backoff_max_seconds: float = Field(default=60.0, gt=0)
     circuit_breaker_threshold: int = Field(
@@ -416,8 +456,6 @@ class ConnectorSettings(BaseModel):
 
     @model_validator(mode="after")
     def _cross_checks(self) -> "ConnectorSettings":
-        if self.run.mode == "service" and self.source.type == "local":
-            raise ValueError("run.mode=service is not supported with source.type=local")
         if self.audit.write_payloads and not self.audit.bucket:
             raise ValueError("audit.bucket is required when audit.write_payloads is true")
         if not self.kafka.bsp_config_path and not self.kafka.overrides.get("bootstrap.servers"):
@@ -447,44 +485,47 @@ class ConnectorSettings(BaseModel):
 
     @property
     def gate_active(self) -> bool:
-        """Whether the entry-point run gate applies to this configuration.
+        """Whether the entry-point run gate applies: only with a marker file."""
+        return bool(self.run_marker.path)
 
-        Only a batch run with a marker file is gated: a ``service`` run is
-        resident and has no invocation to gate, and a local run leaves
-        ``run_marker.path`` unset so it needs no trigger and no marker file.
+    @property
+    def trigger(self) -> str:
+        """This run's trigger, as a ``str``.
+
+        ``run.trigger`` is optional in config because ``IFC_RUN__TRIGGER`` supplies
+        it per invocation; this is the one place a run without it fails. The
+        table holds only attribute columns, so the trigger is what says which
+        sub-type the rows are published as.
         """
-        return self.run.mode == "batch" and bool(self.run_marker.path)
+        if not self.run.trigger:
+            raise ValueError(
+                "No trigger specified: set IFC_RUN__TRIGGER (TRIGGER_8 | TRIGGER_9 | TRIGGER_21)"
+            )
+        return self.run.trigger
 
-    def select_trigger(self, trigger: Any, *, data_path: Optional[str] = None) -> Optional[str]:
-        """Fix this run's trigger and point the source at that trigger's data.
+    def select_trigger(self, trigger: Any) -> str:
+        """Fix this run's trigger and point the source at that trigger's table.
 
-        Precedence for the location: an explicit ``data_path``, then the
-        trigger's ``source.trigger_paths`` entry, then ``source.path``.
+        ``trigger`` is the invocation's own value; ``None`` keeps the one from
+        ``IFC_RUN__TRIGGER``.
         """
         if trigger is not None:
             self.run.trigger = canonical_trigger(trigger)
+        selected = self.trigger
 
-        if data_path:
-            self.source.path = str(data_path)
-        elif self.run.trigger in self.source.trigger_paths:
-            self.source.path = self.source.trigger_paths[self.run.trigger]
+        if selected in self.source.trigger_tables:
+            self.source.table = self.source.trigger_tables[selected]
 
         # The recon document lives per trigger too, and is looked up by the same
         # trigger, so the two cannot end up pointing at different triggers.
-        if self.run.trigger in self.recon.trigger_paths:
-            self.recon.path = self.recon.trigger_paths[self.run.trigger]
+        if selected in self.recon.trigger_paths:
+            self.recon.path = self.recon.trigger_paths[selected]
 
-        if not self.source.path and not self.run.trigger:
+        if not self.source.table:
             raise ValueError(
-                "No trigger specified, so no source location: set IFC_RUN__TRIGGER "
-                "(TRIGGER_8 | TRIGGER_9 | TRIGGER_21)"
+                f"No Athena table for trigger {selected!r}: add it to source.trigger_tables"
             )
-        if not self.source.path:
-            raise ValueError(
-                f"No source location for trigger {self.run.trigger!r}: add it to "
-                f"source.trigger_paths or set source.path"
-            )
-        return self.run.trigger
+        return selected
 
 
 

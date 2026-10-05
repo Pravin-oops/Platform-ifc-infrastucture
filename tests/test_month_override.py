@@ -1,21 +1,28 @@
 """Reprocessing a past month: ``IFC_RUN__MONTH``.
 
 A one-off RunTask in October with ``IFC_RUN__MONTH=2026-08`` has to behave
-exactly as the August run did - August's source and recon folders, July as the
-business month, the outcome recorded against August - while the weekend check
-and the marker's ``run_date`` stay on the day the task actually runs.
+exactly as the August run did - July's rows (``business_date = 2026-07-31``),
+August's recon folder, July as the business month, the outcome recorded against
+August - while the weekend check and the marker's ``run_date`` stay on the day
+the task actually runs.
 """
 
 from __future__ import annotations
 
+import io
 import os
 from datetime import date
 
 import pytest
+from fastavro import parse_schema, schemaless_reader
 from pydantic import ValidationError
 
+from tests.test_runner_pipeline import FakeAthena, FakeProducer, VALID_ROW, make_settings
 from utility import run_gate
 from utility.connector_config import RunSettings, load_settings
+from utility.connector_runner import ConnectorRunner
+from utility.recon_gate import ReconSource
+from utility.resilience_utility import ShutdownSignal
 from utility.run_gate import (
     RunMarker,
     execution_date,
@@ -25,6 +32,7 @@ from utility.run_gate import (
     should_run,
 )
 from utility.tb_outcome_schema import EnvelopeBuilder
+from utility.trigger_source import make_source
 from utility.connector_utility import load_schema_document
 
 TRIGGER_8 = "TRIGGER_8"
@@ -87,8 +95,13 @@ class TestLoadedFromTheEnvironment:
     def test_the_setting_carries_the_month(self, settings):
         assert settings.run.month == "2026-08"
 
-    def test_the_source_folder_is_augusts(self, settings):
-        assert settings.source.resolved_path.endswith("/trigger_8/AUGUST_2026/")
+    def test_the_query_reads_the_rows_the_august_run_read(self, settings):
+        source = make_source(settings.source, trigger=settings.trigger)
+        assert source.business_date == date(2026, 7, 31)
+        assert source.query()[1] == ["'2026-07-31'"]
+
+    def test_the_recon_folder_is_augusts(self, settings):
+        assert ReconSource(settings.recon).folder.endswith("/trigger8/AUGUST_2026/")
 
     def test_the_records_are_stamped_as_the_august_run_stamped_them(self, settings):
         builder = EnvelopeBuilder(avro_schema=load_schema_document("utility/schema.json"))
@@ -102,7 +115,35 @@ class TestLoadedFromTheEnvironment:
         loaded = load_settings(os.path.join(app_root, "utility", "connector_config.yaml"))
         loaded.select_trigger(TRIGGER_8)
         assert loaded.run.month is None
-        assert loaded.source.resolved_path.endswith("/trigger_8/OCTOBER_2026/")
+        assert make_source(loaded.source, trigger=loaded.trigger).business_date == date(2026, 9, 30)
+        assert ReconSource(loaded.recon).folder.endswith("/trigger8/OCTOBER_2026/")
+
+
+class TestTheRun:
+    """Through the runner: the rows queried and the month stamped on them agree."""
+
+    def test_a_reprocess_queries_and_stamps_july(self, in_october):
+        set_execution_month("2026-08")
+        settings = make_settings(
+            schema_registry={"mode": "DEV", "schema_id": 1299},
+            kafka={"bsp_config_path": None, "overrides": {"bootstrap.servers": "localhost:9092"}},
+        )
+        athena = FakeAthena([dict(VALID_ROW, business_date="2026-07-31")])
+        producer = FakeProducer()
+        runner = ConnectorRunner(settings, shutdown=ShutdownSignal(), producer_factory=lambda _: producer)
+        runner._source._client = athena
+        runner._source._sleep = lambda _s: None
+
+        runner.start()
+        result = runner.run_batch()
+
+        assert result.counters.published == 1
+        assert athena.queries[0]["ExecutionParameters"] == ["'2026-07-31'"]
+        assert result.source["business_date"] == "2026-07-31"
+
+        schema = load_schema_document("utility/schema.json")
+        body = schemaless_reader(io.BytesIO(producer.produced[0]["value"][5:]), parse_schema(schema))
+        assert body["timestamp"] == "2026-07-31T23:59:59.999999999Z"
 
 
 class TestTheGate:

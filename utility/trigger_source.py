@@ -1,250 +1,311 @@
-"""Streaming reader for the trigger event source.
+"""The trigger event source: one Athena (Iceberg) table per trigger.
 
-Objects are read one at a time and yielded as they are parsed. Nothing
-accumulates: the BUK Lambda's ``load_json_folder`` returns a list of every record
-in the prefix, which is fine for a small batch and is precisely how a resident
-container gets OOM-killed on a monthly run.
+Athena is the only source this project reads. ``IFC_RUN__TRIGGER`` picks the
+table, the query selects the month's rows by ``business_date``, and each row is
+yielded as a ``TriggerEvent`` whose attributes are the row's columns.
 
-Three layouts are accepted, because upstream writers differ: a JSON object (one
-event), a JSON array (many), or JSON Lines - which is what a Spark/Databricks
-write produces and the only layout that streams without buffering the file.
-
-``source.path`` may be a prefix or a single object. The ECS contract is the
-latter: one ``.json`` file holding the whole batch as an array. That is read in
-one piece - ``read_text`` decodes the whole object and ``json.loads`` builds the
-whole list - so the task's memory has to cover roughly twice the file size.
-Events are yielded one at a time from there, and the decoded text is released as
-soon as the array is parsed. If the file ever outgrows the task, ``.jsonl`` from
-upstream is the fix: it parses a line at a time and loses one record to a
-malformed byte instead of the entire batch.
-
-A malformed object yields a ``ParseFailure`` rather than raising, so one bad file
-cannot abort a run that could have published everything else.
-
-This is the only module that knows where data comes from. Swapping S3 for a
-local folder needs no change here (paths are read as S3 when they start with
-``s3://``); swapping in Athena means a second class with the same ``stream``.
+A query that cannot be run - a missing table, AccessDenied, a failed, cancelled
+or timed-out query - raises ``SourceAccessError``, which the runner reports as a
+Trigger BDP read failure.
 """
 
 from __future__ import annotations
 
+import calendar
 import json
 import logging
-import posixpath
-import re
-from dataclasses import dataclass
-from datetime import datetime
-from typing import Any, Iterator, List, Optional, Set, Tuple, Union
+import time
+from datetime import date, datetime
+from decimal import Decimal
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
-from utility import failure_catalog as catalog
-from utility.error_classifier import RecordRejected
-from utility.connector_utility import (
-    SourceAccessError,
-    iter_object_paths,
-    read_text,
-)
-from utility.connector_config import SourceSettings
-from utility.tb_outcome_schema import TriggerEvent
+from botocore.exceptions import BotoCoreError, ClientError
+
+from utility.connector_utility import SourceAccessError
+from utility.connector_config import SourceSettings, athena_table, sql_identifier
+from utility.run_gate import execution_date
+from utility.tb_outcome_schema import TRIGGER_TYPE, TriggerEvent, previous_month
 
 logger = logging.getLogger(__name__)
 
 
-def parse_filename_timestamp(name: str, *, pattern: str, fmt: str) -> Optional[datetime]:
-    """Pull the extract timestamp out of a filename, or ``None``.
+# ---------------------------------------------------------------------------
+# Athena
+# ---------------------------------------------------------------------------
 
-    ``None`` is not an error: a hand-placed file, or one TED names differently,
-    simply cannot be ordered against the others and loses to any file that can.
+#: Athena result types that are read back as something other than a string.
+#: Everything arrives from ``GetQueryResults`` as ``VarCharValue`` text; these
+#: restore the column's type, so a bigint CSID is an int and a date is a date by
+#: the time the payload builder sees it.
+_INTEGER_TYPES = {"tinyint", "smallint", "integer", "int", "bigint"}
+_FLOAT_TYPES = {"double", "float", "real"}
+_NESTED_TYPES = ("array", "map", "row", "struct", "json")
+
+_TERMINAL_STATES = {"SUCCEEDED", "FAILED", "CANCELLED"}
+
+
+def _coerce(value: Optional[str], athena_type: str) -> Any:
+    """One ``VarCharValue`` as the Python value its Athena column type implies.
+
+    A value that does not parse as its declared type is passed through as text:
+    the payload builder then accepts or rejects it per field, which reports the
+    bad column by name rather than failing the whole row here.
     """
-    match = re.search(pattern, name)
-    if not match:
+    if value is None:
         return None
+    kind = athena_type.lower().split("(", 1)[0].strip()
     try:
-        return datetime.strptime(match.group(1), fmt)
-    except ValueError:
-        # The pattern matched but the value is not a real date - a 13th month,
-        # or a day-first string read as month-first. Not fatal: it just cannot
-        # order this file.
-        return None
+        if kind in _INTEGER_TYPES:
+            return int(value)
+        if kind in _FLOAT_TYPES:
+            return float(value)
+        if kind == "decimal":
+            return Decimal(value)
+        if kind == "boolean":
+            return value.strip().lower() == "true"
+        if kind == "date":
+            return date.fromisoformat(value)
+        if kind == "timestamp":
+            return datetime.fromisoformat(value.replace(" ", "T", 1))
+        if kind.startswith(_NESTED_TYPES):
+            # Only JSON-typed or json_format()'d columns come back as JSON; a
+            # raw struct renders as {a=1, b=2}, which stays a string.
+            return json.loads(value)
+    except (ValueError, ArithmeticError):
+        return value
+    return value
 
 
-@dataclass
-class ParseFailure:
-    """A record that could not even be parsed into a ``TriggerEvent``."""
+class AthenaTriggerSource:
+    """Reads one trigger's latest month straight from its Iceberg table.
 
-    source_object: str
-    index: int
-    error: str
-    raw: Optional[str] = None
-    scenario_key: str = catalog.SCHEMA_VALIDATION_FAILURE.key
+    The runner uses ``check_access`` (preflight), ``stream`` and ``describe``
+    (what the run read, for the manifest and run summary).
 
+    ``IFC_RUN__TRIGGER`` picks the table (``source.trigger_tables``) and is the
+    only thing that says which trigger a row belongs to: the table holds just
+    the attribute columns. The envelope then publishes ``triggerType`` as the
+    constant ``KYCRefresh`` and ``triggerSubType`` as the trigger's published
+    symbol (TRIGGER_8 -> NewHRCRelationship, TRIGGER_9 -> AccountInactivity,
+    TRIGGER_21 -> MultipleTMSARs).
 
-SourceItem = Union[TriggerEvent, ParseFailure]
+    The month read is the rows whose ``business_date`` is the last day of the
+    business month - the month before the run month, as upstream stamps every
+    row of a month with that date - and the run gate stops a delivered month
+    being read twice. ``IFC_RUN__MONTH`` moves the run month back to reprocess
+    an earlier one.
 
+    Monthly volumes are in the hundreds, so the whole result is paged through
+    ``GetQueryResults`` (1000 rows a page) with no ``UNLOAD`` step.
+    """
 
-class TriggerSource:
-    def __init__(self, settings: SourceSettings):
+    def __init__(
+        self,
+        settings: SourceSettings,
+        *,
+        trigger: str,
+        business_month: Optional[str] = None,
+        client: Any = None,
+        sleep: Callable[[float], None] = time.sleep,
+    ):
         self._settings = settings
-        self._objects_read: List[str] = []
+        self._athena = settings.athena
+        self._trigger = trigger
+        self._business_month = business_month or previous_month(execution_date())
+        self._client = client
+        self._sleep = sleep
+        self.last_query_execution_id: Optional[str] = None
+
+    # -- identity ------------------------------------------------------------
 
     @property
-    def objects_read(self) -> List[str]:
-        return list(self._objects_read)
+    def table(self) -> str:
+        return self._settings.resolved_table
 
-    def _rank(self, path: str) -> Tuple[int, datetime, str]:
-        """Sort key: a file whose timestamp parses beats one whose does not.
+    @property
+    def business_date(self) -> date:
+        """The ``business_date`` this run reads: the last day of the business month.
 
-        The name is the final tie-break, so the choice is deterministic when two
-        extracts carry the same timestamp.
+        The business month is the month before the run month, so a run on any day
+        in September 2026 - or one with ``IFC_RUN__MONTH=2026-09`` - reads
+        ``2026-08-31``.
         """
-        stamp = parse_filename_timestamp(
-            posixpath.basename(path.rstrip("/")),
-            pattern=self._settings.filename_timestamp_pattern,
-            fmt=self._settings.filename_timestamp_format,
+        year, month = (int(part) for part in self._business_month.split("-"))
+        return date(year, month, calendar.monthrange(year, month)[1])
+
+    def describe(self) -> Dict[str, Any]:
+        """What this run read: the table, the business date and the query.
+
+        The query execution id lets anyone re-run or inspect the exact query in
+        Athena after the container is gone.
+        """
+        return {
+            "table": self.table,
+            "business_date": self.business_date.isoformat(),
+            "query_execution_id": self.last_query_execution_id,
+        }
+
+    def _athena_client(self) -> Any:
+        if self._client is None:
+            import boto3
+            from botocore.config import Config
+
+            # Standard retry mode backs off on TooManyRequestsException, which is
+            # what a busy shared workgroup returns.
+            self._client = boto3.client(
+                "athena", config=Config(retries={"mode": "standard", "max_attempts": 5})
+            )
+        return self._client
+
+    # -- query ---------------------------------------------------------------
+
+    def query(self) -> Tuple[str, List[str]]:
+        """The SQL and its execution parameters.
+
+        Identifiers are validated and quoted (they cannot be parameters); the
+        business date is bound as a parameter. ``CAST(... AS DATE)`` lets the
+        column be a date, a timestamp at midnight or an ISO date string alike.
+        """
+        column = sql_identifier(self._athena.business_date_column, what="business_date_column")
+        sql = f"SELECT * FROM {athena_table(self.table)} WHERE CAST({column} AS DATE) = CAST(? AS DATE)"
+        if self._athena.order_by:
+            order = ", ".join(sql_identifier(c, what="order_by column") for c in self._athena.order_by)
+            sql += f" ORDER BY {order}"
+        # Execution parameters are substituted as SQL literals, so a string
+        # carries its own quotes. The value is generated here from a date.
+        return sql, [f"'{self.business_date.isoformat()}'"]
+
+    def _start(self) -> str:
+        sql, parameters = self.query()
+        request: Dict[str, Any] = {
+            "QueryString": sql,
+            "ExecutionParameters": parameters,
+            "WorkGroup": self._athena.workgroup,
+            "QueryExecutionContext": {"Catalog": self._athena.catalog},
+        }
+        if self._athena.output_location:
+            request["ResultConfiguration"] = {"OutputLocation": self._athena.output_location}
+
+        query_id = self._athena_client().start_query_execution(**request)["QueryExecutionId"]
+        self.last_query_execution_id = query_id
+        logger.info(
+            "Athena query started",
+            extra={
+                "query_execution_id": query_id,
+                "table": self.table,
+                "trigger": self._trigger,
+                "business_date": self.business_date.isoformat(),
+                "workgroup": self._athena.workgroup,
+            },
         )
-        if stamp is None:
-            return (0, datetime.min, path)
-        return (1, stamp, path)
+        return query_id
 
-    def selected_objects(self) -> List[str]:
-        """The objects this run reads, newest last.
+    def _wait(self, query_id: str) -> None:
+        client = self._athena_client()
+        deadline = time.monotonic() + self._athena.query_timeout_seconds
+        while True:
+            execution = client.get_query_execution(QueryExecutionId=query_id)["QueryExecution"]
+            status = execution["Status"]
+            state = status["State"]
+            if state in _TERMINAL_STATES:
+                break
+            if time.monotonic() >= deadline:
+                client.stop_query_execution(QueryExecutionId=query_id)
+                raise SourceAccessError(
+                    f"Athena query {query_id} did not finish within "
+                    f"{self._athena.query_timeout_seconds}s and was cancelled",
+                    path=self.table,
+                    operation="query",
+                )
+            self._sleep(self._athena.poll_interval_seconds)
 
-        Under ``selection: latest`` - the default - that is the single newest
-        extract in the month's folder. TED rewrites the whole month rather than
-        appending, so every older file beside it is a superseded draft and
-        reading them all would republish stale content under fresh trigger IDs.
-        """
-        found = list(
-            iter_object_paths(self._settings.resolved_path, self._settings.file_suffixes)
+        if state != "SUCCEEDED":
+            reason = status.get("StateChangeReason") or "no reason given"
+            raise SourceAccessError(
+                f"Athena query {query_id} {state}: {reason}", path=self.table, operation="query"
+            )
+
+        statistics = execution.get("Statistics", {})
+        logger.info(
+            "Athena query finished",
+            extra={
+                "query_execution_id": query_id,
+                "data_scanned_bytes": statistics.get("DataScannedInBytes"),
+                "engine_ms": statistics.get("EngineExecutionTimeInMillis"),
+            },
         )
-        if not found or self._settings.selection == "all":
-            return found
 
-        latest = max(found, key=self._rank)
-        undated = [p for p in found if self._rank(p)[0] == 0]
+    def _rows(self, query_id: str) -> Iterator[Dict[str, Any]]:
+        paginator = self._athena_client().get_paginator("get_query_results")
+        columns: Optional[List[Tuple[str, str]]] = None
+        for page in paginator.paginate(QueryExecutionId=query_id):
+            result_set = page["ResultSet"]
+            rows = result_set.get("Rows", [])
+            if columns is None:
+                columns = [
+                    (info["Name"], info.get("Type", "varchar"))
+                    for info in result_set["ResultSetMetadata"]["ColumnInfo"]
+                ]
+                # A SELECT's first row is the header row.
+                rows = rows[1:]
+            for row in rows:
+                cells = row.get("Data", [])
+                yield {
+                    name: _coerce(cells[i].get("VarCharValue") if i < len(cells) else None, kind)
+                    for i, (name, kind) in enumerate(columns)
+                }
 
-        if self._rank(latest)[0] == 0:
-            # Nothing in the folder carries a parseable timestamp, so there is no
-            # ordering to trust - say so rather than implying a real selection.
-            logger.warning(
-                "No source object has a parseable timestamp; selecting by name. "
-                "Check source.filename_timestamp_pattern against what TED writes",
-                extra={
-                    "selected": latest,
-                    "candidates": len(found),
-                    "pattern": self._settings.filename_timestamp_pattern,
-                },
-            )
-        elif undated:
-            logger.warning(
-                "Some source objects have no parseable timestamp and were not "
-                "considered for selection",
-                extra={"selected": latest, "undated": undated[:10], "undated_count": len(undated)},
-            )
+    # -- runner surface --------------------------------------------------------
 
-        if len(found) > 1:
-            logger.info(
-                "Selected the newest source object",
-                extra={"selected": latest, "superseded": len(found) - 1},
-            )
-        return [latest]
+    def check_access(self) -> str:
+        """Preflight probe: confirm the table exists and is visible to this role.
 
-    def first_object(self) -> Optional[str]:
-        """Cheap readability probe for preflight; does not consume the stream.
-
-        Reports the object the run will actually read, so preflight and the run
-        cannot disagree about which file is the batch.
+        Cheap (a Glue catalogue lookup, no data scanned) and exercises the same
+        permissions the query needs. Raises on failure, which preflight reports
+        as a BDP read failure.
         """
-        selected = self.selected_objects()
-        return selected[0] if selected else None
+        database, table = self.table.split(".")
+        self._athena_client().get_table_metadata(
+            CatalogName=self._athena.catalog, DatabaseName=database, TableName=table
+        )
+        return self.table
 
-    def _parse_object(self, path: str) -> Iterator[SourceItem]:
+    def stream(self) -> Iterator[TriggerEvent]:
+        """Yield the month's rows as events. Raises ``SourceAccessError`` when the
+        query cannot be run."""
         try:
-            body = read_text(path)
-        except SourceAccessError as exc:
-            # A single unreadable object is reported and skipped; a prefix-wide
-            # permission problem will have failed preflight already.
-            logger.error("Could not read source object", extra={"source_object": path, "error": str(exc)})
-            yield ParseFailure(path, 0, str(exc), scenario_key=catalog.BDP_READ_FAILURE.key)
-            return
+            query_id = self._start()
+            self._wait(query_id)
+            for index, row in enumerate(self._rows(query_id)):
+                yield self._to_event(row, index)
+        except (ClientError, BotoCoreError) as exc:
+            raise SourceAccessError(
+                f"Athena query on {self.table} failed: {exc}",
+                path=self.table,
+                operation="query",
+                cause=exc,
+            ) from exc
 
-        if path.lower().endswith(".jsonl"):
-            for index, line in enumerate(body.splitlines()):
-                line = line.strip()
-                if line:
-                    yield from self._to_event(line, path, index, raw_is_text=True)
-            return
+    def _to_event(self, row: Dict[str, Any], index: int) -> TriggerEvent:
+        # The table holds only the attribute columns; the trigger is the run's own.
+        upstream_id = (
+            row.get(self._athena.upstream_trigger_id_column)
+            if self._athena.upstream_trigger_id_column
+            else None
+        )
+        return TriggerEvent(
+            trigger_sub_type=self._trigger,
+            attributes=row,
+            trigger_type=TRIGGER_TYPE,
+            upstream_trigger_id=None if upstream_id is None else str(upstream_id),
+            source_object=self.table,
+            source_index=index,
+        )
 
-        try:
-            document = json.loads(body)
-        except ValueError as exc:
-            yield ParseFailure(path, 0, f"Object is not valid JSON: {exc}", raw=body[:2000])
-            return
 
-        if isinstance(document, list):
-            # The whole batch arrives as one array, so the decoded string and the
-            # parsed list are both held at once - the peak of the run. Drop the
-            # string before yielding: events go out one at a time from here, and
-            # nothing needs the raw text again.
-            logger.info(
-                "Source object parsed",
-                extra={"source_object": path, "records": len(document), "bytes": len(body)},
-            )
-            del body
-            for index, item in enumerate(document):
-                yield from self._to_event(item, path, index)
-            return
+def make_source(
+    settings: SourceSettings, *, trigger: str, business_month: Optional[str] = None
+) -> AthenaTriggerSource:
+    """The reader for this run's trigger table and business month."""
+    return AthenaTriggerSource(settings, trigger=trigger, business_month=business_month)
 
-        yield from self._to_event(document, path, 0)
-
-    def _to_event(
-        self, item: Any, path: str, index: int, *, raw_is_text: bool = False
-    ) -> Iterator[SourceItem]:
-        if raw_is_text:
-            try:
-                item = json.loads(item)
-            except ValueError as exc:
-                yield ParseFailure(path, index, f"Line is not valid JSON: {exc}", raw=str(item)[:2000])
-                return
-
-        try:
-            yield TriggerEvent.from_dict(item, source_object=path, index=index)
-        except RecordRejected as exc:
-            yield ParseFailure(
-                path,
-                index,
-                str(exc),
-                raw=json.dumps(item, default=str)[:2000] if isinstance(item, (dict, list)) else str(item)[:2000],
-            )
-
-    def stream(self, *, skip_objects: Optional[Set[str]] = None, limit: Optional[int] = None) -> Iterator[SourceItem]:
-        """Yield events across the prefix, oldest key first.
-
-        ``skip_objects`` comes from the checkpoint of an interrupted run, so a
-        restarted task does not re-read objects it already drained.
-        """
-        skip = skip_objects or set()
-        emitted = 0
-        max_records = limit or self._settings.max_records_per_batch
-
-        for path in self.selected_objects():
-            if path in skip:
-                logger.debug("Skipping already-processed object", extra={"source_object": path})
-                continue
-
-            logger.info("Reading source object", extra={"source_object": path})
-            self._objects_read.append(path)
-
-            for item in self._parse_object(path):
-                yield item
-                emitted += 1
-                # No cap by default: the ECS contract is one object holding the
-                # whole batch, and stopping part way through it would drop the
-                # rest with nothing left to come back to.
-                if max_records is not None and emitted >= max_records:
-                    logger.warning(
-                        "Record limit reached; the rest of this run's source is NOT published. "
-                        "Anything left inside the object just read is only picked up by a "
-                        "re-run, which republishes them for the consumer to resolve",
-                        extra={"limit": max_records, "last_object": path},
-                    )
-                    return

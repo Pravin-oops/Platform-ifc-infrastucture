@@ -205,6 +205,7 @@ class TestPublishBatchNotification:
             (
                 "the numbers do not add up",
                 a_result(
+                    outcome="RECONCILIATION_FAILED",
                     reconciliation=ReconciliationResult(
                         balanced=False, expected=3, accounted=2, findings=["short"]
                     )
@@ -213,11 +214,11 @@ class TestPublishBatchNotification:
             ("nothing was delivered", a_result(counters=RunCounters())),
             (
                 "a message failed delivery",
-                a_result(counters=RunCounters(published=3, acked=2, delivery_failed=1)),
+                a_result(outcome="RECONCILIATION_FAILED", counters=RunCounters(published=3, acked=2, delivery_failed=1)),
             ),
             (
                 "a message never left the queue",
-                a_result(counters=RunCounters(published=3, acked=2, unflushed=1)),
+                a_result(outcome="RECONCILIATION_FAILED", counters=RunCounters(published=3, acked=2, unflushed=1)),
             ),
         ],
     )

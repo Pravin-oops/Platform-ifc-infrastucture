@@ -117,8 +117,8 @@ class KafkaStackFactory:
                 "No CSM section configured; relying on BSP_USERNAME/BSP_PASSWORD already in the environment"
             )
 
-        # package_resource anchors a relative path at the connector root, as
-        # main_local.py does, so it does not depend on the working directory.
+        # package_resource anchors a relative path at the connector root, so it
+        # does not depend on the working directory.
         return BSPClient(materialise_local(package_resource(settings.kafka.bsp_config_path)))
 
     def _producer_config(self, bsp: Optional[BSPClient]) -> Dict[str, Any]:
@@ -199,7 +199,7 @@ class KafkaStackFactory:
                 base_seconds=settings.resilience.backoff_base_seconds,
                 max_seconds=settings.resilience.backoff_max_seconds,
             ),
-            attempts=settings.resilience.max_publish_attempts,
+            attempts=settings.schema_registry.max_attempts,
             shutdown=self._shutdown,
         )
 

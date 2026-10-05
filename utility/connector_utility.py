@@ -156,29 +156,6 @@ def iter_object_paths(path: str, suffixes: Tuple[str, ...] | list[str]) -> Itera
     raise SourceAccessError(f"Path not found: {path}", path=path, operation="list")
 
 
-def copy_object(source: str, destination: str) -> None:
-    """Copy one object, S3-to-S3 server side where possible."""
-    if is_s3_path(source) and is_s3_path(destination):
-        src_bucket, src_key = parse_s3_path(source)
-        dst_bucket, dst_key = parse_s3_path(destination)
-        try:
-            s3().copy_object(
-                Bucket=dst_bucket,
-                Key=dst_key,
-                CopySource={"Bucket": src_bucket, "Key": src_key},
-            )
-        except ClientError as exc:
-            raise SourceAccessError(
-                f"S3 copy failed {source} -> {destination}",
-                path=destination,
-                operation="write",
-                cause=exc,
-            ) from exc
-        return
-
-    write_bytes(destination, read_text(source).encode("utf-8"))
-
-
 def join_path(base: str, *parts: str) -> str:
     """Join a base prefix/directory with path parts, S3-safe."""
     if is_s3_path(base):

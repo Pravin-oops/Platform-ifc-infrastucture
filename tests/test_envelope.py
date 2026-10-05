@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import io
 import json
 import re
 from datetime import date
 
 import pytest
+from fastavro import parse_schema, schemaless_reader
 
+from tests.conftest import REGISTERED_SUBTYPE_SYMBOLS, with_enum_subtype
 from utility import run_gate
 from utility import trigger_definitions as definitions
 from utility.error_classifier import PreflightError, RecordRejected
+from utility.kafka_serializers import AvroSerializer
 from utility.connector_utility import load_schema_document
 from utility.tb_outcome_schema import (
     CSID_SOURCE,
@@ -61,15 +65,18 @@ def trigger_8_row(**overrides):
     return row
 
 
-def trigger_8_event(attributes=None, **wrapper):
-    """A Trigger 8 event in the shape the source yields."""
-    raw = {
-        "triggerType": "IFC_CDD",
-        "triggerSubType": "TRIGGER_8",
-        "attributes": trigger_8_row() if attributes is None else attributes,
-    }
-    raw.update(wrapper)
-    return TriggerEvent.from_dict(raw)
+def trigger_8_event(attributes=None, *, triggerSubType="TRIGGER_8", triggerType="KYCRefresh"):
+    """A Trigger 8 event in the shape the Athena source yields."""
+    return TriggerEvent(
+        trigger_sub_type=triggerSubType,
+        attributes=trigger_8_row() if attributes is None else attributes,
+        trigger_type=triggerType,
+    )
+
+
+def as_event(raw):
+    """An event from a trigger name and a row, as the Athena source builds it."""
+    return TriggerEvent(trigger_sub_type=raw["triggerSubType"], attributes=raw["attributes"])
 
 
 class TestEnvelope:
@@ -158,21 +165,6 @@ class TestEnvelope:
     def test_the_message_key_is_the_trigger_id(self, builder):
         built = builder.build(trigger_8_event())
         assert built.kafka_key == built.trigger_id
-
-    def test_identity_keys_in_the_wrapper_are_ignored(self, builder):
-        """Identity comes from the row and the run, never from the wrapper."""
-        event = trigger_8_event(
-            customerId="IGNORED",
-            idType="CustomerID",
-            executionMonth="1999-01",
-            detectionTimestamp="1999-01-01T00:00:00.000Z",
-            businessUnit="Somewhere else",
-        )
-        record = builder.build(event).record
-        assert record["idValue"] == "9912345678"
-        assert record["idType"] == "Customer"
-        assert record["timestamp"] == "2026-06-30T23:59:59.999999999Z"
-        assert record["triggerOriginatingBU"] == "UK-C"
 
 
 class TestBusinessMonth:
@@ -265,11 +257,13 @@ class TestIdentity:
 
 
 class TestRejection:
-    def test_unknown_sub_type_is_rejected_not_raised_as_a_run_failure(self, builder):
-        event = trigger_8_event(triggerSubType="TRIGGER_99")
-        with pytest.raises(RecordRejected) as exc:
-            builder.build(event)
-        assert exc.value.scenario.key == "SCHEMA_VALIDATION_FAILURE"
+    def test_an_unknown_trigger_is_refused_when_the_config_loads(self):
+        """The run's trigger is the only sub-type a row can have, so an unknown
+        one stops the run before a row is read rather than per record."""
+        from utility.connector_config import RunSettings
+
+        with pytest.raises(ValueError, match="TRIGGER_99"):
+            RunSettings(trigger="TRIGGER_99")
 
     @pytest.mark.parametrize("csid", [None, "", "   ", 12.5])
     def test_a_row_without_a_usable_csid_is_rejected_naming_id_value(self, builder, csid):
@@ -338,15 +332,6 @@ class TestRejection:
         assert exc.value.scenario.key == "SCHEMA_VALIDATION_FAILURE"
         assert exc.value.detail["source_key"] == source
 
-    def test_missing_trigger_sub_type_is_rejected_at_parse_time(self):
-        with pytest.raises(RecordRejected) as exc:
-            TriggerEvent.from_dict({"attributes": trigger_8_row()})
-        assert "triggerSubType" in str(exc.value)
-
-    def test_non_object_attributes_are_rejected(self):
-        with pytest.raises(RecordRejected):
-            TriggerEvent.from_dict({"triggerSubType": "TRIGGER_8", "attributes": []})
-
     def test_avro_validation_failure_names_the_offending_field(self, builder):
         record = builder.build(trigger_8_event()).record
         record["sequenceNumber"] = "not-an-int"
@@ -358,7 +343,7 @@ class TestRejection:
 
 class TestAllTriggers:
     def test_trigger_9(self, builder):
-        event = TriggerEvent.from_dict(
+        event = as_event(
             {
                 "triggerSubType": "TRIGGER_9",
                 "attributes": {
@@ -382,7 +367,7 @@ class TestAllTriggers:
         assert "Last Run Date" not in fields
 
     def test_trigger_21(self, builder):
-        event = TriggerEvent.from_dict(
+        event = as_event(
             {
                 "triggerSubType": "TRIGGER_21",
                 "attributes": {
@@ -407,8 +392,12 @@ class TestAllTriggers:
         assert len(fields) == 8
 
 
-class TestSubTypeEnum:
-    """triggerSubType is an Avro enum, so the published spelling is load-bearing."""
+class TestSubType:
+    """triggerSubType goes on the wire as the published symbol's text."""
+
+    def test_the_bundled_schema_types_the_sub_type_as_a_string(self, schema):
+        field = next(f for f in schema["fields"] if f["name"] == "triggerSubType")
+        assert field["type"] == "string"
 
     def test_the_published_symbol_is_written_not_the_internal_key(self, builder):
         record = builder.build(trigger_8_event()).record
@@ -423,45 +412,39 @@ class TestSubTypeEnum:
             ("TRIGGER_21", "MultipleTMSARs"),
         ],
     )
-    def test_every_definition_maps_to_a_registered_symbol(self, schema, internal, published):
-        symbols = _subtype_symbols(schema)
+    def test_every_definition_maps_to_a_registered_symbol(self, internal, published):
         assert definitions.DEFINITIONS[internal].published_sub_type == published
-        assert published in symbols
+        assert published in REGISTERED_SUBTYPE_SYMBOLS
+
+    @pytest.mark.parametrize("published", ["NewHRCRelationship", "AccountInactivity", "MultipleTMSARs"])
+    def test_the_serialised_record_carries_the_symbol_text(self, schema, published):
+        """An enum would be written as its index (0x00, 0x02, 0x04); a string as its text."""
+        record = make_builder(schema).build(trigger_8_event()).record
+        record["triggerSubType"] = published
+
+        # Confluent wire format: 0x00 + 4-byte schema id, then the Avro body.
+        body = AvroSerializer(schema, 101)(record)[5:]
+        assert published.encode("utf-8") in body
+        assert schemaless_reader(io.BytesIO(body), parse_schema(schema))["triggerSubType"] == published
 
     def test_the_published_symbol_also_resolves_on_input(self):
         assert definitions.resolve("NewHRCRelationship").sub_type == definitions.TRIGGER_8
 
-    def test_a_symbol_we_do_not_produce_is_rejected_as_out_of_scope(self, builder):
-        with pytest.raises(RecordRejected) as exc:
-            builder.build(trigger_8_event(triggerSubType="UBOChanges"))
-        assert "not produced by this connector" in str(exc.value)
+    def test_a_symbol_we_do_not_produce_is_refused_as_out_of_scope(self):
+        from utility.connector_config import RunSettings
+
+        with pytest.raises(ValueError, match="not produced by this connector"):
+            RunSettings(trigger="UBOChanges")
 
     def test_the_trigger_id_carries_the_published_symbol(self, builder):
         built = builder.build(trigger_8_event())
         assert "_NewHRCRelationship_" in built.trigger_id
 
-    def test_a_schema_missing_one_of_our_symbols_aborts_at_construction(self, schema):
-        narrowed = json.loads(json.dumps(schema))
-        for field in narrowed["fields"]:
-            if field["name"] == "triggerSubType":
-                field["type"]["symbols"] = ["NewHRCRelationship"]
-
+    def test_an_enum_schema_missing_one_of_our_symbols_aborts_at_construction(self, schema):
         with pytest.raises(PreflightError) as exc:
-            make_builder(narrowed)
+            make_builder(with_enum_subtype(schema, ["NewHRCRelationship"]))
         assert "AccountInactivity" in str(exc.value)
 
-    def test_a_plain_string_schema_still_works(self, schema):
-        relaxed = json.loads(json.dumps(schema))
-        for field in relaxed["fields"]:
-            if field["name"] == "triggerSubType":
-                field["type"] = "string"
-
-        builder = make_builder(relaxed)
+    def test_an_enum_schema_still_works(self, schema):
+        builder = make_builder(with_enum_subtype(schema))
         assert builder.build(trigger_8_event()).record["triggerSubType"] == "NewHRCRelationship"
-
-
-def _subtype_symbols(schema):
-    for field in schema["fields"]:
-        if field["name"] == "triggerSubType":
-            return set(field["type"]["symbols"])
-    raise AssertionError("triggerSubType not in schema")

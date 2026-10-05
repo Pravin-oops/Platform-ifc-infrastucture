@@ -57,9 +57,26 @@ from utility.connector_utility import (
     iter_object_paths,
     read_text,
 )
-from utility.trigger_source import parse_filename_timestamp
 
 logger = logging.getLogger(__name__)
+
+
+def parse_filename_timestamp(name: str, *, pattern: str, fmt: str) -> Optional[datetime]:
+    """Pull the recon document's timestamp out of its filename, or ``None``.
+
+    ``None`` is not an error: a hand-placed file, or one TED names differently,
+    simply cannot be ordered against the others and loses to any file that can.
+    """
+    match = re.search(pattern, name)
+    if not match:
+        return None
+    try:
+        return datetime.strptime(match.group(1), fmt)
+    except ValueError:
+        # The pattern matched but the value is not a real date - a 13th month,
+        # or a day-first string read as month-first. Not fatal: it just cannot
+        # order this file.
+        return None
 
 #: ``2026-09-30T14:30:22.123`` - milliseconds, three digits.
 _LAST_MODIFIED_FORMATS = ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S")
