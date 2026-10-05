@@ -1,4 +1,4 @@
-# IFC trigger connector - UAT.
+# IFC trigger connector - SIT.
 #
 # Placeholders marked CONFIRM are open items tracked in the README; they are the
 # environment-readiness values the POC assessment lists as still outstanding.
@@ -9,7 +9,7 @@
 
 app:
   name: ifc-trigger-connector
-  environment: UAT
+  environment: SIT
   log_level: INFO
 
 # Each invocation is one ECS RunTask on the trigger's monthly window: it drains
@@ -91,18 +91,22 @@ schema_registry:
 # Locations only: the client certificate and key are read from the Secrets
 # Manager secret below, and the account itself from CCP at runtime.
 cyberark:
-  # CONFIRM: PROD host from the CyberArk CCP KB article; UAT host to come from
-  # IAM PAM Engineering Onboarding.
-  base_url: https://cark-ccp.intranet.barcapint.com
-  # CONFIRM: all four are placeholders until the CyberArk onboarding CR
-  # (template NCTMP0001159) is implemented.
-  app_id: APP_PLACEHOLDER
-  safe: SAFE_PLACEHOLDER
+  # In ECS the product template (products/ecs/product.template.yaml) sets these
+  # from its CyberArk parameters, so they are not repeated here:
+  #   CYBERARK_ENABLED  -> enabled
+  #   CYBERARK_CCP_URL  -> base_url (the full .../AIMWebService_certs/api/Accounts URL)
+  #   CYBERARK_APP_ID   -> app_id
+  #   CYBERARK_SAFE     -> safe
+  #   CYBERARK_ACCOUNT  -> object
+  # Off by default, as in the template: dev runs publish without a BSP system
+  # account and take BSP_USERNAME/BSP_PASSWORD from the environment.
+  enabled: false
   folder: Root
-  object: OBJECT_PLACEHOLDER
-  # CONFIRM: Secrets Manager secret created by DevOps, holding
-  # {"client_cert_pem": ..., "client_key_pem": ...}.
-  client_cert_secret_id: ifc-trigger-connector/uat/cyberark-ccp-client-cert
+  # Secrets Manager secrets created by DevOps, each holding one plain PEM: the
+  # certificate, and its unencrypted private key. Both are empty until the
+  # certificate is issued.
+  client_cert_secret_id: /ifc/bsp-event-processor/cyberark/client-cert
+  client_key_secret_id: /ifc/bsp-event-processor/cyberark/private-key
   secret_region: eu-west-1
   ca_bundle_path: /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
   ssl_verify: true

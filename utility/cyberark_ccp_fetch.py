@@ -7,10 +7,9 @@ its private key live in AWS Secrets Manager and are read with the ECS task
 role, so nothing secret is baked into the image or the task definition; only
 the secret's *name* and the CCP query are configuration.
 
-The Secrets Manager secret is a JSON object::
-
-    {"client_cert_pem": "-----BEGIN CERTIFICATE-----...",
-     "client_key_pem":  "-----BEGIN PRIVATE KEY-----..."}
+The certificate and the key are two Secrets Manager secrets, each holding the
+plain PEM text as its SecretString (``-----BEGIN CERTIFICATE-----...`` and
+``-----BEGIN PRIVATE KEY-----...``).
 
 The key must be an unencrypted PEM: ``requests`` has no way to pass a
 passphrase. It is written to a private temporary directory only for the
@@ -28,7 +27,6 @@ In addition:
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import shutil
@@ -61,8 +59,6 @@ CA_BUNDLE_CANDIDATES: List[str] = [
     "/opt/certs/tls-ca-bundle.pem",
 ]
 
-_CERT_FIELD = "client_cert_pem"
-_KEY_FIELD = "client_key_pem"
 
 #: Between attempts at the credential. Short: this runs in preflight, before
 #: anything has been read, and a CCP that stays down fails the run.
@@ -144,7 +140,9 @@ class CyberArkAuthenticator:
 
     @property
     def accounts_url(self) -> str:
-        return f"{self._settings.base_url.rstrip('/')}{ACCOUNTS_PATH}"
+        base = self._settings.base_url.rstrip("/")
+        # DevOps supply the full endpoint URL; a bare host gets the path added.
+        return base if base.lower().endswith(ACCOUNTS_PATH.lower()) else f"{base}{ACCOUNTS_PATH}"
 
     @property
     def _query(self) -> Dict[str, str]:
@@ -167,10 +165,10 @@ class CyberArkAuthenticator:
 
     # -- flow --------------------------------------------------------------
 
-    def _load_client_certificate(self) -> _ClientCertificate:
-        secret_id = self._settings.client_cert_secret_id
+    def _read_pem(self, secret_id: str, what: str, marker: str) -> str:
+        """One PEM from its own secret: the SecretString is the PEM text itself."""
         context = {"secret_id": secret_id, "region": self._settings.secret_region}
-        logger.info("Reading CyberArk client certificate from Secrets Manager", extra=context)
+        logger.info(f"Reading CyberArk {what} from Secrets Manager", extra=context)
 
         try:
             client = self._session.client("secretsmanager", region_name=self._settings.secret_region)
@@ -178,8 +176,9 @@ class CyberArkAuthenticator:
         except ClientError as exc:
             # AccessDenied / ResourceNotFound / KMS decrypt failures: the task
             # role or the secret is misconfigured, which retrying will not fix.
+            # A secret created with no value yet is also ResourceNotFound.
             raise PreflightError(
-                f"Could not read the CyberArk client certificate secret: "
+                f"Could not read the CyberArk {what} secret: "
                 f"{exc.response.get('Error', {}).get('Code', 'ClientError')}",
                 catalog.AUTHENTICATION_FAILURE,
                 context=context,
@@ -193,31 +192,34 @@ class CyberArkAuthenticator:
                 cause=exc,
             ) from exc
 
-        try:
-            payload = json.loads(response.get("SecretString") or "")
-        except ValueError as exc:
+        pem = (response.get("SecretString") or "").strip()
+        if not pem:
             raise PreflightError(
-                "CyberArk client certificate secret is not a JSON SecretString",
+                f"CyberArk {what} secret is empty",
                 catalog.AUTHENTICATION_FAILURE,
                 context=context,
-                cause=exc,
-            ) from exc
-
-        if not isinstance(payload, dict) or not payload.get(_CERT_FIELD) or not payload.get(_KEY_FIELD):
-            raise PreflightError(
-                f"CyberArk client certificate secret must hold {_CERT_FIELD} and {_KEY_FIELD}",
-                catalog.AUTHENTICATION_FAILURE,
-                context={**context, "keys_present": sorted(payload) if isinstance(payload, dict) else []},
             )
+        if marker not in pem:
+            # Never log the value: for the key secret it is the key.
+            raise PreflightError(
+                f"CyberArk {what} secret is not a PEM (no '{marker}' block)",
+                catalog.AUTHENTICATION_FAILURE,
+                context=context,
+            )
+        return pem + "\n"
 
-        if "ENCRYPTED" in payload[_KEY_FIELD]:
+    def _load_client_certificate(self) -> _ClientCertificate:
+        cert_pem = self._read_pem(self._settings.client_cert_secret_id, "client certificate", "CERTIFICATE-----")
+        key_pem = self._read_pem(self._settings.client_key_secret_id, "client private key", "PRIVATE KEY-----")
+
+        if "ENCRYPTED" in key_pem:
             raise PreflightError(
                 "CyberArk client key is passphrase-protected; store it as an unencrypted PEM",
                 catalog.AUTHENTICATION_FAILURE,
-                context=context,
+                context={"secret_id": self._settings.client_key_secret_id},
             )
 
-        return _ClientCertificate(cert_pem=payload[_CERT_FIELD], key_pem=payload[_KEY_FIELD])
+        return _ClientCertificate(cert_pem=cert_pem, key_pem=key_pem)
 
     def _fetch_account(self, certificate: _ClientCertificate) -> Credentials:
         logger.info("Retrieving system-account credential from CyberArk CCP", extra=self._context)

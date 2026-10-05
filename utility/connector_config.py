@@ -4,7 +4,9 @@ Config is layered, lowest precedence first:
 
   1. defaults declared on the models below
   2. the YAML document named by ``--config`` / ``APP_CONFIG_PATH`` (local path or s3://)
-  3. ``IFC_`` environment variables (double underscore separates sections,
+  3. the ``CYBERARK_*`` environment variables the ECS product template sets
+     (``CYBERARK_ENV``), for the ``cyberark`` section
+  4. ``IFC_`` environment variables (double underscore separates sections,
      e.g. ``IFC_KAFKA__TOPIC``) so an ECS task definition can override any
      single value without republishing the config object to S3.
 
@@ -302,24 +304,47 @@ class SchemaRegistrySettings(BaseModel):
         return self
 
 
+#: Environment variables the ECS product template sets from its CyberArk
+#: parameters, and the ``cyberark`` field each one fills.
+CYBERARK_ENV: Dict[str, str] = {
+    "CYBERARK_ENABLED": "enabled",
+    "CYBERARK_CCP_URL": "base_url",
+    "CYBERARK_APP_ID": "app_id",
+    "CYBERARK_SAFE": "safe",
+    "CYBERARK_ACCOUNT": "object",
+}
+
+
 class CyberArkSettings(BaseModel):
     """Where the BSP system-account credential lives in CyberArk.
 
     Locations only. The client certificate and key are read from the Secrets
-    Manager secret named here; the account itself comes from CCP at runtime.
+    Manager secrets named here; the account itself comes from CCP at runtime.
+
+    In ECS the product template supplies ``enabled``, ``base_url``, ``app_id``,
+    ``safe`` and ``object`` as ``CYBERARK_*`` environment variables (see
+    ``CYBERARK_ENV``), so they are not repeated in the YAML.
     """
 
-    #: CCP host; the client-certificate endpoint path is appended by the fetcher.
-    base_url: str
+    #: Off for dev runs, which publish without a BSP system account: CCP is not
+    #: called and whatever ``BSP_USERNAME``/``BSP_PASSWORD`` the environment
+    #: holds is used as is.
+    enabled: bool = True
+    #: CCP host, or the full ``.../AIMWebService_certs/api/Accounts`` URL; the
+    #: fetcher appends the endpoint path only when it is not already there.
+    base_url: Optional[str] = None
     #: Application ID registered with CyberArk (``APP_<name>``).
-    app_id: str
+    app_id: Optional[str] = None
     #: Safe that holds the account.
-    safe: str
+    safe: Optional[str] = None
     folder: str = "Root"
-    #: The account's object name in the Safe - not its username.
-    object: str
-    #: Secrets Manager name or ARN of the JSON client certificate secret.
+    #: The account's name in the Safe, sent as CCP's ``Object``.
+    object: Optional[str] = None
+    #: Secrets Manager name or ARN of the client certificate, a plain PEM.
     client_cert_secret_id: str
+    #: Secrets Manager name or ARN of the client private key, a plain
+    #: unencrypted PEM.
+    client_key_secret_id: str
     secret_region: str = "eu-west-1"
     #: Trust store for the CCP *server* certificate.
     ca_bundle_path: str = "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"
@@ -330,6 +355,18 @@ class CyberArkSettings(BaseModel):
     max_attempts: int = Field(default=3, ge=1)
     #: Realm appended to the CyberArk username to form the BSP principal.
     principal_realm: str = "@INTRANET.BARCAPINT.COM"
+
+    @model_validator(mode="after")
+    def _query_is_complete(self) -> "CyberArkSettings":
+        if self.enabled:
+            missing = [
+                f"cyberark.{name} ({env})"
+                for env, name in CYBERARK_ENV.items()
+                if name != "enabled" and not getattr(self, name)
+            ]
+            if missing:
+                raise ValueError(f"CyberArk is enabled but these are not set: {', '.join(missing)}")
+        return self
 
 
 class AuditSettings(BaseModel):
@@ -529,6 +566,16 @@ def _env_overlay() -> Dict[str, Any]:
     return overlay
 
 
+def _cyberark_env_overlay() -> Dict[str, Any]:
+    """The template's ``CYBERARK_*`` variables, as a ``cyberark`` section."""
+    section = {
+        field: os.environ[env].strip()
+        for env, field in CYBERARK_ENV.items()
+        if os.environ.get(env, "").strip()
+    }
+    return {"cyberark": section} if section else {}
+
+
 def _deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
     merged = dict(base)
     for key, value in overlay.items():
@@ -553,7 +600,10 @@ def load_settings(config_path: str, *, reader=None) -> ConnectorSettings:
     if not isinstance(document, dict):
         raise ValueError(f"Config at {config_path} is not a YAML mapping")
 
-    settings = ConnectorSettings.model_validate(_deep_merge(document, _env_overlay()))
+    # IFC_ variables are applied last, so IFC_CYBERARK__* still overrides the
+    # template's CYBERARK_* for a single task.
+    layered = _deep_merge(_deep_merge(document, _cyberark_env_overlay()), _env_overlay())
+    settings = ConnectorSettings.model_validate(layered)
 
     # The month is read deep inside path expansion and the envelope builder,
     # which are not handed the settings, so it is pinned for the process here.

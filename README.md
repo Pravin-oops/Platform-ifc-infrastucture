@@ -613,10 +613,22 @@ That last layer is what lets one published config serve every task, with per-tas
 the task definition and no redeployment of the config object.
 
 No secret is ever configuration. CyberArk CCP supplies the BSP system-account credential at
-runtime, authenticated with a client certificate the ECS task role reads from Secrets Manager;
-only the Safe/object query and the certificate secret's *name* are configured.
+runtime, authenticated with a client certificate and key the ECS task role reads from two
+Secrets Manager secrets; only the CCP query and the secrets' *names* are configured.
 
-Supplied config: [`utility/connector_config.yaml`](utility/connector_config.yaml) (UAT; values
+The CCP query comes from the ECS product template (`products/ecs/product.template.yaml`), which
+sets these from its CyberArk parameters. They sit between the YAML and the `IFC_` layer, so
+`IFC_CYBERARK__<FIELD>` still overrides them for a single task:
+
+| Variable | Fills |
+|---|---|
+| `CYBERARK_ENABLED` | `cyberark.enabled`; `false` (the default) skips CyberArk for dev runs, which publish with whatever `BSP_USERNAME`/`BSP_PASSWORD` the environment holds |
+| `CYBERARK_CCP_URL` | `cyberark.base_url`, the full `.../AIMWebService_certs/api/Accounts` URL |
+| `CYBERARK_APP_ID` | `cyberark.app_id` |
+| `CYBERARK_SAFE` | `cyberark.safe` |
+| `CYBERARK_ACCOUNT` | `cyberark.object`, sent to CCP as `Object` |
+
+Supplied config: [`utility/connector_config.yaml`](utility/connector_config.yaml) (SIT; values
 needing confirmation are marked `CONFIRM`).
 
 ---
@@ -946,7 +958,7 @@ problem.
 |---|---|
 | Firewall rules implemented for AWS source → BSP destination CIDRs | Described, not confirmed implemented. Preflight will prove it in seconds |
 | DNS resolution and routing from BB BCA subnets to intranet BSP hosts | Needs confirmation |
-| CyberArk App ID, Safe, object and client-certificate secret | Placeholder in `utility/connector_config.yaml` |
+| CyberArk client certificate and key | Secrets `/ifc/bsp-event-processor/cyberark/client-cert` and `.../private-key` exist but are empty; the CCP query comes from the product template's `CYBERARK_*` variables |
 | Confirmed IFC CDD topic name and registry subject | `tc01_fncmtrgrbb_ifc_tbb_kyc_refresh` assumed from the topic table |
 | Kafka ACLs for the producer principal on the topic | Needed; preflight distinguishes a missing ACL from a missing topic |
 | **Tokenisation policy names** for account fields | Only `DPASS_POLICY_NAME` (Client Relationship Owner Name) is confirmed on Confluence; `POLICY_ACCOUNT` in `utility/trigger_payload.py` is a placeholder |

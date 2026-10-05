@@ -110,11 +110,11 @@ class KafkaStackFactory:
             )
             return None
 
-        if settings.cyberark is not None:
+        if settings.cyberark is not None and settings.cyberark.enabled:
             CyberArkAuthenticator(settings.cyberark).export_to_environment(settings.cyberark.principal_realm)
         else:
             logger.warning(
-                "No CyberArk section configured; relying on BSP_USERNAME/BSP_PASSWORD already in the environment"
+                "CyberArk is not enabled; relying on BSP_USERNAME/BSP_PASSWORD already in the environment"
             )
 
         # package_resource anchors a relative path at the connector root, so it
