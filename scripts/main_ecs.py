@@ -222,14 +222,13 @@ def _recon_gate(settings, config_path: str, task: Dict[str, Optional[str]],
         return None
 
     month = month_of(execution_date())
-    # Upstream always lands the recon document in the current month's folder,
-    # stamped with the current month - also when IFC_RUN__MONTH reprocesses an
-    # earlier month - so the recon check keys on today, not on the run month.
-    checked_on = run_gate.today()
-    recon_month = month_of(checked_on)
+    # Upstream writes its recon row when it runs, stamped with the current
+    # month - also when IFC_RUN__MONTH reprocesses an earlier month - so the
+    # recon check keys on today, not on the run month.
+    recon_month = month_of(run_gate.today())
     try:
         decision = recon_gate.evaluate(
-            settings.recon, execution_month=recon_month, run_date=checked_on
+            settings.recon, settings.source.athena, execution_month=recon_month
         )
     except Exception as exc:
         # Never let the gate itself decide the run by accident: an unexpected
@@ -373,7 +372,7 @@ def ecs_handler(event: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         logger.warning(
             "Reprocessing %s: run.month overrides the current month for the Athena "
             "business_date, the business month and the run marker; the recon check "
-            "still reads the current month's folder",
+            "still needs a recon row from the current month",
             settings.run.month,
             extra={"run_month": settings.run.month, "force": settings.run.force},
         )

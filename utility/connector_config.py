@@ -17,7 +17,6 @@ from __future__ import annotations
 import json
 import os
 import re
-from datetime import date
 from typing import Any, Dict, List, Literal, Optional
 
 import yaml
@@ -28,50 +27,6 @@ from utility.trigger_definitions import resolve as resolve_trigger
 # Broker-enforced ceiling documented in the TBB failure catalogue (Message Too
 # Large). Kept just under 800 KiB so the Avro envelope and headers still fit.
 DEFAULT_MAX_MESSAGE_BYTES = 800 * 1024
-
-
-#: Date tokens accepted in ``recon.path`` / ``recon.trigger_paths``, so one
-#: config points at a new recon folder every month without being republished.
-#: TED writes ``trigger8/SEPTEMBER_2026/``, which is ``{MONTH}_{YYYY}``.
-#:
-#: The date substituted is the day the task runs, so a run in September 2026
-#: reads ``SEPTEMBER_2026``. Upstream lands the recon document in the current
-#: month's folder, so ``IFC_RUN__MONTH`` does not move it: a reprocess of
-#: September run in October reads ``OCTOBER_2026``.
-_DATE_TOKENS = {
-    "{MONTH}": lambda d: d.strftime("%B").upper(),
-    "{Month}": lambda d: d.strftime("%B"),
-    "{month}": lambda d: d.strftime("%B").lower(),
-    "{MON}": lambda d: d.strftime("%b").upper(),
-    "{YYYY}": lambda d: d.strftime("%Y"),
-    "{YY}": lambda d: d.strftime("%y"),
-    "{MM}": lambda d: d.strftime("%m"),
-    "{DD}": lambda d: d.strftime("%d"),
-    "{YYYYMM}": lambda d: d.strftime("%Y%m"),
-    "{YYYY-MM}": lambda d: d.strftime("%Y-%m"),
-    "{YYYYMMDD}": lambda d: d.strftime("%Y%m%d"),
-}
-
-
-def expand_date_tokens(template: str, run_date: Optional[date] = None) -> str:
-    """Substitute the date tokens in a recon path.
-
-    ``%B`` is locale-sensitive in principle; the container runs under the C
-    locale, where it is English, which is what TED writes.
-    """
-    if not template or "{" not in template:
-        return template
-
-    if run_date is None:
-        from utility.run_gate import today
-
-        run_date = today()
-
-    resolved = template
-    for token, render in _DATE_TOKENS.items():
-        if token in resolved:
-            resolved = resolved.replace(token, render(run_date))
-    return resolved
 
 
 class AppSettings(BaseModel):
@@ -102,8 +57,8 @@ class RunSettings(BaseModel):
     #: RunTask. The run then queries the month before it (``2026-08`` reads
     #: ``business_date = 2026-07-31``), stamps that as the business month and
     #: records the outcome against it - exactly as the run that month would
-    #: have. The recon document is still read from the current month's folder,
-    #: where upstream lands it. Unset, the month is the current one. A month
+    #: have. The recon check still needs a recon row from the current month,
+    #: since upstream writes it when it runs. Unset, the month is the current one. A month
     #: already delivered still needs ``force``.
     month: Optional[str] = None
 
@@ -274,40 +229,45 @@ class SourceSettings(BaseModel):
 
 
 class ReconSettings(BaseModel):
-    """Where the upstream reconciliation document for a trigger lives.
+    """Where upstream's reconciliation rows are read from: one Athena table.
 
-    A per-trigger S3 location carrying ``{MONTH}_{YYYY}`` date tokens, read
-    newest-file-wins by the timestamp in the filename. ``enabled: false`` switches the gate off for
-    a local run that has no recon feed.
+    The Databricks recon job appends a row per model run, naming the table it
+    built in ``target_table_name``. A run reads the newest row for its own
+    trigger's Databricks table and decides from it whether to publish (see
+    ``recon_gate``). The query runs through ``source.athena``'s workgroup,
+    catalog and result location. ``enabled: false`` switches the check off.
+
+    Unknown keys are rejected, so a config still carrying the old S3 recon
+    settings (``path``, ``trigger_paths``, ``file_suffixes`` ...) fails at load
+    instead of the check being silently switched off.
     """
 
-    enabled: bool = True
-    path: Optional[str] = None
-    trigger_paths: Dict[str, str] = Field(default_factory=dict)
-    file_suffixes: List[str] = Field(default_factory=lambda: [".json"])
-    #: Matches BDP_Corp_Trigger_8_recon_20260930_143022_123456.json.
-    filename_timestamp_pattern: str = r"(\d{8}_\d{6}_\d+)"
-    filename_timestamp_format: str = "%Y%m%d_%H%M%S_%f"
+    model_config = ConfigDict(extra="forbid")
 
-    @field_validator("trigger_paths", mode="before")
+    enabled: bool = True
+    #: The recon table, as ``database.table``.
+    table: Optional[str] = None
+    #: Per trigger, the ``target_table_name`` value its rows carry - the
+    #: Databricks table the trigger's model writes. Keyed by trigger (any
+    #: accepted spelling); ``IFC_RUN__TRIGGER`` decides which one a run reads.
+    trigger_targets: Dict[str, str] = Field(default_factory=dict)
+    #: This run's ``target_table_name``, set from ``trigger_targets`` by
+    #: ``ConnectorSettings.select_trigger``.
+    target_table: Optional[str] = None
+
+    @field_validator("trigger_targets", mode="before")
     @classmethod
     def _canonical_keys(cls, v: Any) -> Any:
         if not isinstance(v, dict):
             return v
-        return {canonical_trigger(key): path for key, path in v.items()}
+        return {canonical_trigger(key): target for key, target in v.items()}
 
-    @property
-    def resolved_path(self) -> str:
-        """The recon location for this run, tokens still unexpanded.
-
-        ``ReconSource`` expands them against the run date.
-        """
-        if not self.path:
-            raise ValueError(
-                "recon.path is not resolved: add the trigger to recon.trigger_paths, "
-                "set recon.path, or set recon.enabled=false"
-            )
-        return self.path
+    @field_validator("table")
+    @classmethod
+    def _table(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            athena_table(v)
+        return v
 
 
 class KafkaSettings(BaseModel):
@@ -470,14 +430,16 @@ class ConnectorSettings(BaseModel):
     def recon_active(self) -> bool:
         """Whether the upstream reconciliation gate applies to this run.
 
-        Mirrors ``gate_active``: a location that is not configured switches the
-        gate off, so a local run needs no recon feed. ``recon.enabled: false``
+        Mirrors ``gate_active``: a recon table, or a target for this run's
+        trigger, that is not configured switches the gate off, so a local run
+        needs no recon feed. ``recon.enabled: false``
         is the explicit off-switch for a deployment that has one but wants it
         bypassed.
         """
         if not self.recon.enabled:
             return False
-        return bool(self.recon.path or self.recon.trigger_paths.get(self.run.trigger or ""))
+        target = self.recon.target_table or self.recon.trigger_targets.get(self.run.trigger or "")
+        return bool(self.recon.table and target)
 
     @property
     def gate_active(self) -> bool:
@@ -512,10 +474,10 @@ class ConnectorSettings(BaseModel):
         if selected in self.source.trigger_tables:
             self.source.table = self.source.trigger_tables[selected]
 
-        # The recon document lives per trigger too, and is looked up by the same
-        # trigger, so the two cannot end up pointing at different triggers.
-        if selected in self.recon.trigger_paths:
-            self.recon.path = self.recon.trigger_paths[selected]
+        # The recon rows are looked up by the same trigger, so the table read and
+        # the reconciliation checked cannot end up being different triggers'.
+        if selected in self.recon.trigger_targets:
+            self.recon.target_table = self.recon.trigger_targets[selected]
 
         if not self.source.table:
             raise ValueError(

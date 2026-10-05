@@ -20,11 +20,8 @@ from utility.error_classifier import classify
 from utility.connector_utility import load_schema_document
 from utility.tb_outcome_schema import EnvelopeBuilder, TriggerEvent
 from utility.connector_utility import SourceAccessError
-from utility.trigger_source import (
-    AthenaTriggerSource,
-    _coerce,
-    make_source,
-)
+from utility.athena_query import coerce as _coerce
+from utility.trigger_source import AthenaTriggerSource, make_source
 
 TABLE = "ifc_trigger_db.trigger_8_events"
 

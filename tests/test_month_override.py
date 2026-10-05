@@ -3,9 +3,9 @@
 A one-off RunTask in October with ``IFC_RUN__MONTH=2026-08`` has to behave
 exactly as the August run did - July's rows (``business_date = 2026-07-31``),
 July as the business month, the outcome recorded against August - while the
-weekend check, the marker's ``run_date`` and the recon folder stay on the day
-the task actually runs: upstream lands the recon document in the current
-month's folder.
+weekend check, the marker's ``run_date`` and the recon check stay on the day
+the task actually runs: upstream writes its recon row when it runs (see
+``test_recon_gate.TestAReprocessChecksTheCurrentMonthsRecon``).
 """
 
 from __future__ import annotations
@@ -22,7 +22,6 @@ from tests.test_runner_pipeline import FakeAthena, FakeProducer, VALID_ROW, make
 from utility import run_gate
 from utility.connector_config import RunSettings, load_settings
 from utility.connector_runner import ConnectorRunner
-from utility.recon_gate import ReconSource
 from utility.resilience_utility import ShutdownSignal
 from utility.run_gate import (
     RunMarker,
@@ -101,9 +100,6 @@ class TestLoadedFromTheEnvironment:
         assert source.business_date == date(2026, 7, 31)
         assert source.query()[1] == ["'2026-07-31'"]
 
-    def test_the_recon_folder_is_the_current_months(self, settings):
-        assert ReconSource(settings.recon).folder.endswith("/trigger8/OCTOBER_2026/")
-
     def test_the_records_are_stamped_as_the_august_run_stamped_them(self, settings):
         builder = EnvelopeBuilder(avro_schema=load_schema_document("utility/schema.json"))
         assert builder.business_month == "2026-07"
@@ -117,7 +113,6 @@ class TestLoadedFromTheEnvironment:
         loaded.select_trigger(TRIGGER_8)
         assert loaded.run.month is None
         assert make_source(loaded.source, trigger=loaded.trigger).business_date == date(2026, 9, 30)
-        assert ReconSource(loaded.recon).folder.endswith("/trigger8/OCTOBER_2026/")
 
 
 class TestTheQueriedBusinessDate:

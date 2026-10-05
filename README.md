@@ -119,8 +119,9 @@ Platform-ifc-infrastructure/      # the app root; imports are utility.*
 │   ├── connector_utility.py      # S3/local path handling, loaders, resource resolution
 │   ├── connector_config.py       # typed config; YAML + IFC_ env overlay
 │   ├── connector_runner.py       # the batch run: query, publish, reconcile
+│   ├── athena_query.py           # run one Athena query, read typed rows back
 │   ├── trigger_source.py         # Athena trigger-table reader
-│   ├── recon_gate.py             # upstream reconciliation gate
+│   ├── recon_gate.py             # upstream reconciliation gate (Athena recon table)
 │   ├── run_gate.py               # weekend / already-delivered gate, run markers
 │   ├── sequence_allocator.py     # batch sequence numbers
 │   ├── audit_utility.py          # quarantine, run manifest, reconciliation
@@ -390,9 +391,8 @@ that month instead of the current one. It takes `2026-08` or `AUGUST_2026`. An O
 `IFC_RUN__MONTH=2026-08` behaves as the August run did: it queries `business_date = 2026-07-31`,
 stamps records `2026-07-31T23:59:59.999999999Z`, and records its outcome against `2026-08` in the
 run marker. Three things stay on the real date: the weekend check, the marker line's `run_date`,
-and the **recon check** — upstream always lands the recon document in the current month's folder,
-so that October run reads `OCTOBER_2026/` and needs a document whose `last_modified_ts` is in
-October. A month already marked `SUCCESS` is still skipped
+and the **recon check** — upstream writes its recon row when it runs, so that October run needs a
+recon row whose `last_modified_ts` is in October. A month already marked `SUCCESS` is still skipped
 unless `IFC_RUN__FORCE=true` is set too, so the override alone cannot republish a delivered month
 by accident. Leave it unset on the schedule.
 
@@ -508,7 +508,8 @@ APP_CONFIG_PATH=utility/connector_config.yaml IFC_RUN__TRIGGER=TRIGGER_8 IFC_RUN
 ```
 
 Runs as the August run did: queries `business_date = 2026-07-31` and records the outcome against
-`2026-08`. The recon check reads the current month's folder (`OCTOBER_2026/` for a run in October). Drop `IFC_RUN__FORCE` when August was never
+`2026-08`. The recon check needs a recon row from the current month (October, for a run in
+October). Drop `IFC_RUN__FORCE` when August was never
 delivered. See [Input contract](#input-contract).
 
 ### The failure catalogue
@@ -597,37 +598,58 @@ needing confirmation are marked `CONFIRM`, including the Athena workgroup).
 
 ## The upstream reconciliation gate
 
-Before any work, the connector asks whether upstream produced anything to run for. TED writes one
-recon document per trigger per month:
+Before any work, the connector asks whether upstream produced anything to run for. The Databricks
+recon job appends **one row per model run** to a recon table, which the connector reads through
+Athena (`recon.table`, through `source.athena`'s workgroup, catalog and result location):
 
+| Column | Type | Used for |
+|---|---|---|
+| `target_table_name` | `string` | which trigger the row is about — matched to `recon.trigger_targets` |
+| `status` | `string` | `SUCCESS`, `RECON_FAILED` or `FAILED` |
+| `source_count`, `target_count` | `bigint` | must match; both zero is an empty month |
+| `error_record_count` | `bigint` | logged when non-zero; does not block |
+| `last_modified_ts` | `timestamp` (UTC) | picks the newest row; must be in the current month |
+| `model_name`, `job_run_id`, `batch_id` | `string`, `string`, `bigint` | quoted in every alert |
+| `idempotency_key`, `env`, `dataproduct_name`, `last_modified_by` | `string` | carried into the run summary |
+
+A run of Trigger 9 reads the newest row for its own Databricks table:
+
+```sql
+SELECT * FROM "<recon database>"."<recon table>"
+WHERE lower(replace(target_table_name, '`', '')) = ?
+      -- 'default_cib-analytics_4460044220833463.cds_write.bdp_corp_ifc_trigger_9'
+ORDER BY last_modified_ts DESC
+LIMIT 1
 ```
-s3://<recon-bucket>/.../ifc-bdp-audit-recon-json/trigger8/SEPTEMBER_2026/
-    BDP_Corp_Trigger_8_recon_20260930_143022_123456.json
-```
 
-The folder name carries `{MONTH}_{YYYY}` expanded from the run
-date, and the newest document in it wins, ordered by the timestamp *parsed* from the filename
-rather than by the name. Each document holds a single record:
+The match ignores backticks and case, so `` `default_cib-analytics_…`.cds_write.BDP_Corp_IFC_Trigger_9 ``
+and the same name without backticks both match. A rerun of the upstream job **appends a new row**
+with the current timestamp, so the newest row is always upstream's current verdict.
 
-```json
-{"target_table_name": "bdp_corp_ifc_trigger_8", "last_modified_ts": "2026-09-30T14:30:22.123",
- "status": "SUCCESS", "source_count": 412, "target_count": 412, "error_record_count": 0}
-```
-
-`status` is strictly `SUCCESS` or `RECON_FAILED`. An upstream job that failed outright writes no
-document at all, so an empty folder is its own signal.
-
-| Condition | Outcome | Exit | Meaning |
+| Newest row | Outcome | Exit | Meaning |
 |---|---|---|---|
-| folder or document absent | `UPSTREAM_DATA_NOT_RECEIVED` | 22 | upstream data never arrived, including an outright job failure |
-| `last_modified_ts` not in the execution month | `UPSTREAM_PROCESSING_NOT_DONE` | 22 | upstream has not processed this month |
-| `status` is `RECON_FAILED` | `UPSTREAM_JOB_FAILED` | 21 | the upstream job failed |
+| none for the trigger | `UPSTREAM_DATA_NOT_RECEIVED` | 22 | upstream never wrote a recon row for this trigger |
+| `last_modified_ts` not in the current month | `UPSTREAM_PROCESSING_NOT_DONE` | 22 | upstream has not processed this month |
+| `status` is `FAILED` | `UPSTREAM_MODEL_FAILED` | 21 | the dbt model itself did not run |
+| `status` is `RECON_FAILED` | `UPSTREAM_JOB_FAILED` | 21 | the model ran, but upstream's reconciliation failed |
 | `SUCCESS` but `source_count != target_count` | `UPSTREAM_COUNT_MISMATCH` | 21 | upstream should have said `RECON_FAILED` and did not |
 | `SUCCESS`, both counts zero | `NO_DATA_THIS_MONTH` | 0 | a genuine month with no data — **a success**, see below |
-| unreadable, unparseable, missing fields, or a status outside the contract | `UPSTREAM_RECON_UNREADABLE` | 20 / 14 | the document cannot be trusted |
-| `SUCCESS`, counts equal and non-zero | proceeds | — | |
+| `SUCCESS`, counts equal and non-zero | proceeds and publishes | — | |
+| table cannot be queried (missing, `AccessDenied`, query failed or timed out) | `UPSTREAM_RECON_UNREADABLE` | 20 | the recon table cannot be read |
+| row missing `status` / `last_modified_ts`, non-numeric counts, or a status outside the three | `UPSTREAM_RECON_UNREADABLE` | 14 | the row cannot be trusted |
 
-Exit codes are shared — two use 22 (`TED_MISSING_SOURCE_DATA`), two use 21 (`TED_JOB_FAILURE`) —
+**Every block says what went wrong.** The reason in the alert, the run summary and the manifest
+quotes the row itself — for example:
+
+```
+Upstream job failed for 2026-10: the dbt model for `default_cib-analytics_4460044220833463`.cds_write.BDP_Corp_IFC_Trigger_9
+did not run (status=FAILED, source_count=0, target_count=0, error_record_count=0, model_name=…, job_run_id=…, batch_id=…, last_modified_ts=…)
+```
+
+The summary and manifest also carry the whole row, the recon table, the target and the Athena query
+execution id.
+
+Exit codes are shared — two use 22 (`TED_MISSING_SOURCE_DATA`), three use 21 (`TED_JOB_FAILURE`) —
 because those are the catalogue scenarios they belong to. The **outcome name** is what tells them
 apart in the stopped-task record and the run summary, so the names are deliberately kept
 distinct. A block is a reported failure, not a silent skip: non-zero exit, plus the same alert a
@@ -635,31 +657,39 @@ run failure raises, because nobody reads the logs on a monthly schedule.
 
 **A genuine empty month is not a failure.** When upstream reconciles `SUCCESS` with zero source and
 target records there is nothing to publish, and that *is* the month delivered. The run stops at
-the recon document as usual, but it exits `0`, raises no RTB alert, records `SUCCESS` with
+the recon check as usual, but it exits `0`, raises no RTB alert, records `SUCCESS` with
 `records_processed = 0` in the run marker file (so the rest of the window stands down), and sends
 the [batch completion notification](#the-batch-completion-notification) with
 `No_Of_Messages_Produced = 0`.
 
-**Stopping is the safe direction.** Because the contract is exactly two statuses, a third value is
-treated as an untrusted document rather than a third outcome to interpret — there is no state in
+**The current month, not the run month.** Upstream writes its recon row when it runs, so the row
+has to be from the month the task runs in — also on a reprocess with `IFC_RUN__MONTH`, whose run
+month is earlier. `last_modified_ts` is UTC; the current month is taken from the UK date, which
+only differs in the hour around midnight at a month end, when no run is scheduled.
+
+**Stopping is the safe direction.** Because the contract is exactly three statuses, any other value
+is treated as an untrusted row rather than another outcome to interpret — there is no state in
 which an unknown status is a green light. Counts that disagree are upstream's own definition of a
 failed reconciliation, so a `SUCCESS` carrying them is a contradiction and the run stops; that is
-the backstop for upstream having missed it. A non-zero `error_record_count` alongside matching
-counts is logged but does not block.
+the backstop for upstream having missed it.
 
-**Nothing downstream is touched when the gate blocks.** A zero-count month, a count mismatch and a
-failed upstream job all stop at the recon document: no preflight, no Kafka, no BSP, and the trigger
-table is never queried.
+**Nothing downstream is touched when the gate blocks.** Every outcome except "proceeds" stops at the
+recon check: no preflight, no Kafka, no BSP, and the trigger table is never queried.
 
 **Ordering.** It runs *after* the invocation gate's weekend and already-delivered skips, and
 before preflight, Kafka, the source and the marker claim. Those skips are days the run is not
 meant to happen at all; checking upstream on them would alert six times a month for nothing.
 
-`recon.enabled: false` switches it off, and so does leaving the location unset — the same
-convention as `run_marker.path`, so a local run needs no recon feed. The task role needs
-`s3:GetObject` and `s3:ListBucket` on the recon prefix (`ReadUpstreamReconciliation` in
-`deploy/iam-task-role-policy.json`). All three per-trigger prefixes are confirmed with the data
-team.
+`recon.enabled: false` (`IFC_RECON__ENABLED=false`) switches it off, and so does leaving
+`recon.table` unset or the trigger out of `recon.trigger_targets` — the same convention as
+`run_marker.path`, so a local run needs no recon feed. The old S3 settings (`path`,
+`trigger_paths`, `file_suffixes`, …) are rejected at load, so a stale config cannot switch the gate
+off silently. The task role needs the same Athena and Glue permissions as the trigger tables, on
+the recon table too, plus read on its data.
+
+**Placeholder.** `recon.table` is `recon_database_placeholder.recon_table_placeholder` until the
+data team confirms the real name; until then every run blocks as `UPSTREAM_RECON_UNREADABLE`
+unless the gate is switched off.
 
 ---
 
@@ -871,7 +901,7 @@ subscriber can filter without parsing the body.
 that is missing records, so for a publishing run the event is sent only when *all* of these hold:
 the run outcome is `SUCCESS`, reconciliation balanced, at least one message acknowledged, and no
 delivery failures or unflushed messages. A run whose source turned out empty without upstream's
-recon confirming zero is still withheld — only the recon document can say a month is genuinely
+recon confirming zero is still withheld — only the recon row can say a month is genuinely
 empty. A run that never produced a batch (a start-up failure) sends nothing.
 
 **When it is disabled.** `batch_notifications_enabled: false` turns it off; so does leaving

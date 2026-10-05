@@ -52,27 +52,28 @@ source:
     poll_interval_seconds: 1.0
     query_timeout_seconds: 300
 
-# Upstream reconciliation gate, checked BEFORE the run gate: the run gate asks
-# whether this month is due, this asks whether upstream produced anything to run
-# for. TED writes one recon document per trigger per month; the newest one in the
-# month's folder is read and it must say this month, SUCCESS, and non-zero counts.
-# SUCCESS with both counts zero is a genuine empty month: exit 0, no alert, the
-# month is recorded delivered and TBB gets a batch event with zero messages.
+# Upstream reconciliation gate, checked after the run gate's skips and before
+# any work: the run gate asks whether this month is due, this asks whether
+# upstream produced anything to run for. The Databricks recon job appends a row
+# per model run to the recon table; the newest row for the run's trigger
+# (matched on target_table_name) must be from the current month (UTC), SUCCESS,
+# with matching non-zero counts. FAILED (the dbt model did not run) and
+# RECON_FAILED block the run and alert with the row's details. SUCCESS with
+# both counts zero is a genuine empty month: exit 0, no alert, the month is
+# recorded delivered and TBB gets a batch event with zero messages.
+# The query runs through source.athena's workgroup, catalog and result location.
 recon:
   enabled: true
-  # Per-trigger recon prefixes, confirmed with the data team. {MONTH}_{YYYY}
-  # expands to the current month's folder - SEPTEMBER_2026 for a run in
-  # September - even under IFC_RUN__MONTH: upstream lands the recon document in
-  # the current month's folder, so a reprocess run in October reads OCTOBER_2026.
-  trigger_paths:
-    TRIGGER_8: s3://sit1-pre-cds01-509153454187-eu-west-1/dbx-sit-cds-snsvc0080860-prepared-db/ifc-bdp-audit-recon-json/trigger8/{MONTH}_{YYYY}/
-    TRIGGER_9: s3://sit1-pre-cds01-509153454187-eu-west-1/dbx-sit-cds-snsvc0080860-prepared-db/ifc-bdp-audit-recon-json/trigger9/{MONTH}_{YYYY}/
-    TRIGGER_21: s3://sit1-pre-cds01-509153454187-eu-west-1/dbx-sit-cds-snsvc0080860-prepared-db/ifc-bdp-audit-recon-json/trigger21/{MONTH}_{YYYY}/
-  file_suffixes: [".json"]
-  # Matches BDP_Corp_Trigger_8_recon_20260930_143022_123456.json, ordered by the
-  # parsed timestamp rather than by name.
-  filename_timestamp_pattern: "(\\d{8}_\\d{6}_\\d+)"
-  filename_timestamp_format: "%Y%m%d_%H%M%S_%f"
+  # CONFIRM: the recon table's database and name - placeholder until the data
+  # team shares it. Until then a run blocks as UPSTREAM_RECON_UNREADABLE unless
+  # IFC_RECON__ENABLED=false.
+  table: recon_database_placeholder.recon_table_placeholder
+  # target_table_name per trigger: the Databricks table each trigger's model
+  # writes. Matched ignoring backticks and case.
+  trigger_targets:
+    TRIGGER_8: "`default_cib-analytics_4460044220833463`.cds_write.BDP_Corp_IFC_Trigger_8"
+    TRIGGER_9: "`default_cib-analytics_4460044220833463`.cds_write.BDP_Corp_IFC_Trigger_9"
+    TRIGGER_21: "`default_cib-analytics_4460044220833463`.cds_write.BDP_Corp_IFC_Trigger_21"
 
 kafka:
   # CONFIRM: the CDD trigger topic. The BSP topic table lists
