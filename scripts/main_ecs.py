@@ -222,8 +222,15 @@ def _recon_gate(settings, config_path: str, task: Dict[str, Optional[str]],
         return None
 
     month = month_of(execution_date())
+    # Upstream always lands the recon document in the current month's folder,
+    # stamped with the current month - also when IFC_RUN__MONTH reprocesses an
+    # earlier month - so the recon check keys on today, not on the run month.
+    checked_on = run_gate.today()
+    recon_month = month_of(checked_on)
     try:
-        decision = recon_gate.evaluate(settings.recon, execution_month=month)
+        decision = recon_gate.evaluate(
+            settings.recon, execution_month=recon_month, run_date=checked_on
+        )
     except Exception as exc:
         # Never let the gate itself decide the run by accident: an unexpected
         # error here is a failure to classify, not permission to publish.
@@ -236,6 +243,7 @@ def _recon_gate(settings, config_path: str, task: Dict[str, Optional[str]],
             "reason": str(exc),
             "scenario": classification.scenario.key,
             "execution_month": month,
+            "recon_month": recon_month,
             "config_path": config_path,
             "ecs": task,
         }
@@ -243,14 +251,14 @@ def _recon_gate(settings, config_path: str, task: Dict[str, Optional[str]],
             summary["run_id"] = invocation.record(
                 "RECON_GATE", summary["outcome"], summary["exit_code"],
                 reason=summary["reason"], classification=classification,
-                gate={"execution_month": month},
+                gate={"execution_month": month, "recon_month": recon_month},
             )
         return summary
 
     if decision.proceed:
         logger.info(
             "Upstream reconciliation passed",
-            extra={"execution_month": month, **decision.to_dict()},
+            extra={"execution_month": month, "recon_month": recon_month, **decision.to_dict()},
         )
         return None
 
@@ -260,7 +268,7 @@ def _recon_gate(settings, config_path: str, task: Dict[str, Optional[str]],
     logger.error(
         "Upstream reconciliation blocked the run: %s",
         decision.reason,
-        extra={"execution_month": month, **decision.to_dict()},
+        extra={"execution_month": month, "recon_month": recon_month, **decision.to_dict()},
     )
     classification = classify(
         ConnectorError(decision.reason, decision.blocking_scenario),
@@ -364,7 +372,8 @@ def ecs_handler(event: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     if settings.run.month:
         logger.warning(
             "Reprocessing %s: run.month overrides the current month for the Athena "
-            "business_date, the recon folder, the business month and the run marker",
+            "business_date, the business month and the run marker; the recon check "
+            "still reads the current month's folder",
             settings.run.month,
             extra={"run_month": settings.run.month, "force": settings.run.force},
         )

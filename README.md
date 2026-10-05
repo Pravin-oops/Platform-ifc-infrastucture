@@ -386,12 +386,13 @@ Preflight checks the table with `GetTableMetadata` — a Glue catalogue lookup t
 but exercises the same permissions the query needs.
 
 **Reprocessing a past month.** Set `IFC_RUN__MONTH` (`run.month`) on a one-off RunTask to run as
-that month instead of the current one. It takes `2026-08` or the recon folder's own `AUGUST_2026`.
-An October run with `IFC_RUN__MONTH=2026-08` behaves exactly as the August run did: it queries
-`business_date = 2026-07-31`, reads the `AUGUST_2026` recon folder, stamps records
-`2026-07-31T23:59:59.999999999Z`, and records its outcome against `2026-08` in the run marker. The
-day-only recon tokens (`{DD}`, `{YYYYMMDD}`) render the 1st. Two things stay on the real date: the
-weekend check, and the marker line's `run_date`. A month already marked `SUCCESS` is still skipped
+that month instead of the current one. It takes `2026-08` or `AUGUST_2026`. An October run with
+`IFC_RUN__MONTH=2026-08` behaves as the August run did: it queries `business_date = 2026-07-31`,
+stamps records `2026-07-31T23:59:59.999999999Z`, and records its outcome against `2026-08` in the
+run marker. Three things stay on the real date: the weekend check, the marker line's `run_date`,
+and the **recon check** — upstream always lands the recon document in the current month's folder,
+so that October run reads `OCTOBER_2026/` and needs a document whose `last_modified_ts` is in
+October. A month already marked `SUCCESS` is still skipped
 unless `IFC_RUN__FORCE=true` is set too, so the override alone cannot republish a delivered month
 by accident. Leave it unset on the schedule.
 
@@ -506,8 +507,8 @@ needs AWS credentials that can query that table (see [Deployment](#deployment)).
 APP_CONFIG_PATH=utility/connector_config.yaml IFC_RUN__TRIGGER=TRIGGER_8 IFC_RUN__MONTH=2026-08 IFC_RUN__FORCE=true python scripts/main_ecs.py
 ```
 
-Runs as the August run did: queries `business_date = 2026-07-31`, reads the `AUGUST_2026` recon
-folder and records the outcome against `2026-08`. Drop `IFC_RUN__FORCE` when August was never
+Runs as the August run did: queries `business_date = 2026-07-31` and records the outcome against
+`2026-08`. The recon check reads the current month's folder (`OCTOBER_2026/` for a run in October). Drop `IFC_RUN__FORCE` when August was never
 delivered. See [Input contract](#input-contract).
 
 ### The failure catalogue

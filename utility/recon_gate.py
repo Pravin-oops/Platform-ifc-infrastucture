@@ -246,8 +246,10 @@ def evaluate(
 ) -> ReconDecision:
     """Decide whether upstream has produced this month's data.
 
-    ``execution_month`` is ``YYYY-MM`` - the month the run gate keys on, and the
-    month the recon document's ``last_modified_ts`` has to fall in.
+    ``execution_month`` is ``YYYY-MM`` - the month the recon document's
+    ``last_modified_ts`` has to fall in. The entry point passes the current
+    month, not ``IFC_RUN__MONTH``: upstream lands the document in the current
+    month's folder even when an earlier month is reprocessed.
     """
     source = ReconSource(settings, run_date=run_date)
     folder = source.folder

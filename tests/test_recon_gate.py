@@ -502,6 +502,27 @@ class TestThroughTheEntryPoint:
         ecs.run()
         assert ecs.built, "the gate blocked a healthy month"
 
+
+class TestAReprocessReadsTheCurrentMonthsRecon:
+    """Upstream lands the recon document in the current month's folder, stamped
+    with the current month, even when IFC_RUN__MONTH reprocesses an earlier one.
+    Today is 2026-09-18 in the ``ecs`` fixture; the reprocess is of August."""
+
+    def test_the_current_months_document_lets_the_reprocess_proceed(self, ecs, monkeypatch):
+        monkeypatch.setenv("IFC_RUN__MONTH", "2026-08")
+        ecs.write(a_document(), folder="SEPTEMBER_2026")
+        ecs.run()
+        assert ecs.built, "the reprocess did not read the current month's recon"
+
+    def test_the_run_months_folder_is_not_read(self, ecs, monkeypatch):
+        monkeypatch.setenv("IFC_RUN__MONTH", "2026-08")
+        ecs.write(a_document(last_modified_ts="2026-08-31T14:30:22.123"), folder="AUGUST_2026")
+        summary = ecs.run()
+
+        assert ecs.built == []
+        assert summary["outcome"] == "UPSTREAM_DATA_NOT_RECEIVED"
+        assert "SEPTEMBER_2026" in summary["reason"]
+
     def test_the_weekend_skip_still_wins(self, main_ecs_script, monkeypatch, tmp_path,
                                          clean_ifc_env):
         """The recon gate runs after the run gate's skips on purpose: a weekend

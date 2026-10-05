@@ -34,9 +34,10 @@ DEFAULT_MAX_MESSAGE_BYTES = 800 * 1024
 #: config points at a new recon folder every month without being republished.
 #: TED writes ``trigger8/SEPTEMBER_2026/``, which is ``{MONTH}_{YYYY}``.
 #:
-#: The date substituted is the *run* date, so a run in September 2026 reads
-#: ``SEPTEMBER_2026``. That is the execution month the run gate keys on, not the
-#: business month the records describe.
+#: The date substituted is the day the task runs, so a run in September 2026
+#: reads ``SEPTEMBER_2026``. Upstream lands the recon document in the current
+#: month's folder, so ``IFC_RUN__MONTH`` does not move it: a reprocess of
+#: September run in October reads ``OCTOBER_2026``.
 _DATE_TOKENS = {
     "{MONTH}": lambda d: d.strftime("%B").upper(),
     "{Month}": lambda d: d.strftime("%B"),
@@ -62,9 +63,9 @@ def expand_date_tokens(template: str, run_date: Optional[date] = None) -> str:
         return template
 
     if run_date is None:
-        from utility.run_gate import execution_date
+        from utility.run_gate import today
 
-        run_date = execution_date()
+        run_date = today()
 
     resolved = template
     for token, render in _DATE_TOKENS.items():
@@ -96,13 +97,14 @@ class RunSettings(BaseModel):
     #: Bypass the weekend and already-delivered gates. Operator decision for a
     #: re-delivery, never a scheduled value - see ``run_gate``.
     force: bool = False
-    #: Reprocess a past month instead of the current one: ``YYYY-MM`` (or the
-    #: recon folder's ``MONTH_YYYY``), normally ``IFC_RUN__MONTH`` on a one-off
+    #: Reprocess a past month instead of the current one: ``YYYY-MM`` (or
+    #: ``MONTH_YYYY``), normally ``IFC_RUN__MONTH`` on a one-off
     #: RunTask. The run then queries the month before it (``2026-08`` reads
-    #: ``business_date = 2026-07-31``), stamps that as the business month, reads
-    #: that month's recon folder and records the outcome against it - exactly as
-    #: the run that month would have. Unset, the month is the current one. A
-    #: month already delivered still needs ``force``.
+    #: ``business_date = 2026-07-31``), stamps that as the business month and
+    #: records the outcome against it - exactly as the run that month would
+    #: have. The recon document is still read from the current month's folder,
+    #: where upstream lands it. Unset, the month is the current one. A month
+    #: already delivered still needs ``force``.
     month: Optional[str] = None
 
     @field_validator("trigger", mode="before")

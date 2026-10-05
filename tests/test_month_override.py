@@ -2,9 +2,10 @@
 
 A one-off RunTask in October with ``IFC_RUN__MONTH=2026-08`` has to behave
 exactly as the August run did - July's rows (``business_date = 2026-07-31``),
-August's recon folder, July as the business month, the outcome recorded against
-August - while the weekend check and the marker's ``run_date`` stay on the day
-the task actually runs.
+July as the business month, the outcome recorded against August - while the
+weekend check, the marker's ``run_date`` and the recon folder stay on the day
+the task actually runs: upstream lands the recon document in the current
+month's folder.
 """
 
 from __future__ import annotations
@@ -100,8 +101,8 @@ class TestLoadedFromTheEnvironment:
         assert source.business_date == date(2026, 7, 31)
         assert source.query()[1] == ["'2026-07-31'"]
 
-    def test_the_recon_folder_is_augusts(self, settings):
-        assert ReconSource(settings.recon).folder.endswith("/trigger8/AUGUST_2026/")
+    def test_the_recon_folder_is_the_current_months(self, settings):
+        assert ReconSource(settings.recon).folder.endswith("/trigger8/OCTOBER_2026/")
 
     def test_the_records_are_stamped_as_the_august_run_stamped_them(self, settings):
         builder = EnvelopeBuilder(avro_schema=load_schema_document("utility/schema.json"))

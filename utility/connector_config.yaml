@@ -61,8 +61,9 @@ source:
 recon:
   enabled: true
   # Per-trigger recon prefixes, confirmed with the data team. {MONTH}_{YYYY}
-  # expands to the run month's folder - SEPTEMBER_2026 for a September run, or
-  # AUGUST_2026 under IFC_RUN__MONTH=2026-08.
+  # expands to the current month's folder - SEPTEMBER_2026 for a run in
+  # September - even under IFC_RUN__MONTH: upstream lands the recon document in
+  # the current month's folder, so a reprocess run in October reads OCTOBER_2026.
   trigger_paths:
     TRIGGER_8: s3://sit1-pre-cds01-509153454187-eu-west-1/dbx-sit-cds-snsvc0080860-prepared-db/ifc-bdp-audit-recon-json/trigger8/{MONTH}_{YYYY}/
     TRIGGER_9: s3://sit1-pre-cds01-509153454187-eu-west-1/dbx-sit-cds-snsvc0080860-prepared-db/ifc-bdp-audit-recon-json/trigger9/{MONTH}_{YYYY}/
