@@ -83,30 +83,3 @@ def _no_pinned_month() -> Iterator[None]:
     run_gate.set_execution_month(None)
     yield
     run_gate.set_execution_month(None)
-
-
-#: The triggerSubType enum as the BSP registry defines it. The bundled schema
-#: publishes triggerSubType as a plain string, so tests that exercise the
-#: enum-handling code build this variant explicitly.
-REGISTERED_SUBTYPE_SYMBOLS = [
-    "NewHRCRelationship",
-    "AccountInactivity",
-    "MultipleTMSARs",
-    "UBOChanges",
-    "SigChanges",
-]
-
-
-def with_enum_subtype(schema, symbols=None):
-    """A copy of ``schema`` with triggerSubType typed as the registry's enum."""
-    import json
-
-    copied = json.loads(json.dumps(schema))
-    for field in copied["fields"]:
-        if field["name"] == "triggerSubType":
-            field["type"] = {
-                "type": "enum",
-                "name": "TriggerSubType",
-                "symbols": list(REGISTERED_SUBTYPE_SYMBOLS if symbols is None else symbols),
-            }
-    return copied

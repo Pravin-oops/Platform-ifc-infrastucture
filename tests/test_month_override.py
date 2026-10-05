@@ -119,6 +119,31 @@ class TestLoadedFromTheEnvironment:
         assert ReconSource(loaded.recon).folder.endswith("/trigger8/OCTOBER_2026/")
 
 
+class TestTheQueriedBusinessDate:
+    """``IFC_RUN__MONTH`` names the run month; the query reads the last day of
+    the month before it, as that month's scheduled run would have."""
+
+    @pytest.mark.parametrize(
+        "run_month, business_date",
+        [
+            ("2026-09", "2026-08-31"),
+            ("SEPTEMBER_2026", "2026-08-31"),
+            ("2026-10", "2026-09-30"),
+            ("2027-01", "2026-12-31"),
+            ("2028-03", "2028-02-29"),
+        ],
+    )
+    def test_the_query_reads_the_previous_month_end(
+        self, app_root, clean_ifc_env, in_october, monkeypatch, run_month, business_date
+    ):
+        monkeypatch.setenv("IFC_RUN__MONTH", run_month)
+        loaded = load_settings(os.path.join(app_root, "utility", "connector_config.yaml"))
+        loaded.select_trigger(TRIGGER_8)
+
+        source = make_source(loaded.source, trigger=loaded.trigger)
+        assert source.query()[1] == [f"'{business_date}'"]
+
+
 class TestTheRun:
     """Through the runner: the rows queried and the month stamped on them agree."""
 

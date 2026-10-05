@@ -383,7 +383,7 @@ Upstream supplies no customer id, business unit or timestamp — the connector d
 |---|---|
 | `triggerID` (and the Kafka key) | `{system}_{triggerType}_{triggerSubType}_{timestamp}_{sequenceNumber}` — see below |
 | `triggerType` | fixed: `KYCRefresh` for every trigger |
-| `triggerSubType` | the published symbol for the trigger, as a plain string |
+| `triggerSubType` | the published enum symbol for the trigger |
 | `timestamp` | last instant of the **business month**, the month before the run month (UK time): a July 2026 run stamps every record `2026-06-30T23:59:59.999999999Z` |
 | `triggerPostingTimestamp` | when the record is posted, same RFC 3339 format (UTC, nanosecond precision) |
 | `sequenceNumber` | the record's position in the batch — 1, 2, 3… across all customers |

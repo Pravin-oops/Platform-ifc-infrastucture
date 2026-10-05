@@ -5,7 +5,21 @@
     {"name":"triggerID","type":"string"},
     {"name":"triggerType","type":"string"},
 
-    {"name":"triggerSubType","type":"string"},
+    {
+      "name":"triggerSubType",
+      "type":{
+        "type":"enum",
+        "name":"TriggerSubType",
+        "symbols":[
+          "NewHRCRelationship",
+          "AccountInactivity",
+          "MultipleTMSARs",
+          "UBOChanges",
+          "SigChanges"
+        ]
+      }
+    },
+
     {"name":"timestamp","type":"string"},
     {"name":"triggerPostingTimestamp","type":"string"},
     {"name":"sequenceNumber","type":"int"},
