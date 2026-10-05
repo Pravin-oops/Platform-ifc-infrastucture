@@ -617,12 +617,12 @@ A run of Trigger 9 reads the newest row for its own Databricks table:
 ```sql
 SELECT * FROM "<recon database>"."<recon table>"
 WHERE lower(replace(target_table_name, '`', '')) = ?
-      -- 'default_cib-analytics_4460044220833463.cds_write.bdp_corp_ifc_trigger_9'
+      -- 'sit_cds_snsvc0080860_prepared_db.bdb_ifc_synthetic_data_test.bdp_corp_ifc_trigger_9'
 ORDER BY last_modified_ts DESC
 LIMIT 1
 ```
 
-The match ignores backticks and case, so `` `default_cib-analytics_…`.cds_write.BDP_Corp_IFC_Trigger_9 ``
+The match ignores backticks and case, so `` `sit_cds_snsvc0080860_prepared_db`.bdb_ifc_synthetic_data_test.BDP_Corp_IFC_Trigger_9 ``
 and the same name without backticks both match. A rerun of the upstream job **appends a new row**
 with the current timestamp, so the newest row is always upstream's current verdict.
 
@@ -642,7 +642,7 @@ with the current timestamp, so the newest row is always upstream's current verdi
 quotes the row itself — for example:
 
 ```
-Upstream job failed for 2026-10: the dbt model for `default_cib-analytics_4460044220833463`.cds_write.BDP_Corp_IFC_Trigger_9
+Upstream job failed for 2026-10: the dbt model for `sit_cds_snsvc0080860_prepared_db`.bdb_ifc_synthetic_data_test.BDP_Corp_IFC_Trigger_9
 did not run (status=FAILED, source_count=0, target_count=0, error_record_count=0, model_name=…, job_run_id=…, batch_id=…, last_modified_ts=…)
 ```
 

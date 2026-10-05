@@ -71,9 +71,9 @@ recon:
   # target_table_name per trigger: the Databricks table each trigger's model
   # writes. Matched ignoring backticks and case.
   trigger_targets:
-    TRIGGER_8: "`default_cib-analytics_4460044220833463`.cds_write.BDP_Corp_IFC_Trigger_8"
-    TRIGGER_9: "`default_cib-analytics_4460044220833463`.cds_write.BDP_Corp_IFC_Trigger_9"
-    TRIGGER_21: "`default_cib-analytics_4460044220833463`.cds_write.BDP_Corp_IFC_Trigger_21"
+    TRIGGER_8: "`sit_cds_snsvc0080860_prepared_db`.bdb_ifc_synthetic_data_test.BDP_Corp_IFC_Trigger_8"
+    TRIGGER_9: "`sit_cds_snsvc0080860_prepared_db`.bdb_ifc_synthetic_data_test.BDP_Corp_IFC_Trigger_9"
+    TRIGGER_21: "`sit_cds_snsvc0080860_prepared_db`.bdb_ifc_synthetic_data_test.BDP_Corp_IFC_Trigger_21"
 
 kafka:
   # CONFIRM: the CDD trigger topic. The BSP topic table lists

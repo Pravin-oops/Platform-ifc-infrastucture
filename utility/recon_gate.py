@@ -4,7 +4,7 @@ Before any work, this decides whether upstream has anything worth running for.
 The Databricks recon job appends one row per model run to a recon table that
 Athena reads::
 
-    target_table_name   `default_cib-analytics_4460044220833463`.cds_write.BDP_Corp_IFC_Trigger_9
+    target_table_name   `sit_cds_snsvc0080860_prepared_db`.bdb_ifc_synthetic_data_test.BDP_Corp_IFC_Trigger_9
     status              SUCCESS | RECON_FAILED | FAILED
     source_count, target_count, error_record_count
     last_modified_ts    when the row was written (UTC)
@@ -191,7 +191,7 @@ def normalise_target(name: str) -> str:
 
     Databricks names are case-insensitive and the catalog part is quoted with
     backticks because it holds hyphens, so a row written as
-    ```default_cib-analytics_…`.cds_write.BDP_Corp_IFC_Trigger_9`` and a config
+    ```sit_cds_snsvc0080860_prepared_db`.bdb_ifc_synthetic_data_test.BDP_Corp_IFC_Trigger_9`` and a config
     value written without the backticks still match.
     """
     return str(name).replace("`", "").strip().lower()

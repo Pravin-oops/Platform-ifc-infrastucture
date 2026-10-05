@@ -30,8 +30,8 @@ from utility.run_gate import GateOutcome
 
 MONTH = "2026-09"
 TABLE = "ifc_recon_db.recon_audit"
-TARGET_8 = "`default_cib-analytics_4460044220833463`.cds_write.BDP_Corp_IFC_Trigger_8"
-TARGET_9 = "`default_cib-analytics_4460044220833463`.cds_write.BDP_Corp_IFC_Trigger_9"
+TARGET_8 = "`sit_cds_snsvc0080860_prepared_db`.bdb_ifc_synthetic_data_test.BDP_Corp_IFC_Trigger_8"
+TARGET_9 = "`sit_cds_snsvc0080860_prepared_db`.bdb_ifc_synthetic_data_test.BDP_Corp_IFC_Trigger_9"
 
 #: The recon table's columns as Athena reports them.
 RECON_COLUMNS = [
@@ -166,7 +166,7 @@ class TestTheQuery:
             "ORDER BY last_modified_ts DESC LIMIT 1"
         )
         assert request["ExecutionParameters"] == [
-            "'default_cib-analytics_4460044220833463.cds_write.bdp_corp_ifc_trigger_8'"
+            "'sit_cds_snsvc0080860_prepared_db.bdb_ifc_synthetic_data_test.bdp_corp_ifc_trigger_8'"
         ]
         assert request["WorkGroup"] == "ifc_wg"
         assert request["ResultConfiguration"] == {"OutputLocation": "s3://results/athena_output/"}
@@ -185,8 +185,8 @@ class TestTheQuery:
     @pytest.mark.parametrize(
         "written",
         [
-            "default_cib-analytics_4460044220833463.cds_write.BDP_Corp_IFC_Trigger_8",
-            "`DEFAULT_CIB-ANALYTICS_4460044220833463`.CDS_WRITE.bdp_corp_ifc_trigger_8",
+            "sit_cds_snsvc0080860_prepared_db.bdb_ifc_synthetic_data_test.BDP_Corp_IFC_Trigger_8",
+            "`SIT_CDS_SNSVC0080860_PREPARED_DB`.BDB_IFC_SYNTHETIC_DATA_TEST.bdp_corp_ifc_trigger_8",
         ],
     )
     def test_the_target_matches_without_backticks_or_case(self, recon, written):
@@ -205,6 +205,12 @@ class TestTheNewestRowDecides:
         recon.write(a_row(status="FAILED", last_modified_ts="2026-09-03 01:00:00.000"))
         recon.write(a_row(status="RECON_FAILED", last_modified_ts="2026-09-03 02:00:00.000"))
         recon.write(a_row(last_modified_ts="2026-09-03 05:00:00.000"))
+        assert recon.evaluate().proceed
+
+    def test_the_latest_last_modified_ts_wins_not_the_last_row_written(self, recon):
+        recon.write(a_row(last_modified_ts="2026-09-03 05:00:00.000"))
+        recon.write(a_row(status="FAILED", last_modified_ts="2026-09-03 01:00:00.000"))
+        recon.write(a_row(status="RECON_FAILED", last_modified_ts="2026-09-02 23:00:00.000"))
         assert recon.evaluate().proceed
 
     def test_a_rerun_that_failed_overrides_an_earlier_success(self, recon):
@@ -776,7 +782,7 @@ class TestGateActivation:
             settings.select_trigger(trigger)
             assert settings.recon_active
             assert settings.recon.target_table == (
-                f"`default_cib-analytics_4460044220833463`.cds_write.BDP_Corp_IFC_Trigger_{suffix}"
+                f"`sit_cds_snsvc0080860_prepared_db`.bdb_ifc_synthetic_data_test.BDP_Corp_IFC_Trigger_{suffix}"
             )
 
 
