@@ -194,7 +194,6 @@ class KafkaStackFactory:
             settings.schema_registry.url or "",
             token_provider=tokens,
             ca_location=settings.schema_registry.ca_location,
-            ssl_verify=settings.schema_registry.ssl_verify,
             timeout=settings.schema_registry.timeout_seconds,
             backoff=BackoffPolicy(
                 base_seconds=settings.resilience.backoff_base_seconds,

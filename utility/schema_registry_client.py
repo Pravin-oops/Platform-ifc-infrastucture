@@ -17,7 +17,6 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import requests
-import urllib3
 
 from utility import failure_catalog as catalog
 from utility.error_classifier import ConnectorError, PreflightError
@@ -45,20 +44,10 @@ class SchemaRegistryClient:
         backoff: Optional[BackoffPolicy] = None,
         attempts: int = 4,
         shutdown: Optional[ShutdownSignal] = None,
-        ssl_verify: bool = True,
     ):
         self._base_url = base_url.rstrip("/")
         self._tokens = token_provider
-        if ssl_verify:
-            self._verify: Any = ca_location if ca_location else True
-        else:
-            # TEMP (SIT): no CA bundle is available for the registry yet, so the
-            # certificate is not checked and ca_location is never read.
-            logger.warning(
-                "Schema Registry TLS verification is disabled; acceptable for SIT testing only"
-            )
-            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-            self._verify = False
+        self._verify: Any = ca_location if ca_location else True
         self._timeout = timeout
         self._backoff = backoff or BackoffPolicy()
         self._attempts = attempts

@@ -290,9 +290,6 @@ class SchemaRegistrySettings(BaseModel):
     mode: Literal["DEV", "SECURE"] = "SECURE"
     url: Optional[str] = None
     ca_location: Optional[str] = None
-    #: TEMP (SIT): false skips verification of the registry's certificate, so
-    #: ``ca_location`` is not needed. Restore to true once a CA bundle exists.
-    ssl_verify: bool = True
     timeout_seconds: int = Field(default=30, ge=1)
     #: Refresh the SR bearer token this many seconds before its ``exp`` claim.
     token_refresh_margin_seconds: int = Field(default=300, ge=30)
