@@ -97,6 +97,14 @@ def test_an_unreadable_secret_names_the_aws_error(tmp_path):
     assert exc.value.scenario is catalog.AUTHENTICATION_FAILURE
 
 
+def test_an_empty_secret_says_so(tmp_path):
+    """A secret created with no value yet reads as ResourceNotFound, which misleads."""
+    empty = ClientError({"Error": {"Code": "ResourceNotFoundException"}}, "GetSecretValue")
+
+    with pytest.raises(PreflightError, match="may exist but still be empty"):
+        ca_certificate.install(settings(tmp_path), session=FakeSession(empty))
+
+
 def test_the_bsp_yaml_and_the_registry_read_the_file_the_ca_is_written_to():
     """The three paths must agree, or the CA is written where nobody reads it."""
     utility = os.path.join(os.path.dirname(__file__), "..", "utility")

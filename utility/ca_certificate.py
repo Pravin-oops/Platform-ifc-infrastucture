@@ -65,9 +65,16 @@ def _read_secret(settings: CaCertificateSettings, session: Any) -> str:
         # AccessDenied / ResourceNotFound / KMS decrypt: the task role or the
         # secret is misconfigured, which retrying will not fix. Filed as an
         # authentication (truststore) failure, as the CyberArk secrets are.
+        code = exc.response.get("Error", {}).get("Code", "ClientError")
+        hint = (
+            # The template creates the secret empty; it has no value, and so
+            # reads as not found, until the PEM is stored by hand.
+            " - the secret may exist but still be empty: store the CA PEM as its value"
+            if code == "ResourceNotFoundException"
+            else ""
+        )
         raise PreflightError(
-            "Could not read the CA certificate secret: "
-            f"{exc.response.get('Error', {}).get('Code', 'ClientError')}",
+            f"Could not read the CA certificate secret: {code}{hint}",
             catalog.AUTHENTICATION_FAILURE,
             context=context,
             cause=exc,

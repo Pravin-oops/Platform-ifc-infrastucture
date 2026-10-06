@@ -104,8 +104,9 @@ schema_registry:
 # utility/bsp_sit_config.yaml and schema_registry.ca_location above both point
 # at that path. Without a secret_id nothing is fetched (local runs).
 ca_certificate:
-  # CONFIRM: the secret name DevOps create for CARoot.pem.
-  secret_id: /ifc/bsp-event-processor/ca-root
+  # KafkaCABundleSecret in the infrastructure template. Created empty: the PEM
+  # is stored in it by hand, and until then the run fails at this read.
+  secret_id: /ifc/bsp-event-processor/kafka/ca-bundle
   secret_region: eu-west-1
   path: /tmp/ifc-certs/CARoot.pem
 

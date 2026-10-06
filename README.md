@@ -567,7 +567,8 @@ started late on a Sunday evening in BST.
 
 **Barclays root CA.** `CARoot.pem` is neither committed (`.gitignore` excludes `*.pem`, `*.crt`,
 `*.cer`) nor baked into the image. It is one Secrets Manager secret holding the plain PEM,
-`ca_certificate.secret_id` (`/ifc/bsp-event-processor/ca-root`, to confirm). At start, before
+`ca_certificate.secret_id` (`/ifc/bsp-event-processor/kafka/ca-bundle`, the template's
+`KafkaCABundleSecret`, created empty and filled by hand). At start, before
 anything connects, [`utility/ca_certificate.py`](utility/ca_certificate.py) reads it with the ECS
 task role and writes it to `ca_certificate.path` (`/tmp/ifc-certs/CARoot.pem`). Two settings
 point at that file:
