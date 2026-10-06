@@ -38,7 +38,7 @@ producer:
     acks: all
     compression.type: gzip
     #on_delivery: "@delivery_report"
-    request.timeout.ms: 40000
+    # request.timeout.ms is set in connector_config.yaml (kafka.overrides).
     #error_cb: "@error"
     enable.idempotence: True             # MUST                      # MUST
     retries: 2147483647                  # MUST

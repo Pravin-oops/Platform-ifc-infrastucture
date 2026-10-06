@@ -94,7 +94,15 @@ class _BrokerErrors:
 
 
 #: Producer properties safe to log: no credentials, tokens or callbacks.
-_LOGGED_PROPERTIES = ("security.protocol", "sasl.mechanism", "ssl.ca.location", "ssl.endpoint.identification.algorithm")
+_LOGGED_PROPERTIES = (
+    "security.protocol",
+    "sasl.mechanism",
+    "ssl.ca.location",
+    "ssl.endpoint.identification.algorithm",
+    "request.timeout.ms",
+    "connections.max.idle.ms",
+    "metadata.max.age.ms",
+)
 
 
 @dataclass
@@ -194,13 +202,17 @@ class KafkaStackFactory:
         ca_location = effective.get("ssl.ca.location")
         logger.info(
             "Kafka client config: security.protocol=%s sasl.mechanism=%s ssl.ca.location=%s "
-            "(exists=%s) brokers=%d ports=%s",
+            "(exists=%s) brokers=%d ports=%s request.timeout.ms=%s connections.max.idle.ms=%s "
+            "metadata.max.age.ms=%s",
             effective["security.protocol"],
             effective["sasl.mechanism"],
             ca_location,
             bool(ca_location) and os.path.exists(str(ca_location)),
             len(brokers),
             sorted({port for _host, port in brokers}),
+            effective["request.timeout.ms"],
+            effective["connections.max.idle.ms"],
+            effective["metadata.max.age.ms"],
             extra={
                 **{key.replace(".", "_"): value for key, value in effective.items()},
                 "bootstrap_servers": [f"{host}:{port}" for host, port in brokers],

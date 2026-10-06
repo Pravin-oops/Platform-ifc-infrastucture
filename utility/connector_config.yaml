@@ -85,7 +85,14 @@ kafka:
   max_message_bytes: 819200
   flush_timeout_seconds: 120
   local_queue_max_messages: 20000
-  overrides: {}
+  # librdkafka properties applied over the BSP client config. These match the
+  # Trigger Backbone team's Java producer. Their session.timeout.ms (30000) is
+  # left out: it is a consumer property, and librdkafka ignores it on a
+  # producer with a CONFWARN.
+  overrides:
+    request.timeout.ms: 60000
+    connections.max.idle.ms: 300000
+    metadata.max.age.ms: 300000
 
 schema_registry:
   mode: SECURE
