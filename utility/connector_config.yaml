@@ -93,6 +93,10 @@ kafka:
     request.timeout.ms: 60000
     connections.max.idle.ms: 300000
     metadata.max.age.ms: 300000
+  # librdkafka debug trace, for diagnosis only (verbose). Set per task with
+  # IFC_KAFKA__DEBUG=security,broker,protocol rather than here; 'all' and
+  # 'conf' are refused because they print the client config.
+  # debug: security,broker,protocol
 
 schema_registry:
   mode: SECURE

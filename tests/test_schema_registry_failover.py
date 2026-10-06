@@ -263,3 +263,106 @@ class TestBrokerDiagnostics:
         errors("boom")
 
         assert seen == ["boom"] and errors.recent == ["boom"]
+
+
+class TestLibrdkafkaDebug:
+    """kafka.debug routes librdkafka's trace into the logs and keeps what led to a failure."""
+
+    def test_debug_is_routed_into_the_logs_at_level_7(self):
+        settings = load_settings(CONFIG)
+        settings.kafka.debug = "security,broker,protocol"
+        factory = KafkaStackFactory(settings, metrics=None, shutdown=ShutdownSignal())
+
+        config = factory._producer_config(None)
+
+        assert set(config["debug"].split(",")) == {"security", "broker", "protocol"}
+        assert config["log_level"] == 7
+        assert config["logger"].name == "librdkafka"
+
+    def test_without_debug_nothing_is_routed(self):
+        factory = KafkaStackFactory(load_settings(CONFIG), metrics=None, shutdown=ShutdownSignal())
+
+        config = factory._producer_config(None)
+
+        assert "debug" not in config and "logger" not in config
+
+    @pytest.mark.parametrize("contexts", ["all", "security,conf"])
+    def test_contexts_that_print_the_config_are_refused(self, contexts):
+        settings = load_settings(CONFIG)
+
+        with pytest.raises(ValueError, match="must not include"):
+            type(settings.kafka)(**{**settings.kafka.model_dump(), "debug": contexts})
+
+    def test_key_lines_skip_lines_that_only_name_a_sasl_ssl_broker(self):
+        from utility.kafka_factory import _LibrdkafkaTrace
+
+        trace = _LibrdkafkaTrace()
+        for line in [
+            "INIT [rdkafka#producer-1] [thrd:app]: librdkafka initialized (builtin.features ssl,sasl)",
+            "CONNECT [rdkafka#producer-1] [thrd:sasl_ssl://b:9095/bootstrap]: sasl_ssl://b:9095/bootstrap: Connecting",
+            "SSL [rdkafka#producer-1] [thrd:sasl_ssl://b:9095/bootstrap]: sasl_ssl://b:9095/bootstrap: certificate verify failed",
+            "SASL [rdkafka#producer-1] [thrd:sasl_ssl://b:9095/bootstrap]: sasl_ssl://b:9095/bootstrap: Send SASL OAUTHBEARER frame",
+        ]:
+            trace.lines.append(line)
+
+        assert trace.key_lines(10) == trace_lines_about_tls_and_sasl(trace)
+
+
+def trace_lines_about_tls_and_sasl(trace):
+    return [line for line in trace.lines if line.startswith(("SSL ", "SASL "))]
+
+
+class TestObservedOauthCallback:
+    """What the BSP oauth_cb hands librdkafka is logged, never the token."""
+
+    @staticmethod
+    def token(sub="svc@REALM"):
+        import base64 as b64
+
+        claims = b64.urlsafe_b64encode(json.dumps({"sub": sub, "exp": 1}).encode()).decode().rstrip("=")
+        return f"e30.{claims}.secret-signature"
+
+    def run(self, caplog, result):
+        import logging as logging_module
+
+        from utility.kafka_factory import _observed_oauth_cb
+
+        with caplog.at_level(logging_module.INFO, logger="utility.kafka_factory"):
+            returned = _observed_oauth_cb(lambda _config: result)("cfg")
+        return returned, caplog.records
+
+    def test_a_valid_token_is_passed_through_and_described(self, caplog):
+        import time as time_module
+
+        result = (self.token(), time_module.time() + 3600)
+        returned, records = self.run(caplog, result)
+
+        assert returned is result
+        described = records[-1]
+        assert "expires_in_seconds=3600" in described.getMessage() or "expires_in_seconds=3599" in described.getMessage()
+        assert described.oauth_token_claims["sub"] == "svc@REALM"
+        assert "secret-signature" not in " ".join(r.getMessage() for r in records)
+
+    def test_an_expired_token_is_an_error(self, caplog):
+        import time as time_module
+
+        _, records = self.run(caplog, (self.token(), time_module.time() - 10))
+
+        assert any(r.levelname == "ERROR" and "already expired" in r.getMessage() for r in records)
+
+    def test_a_millisecond_expiry_is_flagged(self, caplog):
+        import time as time_module
+
+        _, records = self.run(caplog, (self.token(), time_module.time() * 1000))
+
+        assert any(r.levelname == "WARNING" and "milliseconds" in r.getMessage() for r in records)
+
+    def test_a_failing_callback_is_logged_and_still_raises(self, caplog):
+        from utility.kafka_factory import _observed_oauth_cb
+
+        def broken(_config):
+            raise RuntimeError("BAM unreachable")
+
+        with pytest.raises(RuntimeError, match="BAM unreachable"):
+            _observed_oauth_cb(broken)("cfg")
+        assert any("oauth_cb raised RuntimeError" in r.getMessage() for r in caplog.records)

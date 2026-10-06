@@ -8,11 +8,15 @@ only failures left are genuine runtime ones.
 
 from __future__ import annotations
 
+import base64
+import json
 import logging
 import os
+import re
+import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Deque, Dict, List, Optional
+from typing import Any, Callable, Deque, Dict, List, Optional
 
 from utility import ca_certificate
 from utility.auth_helper import BSPClient, TokenProvider
@@ -93,6 +97,99 @@ class _BrokerErrors:
         return list(self._messages)
 
 
+class _LibrdkafkaTrace(logging.Handler):
+    """Keeps librdkafka's most recent log lines, to show what led to a failure.
+
+    confluent-kafka queues librdkafka's lines for the Python ``logger`` until
+    ``poll()``; the failed metadata request polls, so the lines arrive then.
+    """
+
+    #: The lines that say why a connection did not get through.
+    KEY_LINE = re.compile(
+        r"SSL|SASL|OAUTH|AUTH|FAIL|ERROR|certificate|handshake|disconnect|closed|refused|denied|token|expired",
+        re.IGNORECASE,
+    )
+
+    def __init__(self, keep: int = 400):
+        super().__init__(logging.DEBUG)
+        self.lines: Deque[str] = deque(maxlen=keep)
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.lines.append(record.getMessage())
+
+    #: A broker's name carries its protocol (sasl_ssl://host:port), which would
+    #: make every line about that broker look like a SASL/SSL line.
+    BROKER_NAME = re.compile(r"\b(?:sasl_ssl|sasl_plaintext|ssl|plaintext)://\S+", re.IGNORECASE)
+
+    def key_lines(self, limit: int) -> List[str]:
+        return [
+            line
+            for line in self.lines
+            # INIT is librdkafka's start-up banner, listing its ssl/sasl features.
+            if not line.startswith("INIT ") and self.KEY_LINE.search(self.BROKER_NAME.sub("", line))
+        ][-limit:]
+
+
+def _jwt_claims(token: str) -> Dict[str, Any]:
+    """The JWT's identifying claims, unverified, without the signature or the token."""
+    try:
+        payload = token.split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    except (IndexError, ValueError, TypeError):
+        return {}
+    return {key: claims.get(key) for key in ("sub", "iss", "aud", "exp") if key in claims}
+
+
+def _observed_oauth_cb(callback: Callable[[Any], Any]) -> Callable[[Any], Any]:
+    """Wrap the BSP client's ``oauth_cb`` to log what it gives librdkafka.
+
+    The brokers get their token through this callback, not through the
+    ``get_token`` call the Schema Registry uses, so a token the registry
+    accepts says nothing about this path. confluent-kafka expects
+    ``(token, expiry in epoch seconds[, principal, extensions])``; an expiry in
+    milliseconds, an exception, or the wrong shape leaves SASL waiting and the
+    metadata request failing as ``_TRANSPORT``. Never logs the token itself.
+    """
+
+    def observed(oauth_config: Any) -> Any:
+        try:
+            result = callback(oauth_config)
+        except Exception as exc:
+            logger.error("oauth_cb raised %s: %s; librdkafka has no token for SASL", type(exc).__name__, exc)
+            raise
+
+        parts = result if isinstance(result, (tuple, list)) else (result,)
+        token = parts[0] if parts else None
+        expiry = parts[1] if len(parts) > 1 else None
+        expires_in = expiry - time.time() if isinstance(expiry, (int, float)) else None
+        logger.info(
+            "oauth_cb supplied a token: shape=%d-tuple token_type=%s expires_in_seconds=%s principal=%s",
+            len(parts),
+            type(token).__name__,
+            round(expires_in) if expires_in is not None else None,
+            parts[2] if len(parts) > 2 else None,
+            extra={
+                "oauth_token_claims": _jwt_claims(token) if isinstance(token, str) else {},
+                "oauth_expiry_raw": expiry,
+            },
+        )
+        if expires_in is not None and expires_in <= 0:
+            logger.error(
+                "oauth_cb returned a token that has already expired (expiry=%s); librdkafka "
+                "rejects it and SASL cannot authenticate",
+                expiry,
+            )
+        elif expires_in is not None and expires_in > 7 * 24 * 3600:
+            logger.warning(
+                "oauth_cb expiry %s is more than 7 days away; if it is in milliseconds, librdkafka "
+                "accepts the token but never refreshes it before the real expiry",
+                expiry,
+            )
+        return result
+
+    return observed
+
+
 #: Producer properties safe to log: no credentials, tokens or callbacks.
 _LOGGED_PROPERTIES = (
     "security.protocol",
@@ -134,6 +231,7 @@ class KafkaStackFactory:
         self._producer_factory = producer_factory
         self._report = pf.PreflightReport()
         self._broker_errors: Optional[_BrokerErrors] = None
+        self._trace: Optional[_LibrdkafkaTrace] = None
 
     @property
     def report(self) -> pf.PreflightReport:
@@ -175,6 +273,9 @@ class KafkaStackFactory:
 
         config = bsp.producer_config(overrides) if bsp is not None else overrides
         config["error_cb"] = self._broker_errors = _BrokerErrors(config.get("error_cb"))
+        if callable(config.get("oauth_cb")):
+            config["oauth_cb"] = _observed_oauth_cb(config["oauth_cb"])
+        self._enable_debug(config)
         self._log_client_config(config)
 
         if not self._producer_factory:
@@ -189,6 +290,29 @@ class KafkaStackFactory:
             self._producer_factory = Producer
 
         return config
+
+    def _enable_debug(self, config: Dict[str, Any]) -> None:
+        """Route librdkafka's debug trace into the JSON logs when kafka.debug is set.
+
+        Also honours a ``debug`` property that arrived through kafka.overrides
+        or the BSP config, so the trace is never left on stderr unparsed.
+        """
+        debug = self._settings.kafka.debug or config.get("debug")
+        if not debug:
+            return
+
+        rdkafka = logging.getLogger("librdkafka")
+        # Its own level, so the trace appears even when the run logs at INFO.
+        rdkafka.setLevel(logging.DEBUG)
+        for handler in [h for h in rdkafka.handlers if isinstance(h, _LibrdkafkaTrace)]:
+            rdkafka.removeHandler(handler)
+        self._trace = _LibrdkafkaTrace()
+        rdkafka.addHandler(self._trace)
+
+        config["debug"] = debug
+        config["log_level"] = 7
+        config["logger"] = rdkafka
+        logger.warning("librdkafka debug is on (%s); turn it off once diagnosed", debug)
 
     @staticmethod
     def _log_client_config(config: Dict[str, Any]) -> None:
@@ -338,9 +462,30 @@ class KafkaStackFactory:
                 # "N/N brokers are down" only restates the failure; keep it
                 # only when nothing more specific was reported.
                 reasons = [r for r in reasons if "_ALL_BROKERS_DOWN" not in r] or reasons
-                if not reasons:
+
+                key_lines: List[str] = []
+                if self._trace is not None:
+                    # poll() above released the trace queued during the request.
+                    key_lines = self._trace.key_lines(40)
+                    logger.error(
+                        "librdkafka trace before the failed metadata request: %d lines, %d about "
+                        "TLS/SASL/auth or failures",
+                        len(self._trace.lines),
+                        len(key_lines),
+                        extra={
+                            "librdkafka_key_lines": key_lines,
+                            "librdkafka_trace": list(self._trace.lines)[-200:],
+                        },
+                    )
+
+                detail = []
+                if reasons:
+                    detail.append(f"broker errors: {' | '.join(reasons)}")
+                if key_lines:
+                    detail.append(f"last librdkafka lines: {' | '.join(key_lines[-5:])}")
+                if not detail:
                     raise
-                raise RuntimeError(f"{exc}; broker errors: {' | '.join(reasons)}") from exc
+                raise RuntimeError(f"{exc}; {'; '.join(detail)}") from exc
             topic_metadata = metadata.topics.get(topic)
 
             if topic_metadata is None:

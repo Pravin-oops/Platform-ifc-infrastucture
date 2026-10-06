@@ -284,6 +284,19 @@ class KafkaSettings(BaseModel):
     #: Extra librdkafka properties merged over whatever the BSP client returns.
     #: Anything security-related is deliberately left to BSP.
     overrides: Dict[str, Any] = Field(default_factory=dict)
+    #: librdkafka debug contexts, e.g. ``security,broker,protocol``. Turns on
+    #: librdkafka's own trace (log level 7) into the connector's JSON logs, and
+    #: logs the lines leading up to a failed metadata request. For diagnosis
+    #: only: it is verbose. Never ``all`` or ``conf``, which print the config.
+    debug: Optional[str] = None
+
+    @field_validator("debug")
+    @classmethod
+    def _no_config_dump(cls, value: Optional[str]) -> Optional[str]:
+        contexts = {part.strip().lower() for part in (value or "").split(",") if part.strip()}
+        if contexts & {"all", "conf"}:
+            raise ValueError("kafka.debug must not include 'all' or 'conf': they print the client config")
+        return ",".join(sorted(contexts)) or None
 
 
 class SchemaRegistrySettings(BaseModel):
