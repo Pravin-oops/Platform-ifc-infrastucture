@@ -80,7 +80,7 @@ kafka:
   # tc01_fncmtrgrbb_ifc_tbb_kyc_refresh for CDD (DEV).
   topic: tc01_fncmtrgrbb_ifc_tbb_kyc_refresh
   # The BSP client YAML (librdkafka properties), not this file.
-  bsp_config_path: s3://devaprocessedlayer-691850678096-emea/triggerbackbone/producer_app/config/bsp_uat_config.yaml
+  bsp_config_path: utility/bsp_sit_config.yaml
   # Broker limit is 800 KB; the guard sits just under it.
   max_message_bytes: 819200
   flush_timeout_seconds: 120
@@ -91,6 +91,9 @@ schema_registry:
   mode: SECURE
   url: https://ldndsr000010177.intranet.barcapint.com:8095
   ca_location: /apps/external/5/deva/bsp/bsp-installer/bsp/etc/CARoot.pem
+  # TEMP (SIT): no CA bundle for the registry yet, so its certificate is not
+  # verified and ca_location is ignored. Set back to true once one exists.
+  ssl_verify: false
   timeout_seconds: 30
   token_refresh_margin_seconds: 300
   # Attempts at each registry request before preflight fails.
