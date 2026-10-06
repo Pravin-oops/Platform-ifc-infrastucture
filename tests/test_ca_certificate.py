@@ -115,3 +115,6 @@ def test_the_bsp_yaml_and_the_registry_read_the_file_the_ca_is_written_to():
     assert connector.ca_certificate.secret_id
     assert connector.schema_registry.ca_location == connector.ca_certificate.path
     assert bsp["security"]["ssl.ca.location"] == connector.ca_certificate.path
+    # librdkafka reads ssl.ca.location only over TLS, and the brokers accept
+    # nothing but SASL_SSL.
+    assert bsp["security"]["security.protocol"] == "SASL_SSL"

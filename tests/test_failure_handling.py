@@ -84,6 +84,13 @@ class TestClassifier:
                 "NETWORK_CONNECTIVITY_FAILURE",
             ),
             (FakeKafkaError("_TIMED_OUT", message="Local: Timed out"), "HIGH_KAFKA_PUBLISH_LATENCY"),
+            (
+                RuntimeError(
+                    'KafkaError{code=_INVALID_ARG,val=-186,str="Failed to create producer: '
+                    'ssl.ca.location failed: error:05880020:x509 certificate routines::BIO lib"}'
+                ),
+                "AUTHENTICATION_FAILURE",
+            ),
             (MemoryError(), "PRODUCER_OUT_OF_MEMORY"),
         ],
     )

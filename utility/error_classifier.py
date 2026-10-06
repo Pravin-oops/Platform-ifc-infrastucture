@@ -99,6 +99,9 @@ _PATTERNS: Sequence[Tuple[Scenario, List[str]]] = (
             "SSLHANDSHAKEEXCEPTION", "SSL HANDSHAKE", "CERTIFICATE VERIFY FAILED",
             "AUTHENTICATION FAILED", "INVALID_GRANT", "UNAUTHORIZED", "HTTP 401",
             "STATUS=401", "MALFORMED JWT", "TOKEN EXPIRED", "BAM TOKEN",
+            # librdkafka failing to load the CA file at producer creation. It
+            # carries _INVALID_ARG, which would otherwise read as a schema fault.
+            "SSL.CA.LOCATION FAILED",
         ],
     ),
     (

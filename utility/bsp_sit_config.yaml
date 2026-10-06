@@ -10,7 +10,10 @@ servers:
 
 # Provide protocol used to communicate with brokers, SASL mechanism used for client connections, SSL certificate and CA Locations (optional)
 security:
-  security.protocol: PLAINTEXT
+  # SASL_SSL: the only protocol the Barclays brokers accept. TLS verified with
+  # ssl.ca.location below, then SASL OAUTHBEARER with the BAM token. Anything
+  # else is dropped by the broker: "Local broker transport failure" (_TRANSPORT).
+  security.protocol: SASL_SSL
   sasl.mechanism: OAUTHBEARER
   # Written from Secrets Manager at container start: ca_certificate.path in connector_config.yaml.
   ssl.ca.location: /tmp/ifc-certs/CARoot.pem
