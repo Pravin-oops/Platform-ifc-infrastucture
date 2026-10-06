@@ -15,3 +15,10 @@ local_out/
 # tracked - and secrets go in CyberArk, which is neither.
 .env.local
 *.env.secret
+
+# CA certificates (CARoot.pem) are never committed: the image build takes the
+# Barclays root CA as a BuildKit secret (see Docker/Dockerfile).
+certs/
+*.pem
+*.crt
+*.cer

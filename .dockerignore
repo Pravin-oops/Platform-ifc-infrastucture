@@ -22,3 +22,8 @@ htmlcov/
 pyproject.toml
 run_tests.sh
 run_tests.ps1
+# The CA reaches the build as a --secret, never through the context.
+certs/
+*.pem
+*.crt
+*.cer

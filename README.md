@@ -557,7 +557,7 @@ into `utility/` and `scripts/`, and Docker refuses to copy from outside the cont
 file with `-f` and the context as the final argument.
 
 ```bash
-docker build -f Docker/Dockerfile -t ifc-trigger-connector:0.0.4 .
+docker build -f Docker/Dockerfile --secret id=ca_root,src=/path/to/CARoot.pem -t ifc-trigger-connector:0.0.4 .
 ```
 
 `tzdata` is in `requirements.txt` deliberately: [`utility/run_gate.py`](utility/run_gate.py)
@@ -565,16 +565,21 @@ resolves the weekday in `Europe/London` through `zoneinfo`, and a slim RHEL imag
 system zone database. Without it the gate silently falls back to UTC, which misreads a run
 started late on a Sunday evening in BST.
 
-**Barclays root CA.** On RHEL the supported route is the anchors directory plus a re-extract,
-rather than overwriting the extracted bundle (which the next `update-ca-trust` run would undo):
+**Barclays root CA.** The Schema Registry's certificate chains to the Barclays root CA
+(`CARoot.pem`), and the registry cannot be reached without it. The file is **never committed**
+(`.gitignore` and `.dockerignore` exclude `*.pem`, `*.crt`, `*.cer` and `certs/`): the build
+takes it as a BuildKit secret, `--secret id=ca_root,src=...`, mounted for the one step that
+adds it to the anchors directory and re-extracts. That is the supported RHEL route, rather than
+overwriting the extracted bundle, which the next `update-ca-trust` run would undo. The build
+fails without the secret.
 
-```dockerfile
-COPY certs/barclays-root-ca.pem /etc/pki/ca-trust/source/anchors/
-RUN update-ca-trust extract
-```
+The result is `/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem`, the base image's CAs plus the
+Barclays root, which `schema_registry.ca_location` and `cyberark.ca_bundle_path` both point at.
 
-That produces `/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem`, the path
-`utility/cyberark_ccp_fetch.py` and the CyberArk config already expect.
+In GitLab CI, store `CARoot.pem` as a CI/CD variable of type **File** (protected), say
+`CA_ROOT_PEM`; GitLab writes it to a temporary file and puts that file's path in the variable.
+The build job then passes `--secret id=ca_root,src="$CA_ROOT_PEM"`, with BuildKit enabled
+(`DOCKER_BUILDKIT=1` on Docker versions before 23).
 
 `.dockerignore` stays at the context root, which is where both the classic builder and BuildKit
 look for it.

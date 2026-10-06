@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # RHEL 8 image for the IFC trigger connector.
 #
 # The base image already provides Python 3.12 on PATH as `python`, plus the
@@ -7,7 +8,10 @@
 # below reach into utility/ and scripts/, and Docker refuses to copy from outside
 # the context. Pass the file with -f and the context as the final argument:
 #
-#     docker build -f Docker/Dockerfile -t ifc-trigger-connector:0.0.4 .
+#     docker build -f Docker/Dockerfile --secret id=ca_root,src=/path/to/CARoot.pem \
+#         -t ifc-trigger-connector:0.0.4 .
+#
+# The --secret is required: see the CA step below.
 #
 # .dockerignore stays at the context root, which is where both the classic
 # builder and BuildKit look for it by default.
@@ -56,13 +60,17 @@ RUN pip install -r /tmp/requirements.txt \
 COPY --chown=connector:connector utility/ /app/ifc_trigger_connector/utility/
 COPY --chown=connector:connector scripts/ /app/ifc_trigger_connector/scripts/
 
-# The Barclays root CA is mounted or baked in per environment; the app searches
-# the candidate paths in utility/cyberark_ccp_fetch.py and falls back to the system
-# store (/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem). To bake one in, add
-# it to the anchors directory and re-extract, before USER below:
-#
-#   COPY certs/barclays-root-ca.pem /etc/pki/ca-trust/source/anchors/
-#   RUN update-ca-trust extract
+# Barclays root CA (CARoot.pem), which the Schema Registry's certificate chains
+# to. It is never committed: the build takes it as a BuildKit secret, mounted
+# for this one step only, so it is in neither the repository nor the build
+# context. It is added to the system trust store, so
+# /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem - the schema_registry and
+# cyberark ca paths - carries it alongside the base image's own CAs. The build
+# fails without the secret: in SECURE mode an image without it cannot fetch a
+# schema id. Runs as root, so it sits before USER below.
+RUN --mount=type=secret,id=ca_root,required=true \
+    cp /run/secrets/ca_root /etc/pki/ca-trust/source/anchors/barclays-ca-root.pem \
+    && update-ca-trust extract
 
 USER connector
 

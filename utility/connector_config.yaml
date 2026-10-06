@@ -90,7 +90,9 @@ kafka:
 schema_registry:
   mode: SECURE
   url: https://ldndsr000010177.intranet.barcapint.com:8095
-  ca_location: /apps/external/5/deva/bsp/bsp-installer/bsp/etc/CARoot.pem
+  # The system trust store, which the image build extends with the Barclays
+  # root CA (the ca_root build secret, see Docker/Dockerfile).
+  ca_location: /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
   timeout_seconds: 30
   token_refresh_margin_seconds: 300
   # Attempts at each registry request before preflight fails.
