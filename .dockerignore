@@ -22,8 +22,10 @@ htmlcov/
 pyproject.toml
 run_tests.sh
 run_tests.ps1
-# The CA reaches the build as a --secret, never through the context.
-certs/
-*.pem
-*.crt
-*.cer
+# Only certs/ may bring CA certificates into the build: the Dockerfile adds
+# what it holds to the system trust store. Exceptions come last to win.
+**/*.pem
+**/*.crt
+**/*.cer
+!certs/*.pem
+!certs/*.crt

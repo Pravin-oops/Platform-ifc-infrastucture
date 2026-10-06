@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 # RHEL 8 image for the IFC trigger connector.
 #
 # The base image already provides Python 3.12 on PATH as `python`, plus the
@@ -8,10 +7,9 @@
 # below reach into utility/ and scripts/, and Docker refuses to copy from outside
 # the context. Pass the file with -f and the context as the final argument:
 #
-#     docker build -f Docker/Dockerfile --secret id=ca_root,src=/path/to/CARoot.pem \
-#         -t ifc-trigger-connector:0.0.4 .
+#     docker build -f Docker/Dockerfile -t ifc-trigger-connector:0.0.4 .
 #
-# The --secret is required: see the CA step below.
+# Put the Barclays root CA in certs/ first: see the CA step below.
 #
 # .dockerignore stays at the context root, which is where both the classic
 # builder and BuildKit look for it by default.
@@ -61,16 +59,28 @@ COPY --chown=connector:connector utility/ /app/ifc_trigger_connector/utility/
 COPY --chown=connector:connector scripts/ /app/ifc_trigger_connector/scripts/
 
 # Barclays root CA (CARoot.pem), which the Schema Registry's certificate chains
-# to. It is never committed: the build takes it as a BuildKit secret, mounted
-# for this one step only, so it is in neither the repository nor the build
-# context. It is added to the system trust store, so
+# to. certs/ is in the repository but git ignores its contents, so the CA is
+# never committed: it is dropped there locally before the build. Every *.pem
+# and *.crt there is added to the system trust store, so
 # /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem - the schema_registry and
-# cyberark ca paths - carries it alongside the base image's own CAs. The build
-# fails without the secret: in SECURE mode an image without it cannot fetch a
-# schema id. Runs as root, so it sits before USER below.
-RUN --mount=type=secret,id=ca_root,required=true \
-    cp /run/secrets/ca_root /etc/pki/ca-trust/source/anchors/barclays-ca-root.pem \
-    && update-ca-trust extract
+# cyberark ca paths - carries it alongside the base image's own CAs.
+#
+# An empty certs/ (a fresh clone, as in CI) only warns rather than failing the
+# build, but such an image cannot fetch a schema id in SECURE mode. Runs as
+# root, so it sits before USER below.
+COPY certs/ /tmp/certs/
+RUN found=0; \
+    for cert in /tmp/certs/*.pem /tmp/certs/*.crt; do \
+        [ -f "$cert" ] || continue; \
+        cp "$cert" /etc/pki/ca-trust/source/anchors/ || exit 1; \
+        found=1; \
+    done; \
+    rm -rf /tmp/certs; \
+    if [ "$found" = 1 ]; then \
+        update-ca-trust extract; \
+    else \
+        echo "WARNING: certs/ holds no CA certificate; the image trusts only the base image's CAs" >&2; \
+    fi
 
 USER connector
 
