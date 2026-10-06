@@ -565,19 +565,21 @@ resolves the weekday in `Europe/London` through `zoneinfo`, and a slim RHEL imag
 system zone database. Without it the gate silently falls back to UTC, which misreads a run
 started late on a Sunday evening in BST.
 
-**Barclays root CA.** The Schema Registry's certificate chains to the Barclays root CA
-(`CARoot.pem`), and the registry cannot be reached without it. The file is **never committed**.
-[`certs/`](certs/README.md) is in the repository, but git ignores everything in it except its
-README. Drop `CARoot.pem` there before building. The build copies every `*.pem` and `*.crt` in
-`certs/` into the anchors directory and re-extracts. That is the supported RHEL route, rather
-than overwriting the extracted bundle, which the next `update-ca-trust` run would undo.
+**Barclays root CA.** `CARoot.pem` is neither committed (`.gitignore` excludes `*.pem`, `*.crt`,
+`*.cer`) nor baked into the image. It is one Secrets Manager secret holding the plain PEM,
+`ca_certificate.secret_id` (`/ifc/bsp-event-processor/ca-root`, to confirm). At start, before
+anything connects, [`utility/ca_certificate.py`](utility/ca_certificate.py) reads it with the ECS
+task role and writes it to `ca_certificate.path` (`/tmp/ifc-certs/CARoot.pem`). Two settings
+point at that file:
 
-The result is `/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem`, the base image's CAs plus the
-Barclays root, which `schema_registry.ca_location` and `cyberark.ca_bundle_path` both point at.
+- `ssl.ca.location` in [`utility/bsp_sit_config.yaml`](utility/bsp_sit_config.yaml), for the
+  broker connection;
+- `schema_registry.ca_location`, for the Schema Registry.
 
-An empty `certs/` does not fail the build; it logs a warning and the image trusts only the base
-image's CAs. A build from a fresh clone, as in CI, is always in that state, so an image that
-has to reach the Schema Registry must be built where `certs/` holds the CA.
+The task role needs `secretsmanager:GetSecretValue` on the secret, as it already has on the
+CyberArk certificate secrets. A missing, empty or non-PEM secret fails the run before any
+record is read. The CyberArk call keeps the system trust store, which already trusts the CCP
+host.
 
 `.dockerignore` stays at the context root, which is where both the classic builder and BuildKit
 look for it.

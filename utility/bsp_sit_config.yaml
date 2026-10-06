@@ -12,7 +12,8 @@ servers:
 security:
   security.protocol: PLAINTEXT
   sasl.mechanism: OAUTHBEARER
-  ssl.ca.location: C:/Users/X01327066/bsp_kafka/bsp-installer/bsp/etc/CARoot.pem
+  # Written from Secrets Manager at container start: ca_certificate.path in connector_config.yaml.
+  ssl.ca.location: /tmp/ifc-certs/CARoot.pem
 
 credentials:
   method: env

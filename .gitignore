@@ -16,13 +16,8 @@ local_out/
 .env.local
 *.env.secret
 
-# CA certificates (CARoot.pem) are never committed. certs/ itself is tracked so
-# the folder exists in every checkout, but only its README is: drop the
-# Barclays root CA in it locally and the image build picks it up (see
-# Docker/Dockerfile). `certs/*`, not `certs/`, or the README could not be
-# re-included.
-certs/*
-!certs/README.md
+# Certificates are never committed: the Barclays root CA comes from Secrets
+# Manager at container start (utility/ca_certificate.py).
 *.pem
 *.crt
 *.cer

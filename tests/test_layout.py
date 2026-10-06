@@ -22,6 +22,7 @@ UTILITY_MODULES = [
     "athena_query",
     "audit_utility",
     "auth_helper",
+    "ca_certificate",
     "connector_config",
     "connector_runner",
     "connector_utility",

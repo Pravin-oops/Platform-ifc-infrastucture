@@ -90,14 +90,24 @@ kafka:
 schema_registry:
   mode: SECURE
   url: https://ldndsr000010177.intranet.barcapint.com:8095
-  # The system trust store, which the image build extends with the Barclays
-  # root CA dropped in certs/ (see Docker/Dockerfile and certs/README.md).
-  ca_location: /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
+  # The Barclays root CA, written at container start (ca_certificate below).
+  ca_location: /tmp/ifc-certs/CARoot.pem
   timeout_seconds: 30
   token_refresh_margin_seconds: 300
   # Attempts at each registry request before preflight fails.
   max_attempts: 5
   schema_path: utility/schema.json
+
+# Barclays root CA (CARoot.pem). Never committed or baked into the image: one
+# Secrets Manager secret holding the plain PEM, read with the ECS task role and
+# written to `path` before anything connects. ssl.ca.location in
+# utility/bsp_sit_config.yaml and schema_registry.ca_location above both point
+# at that path. Without a secret_id nothing is fetched (local runs).
+ca_certificate:
+  # CONFIRM: the secret name DevOps create for CARoot.pem.
+  secret_id: /ifc/bsp-event-processor/ca-root
+  secret_region: eu-west-1
+  path: /tmp/ifc-certs/CARoot.pem
 
 # CyberArk Central Credential Provider (CCP), client-certificate authentication.
 # Locations only: the client certificate and key are read from the Secrets

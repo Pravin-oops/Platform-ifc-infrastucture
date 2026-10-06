@@ -12,6 +12,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
+from utility import ca_certificate
 from utility.auth_helper import BSPClient, TokenProvider
 from utility.cyberark_ccp_fetch import CyberArkAuthenticator
 from utility import failure_catalog as catalog
@@ -272,6 +273,10 @@ class KafkaStackFactory:
 
     def build(self) -> KafkaStack:
         settings = self._settings
+
+        # First: the BSP client YAML's ssl.ca.location and the Schema Registry
+        # client both read this file, and neither can be built without it.
+        ca_certificate.install(settings.ca_certificate)
 
         bsp = self._bsp_client()
         config = self._producer_config(bsp)

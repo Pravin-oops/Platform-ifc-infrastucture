@@ -311,6 +311,23 @@ class SchemaRegistrySettings(BaseModel):
         return self
 
 
+class CaCertificateSettings(BaseModel):
+    """The Barclays root CA, fetched from Secrets Manager at container start.
+
+    Written to ``path`` before the BSP client is built; ``ssl.ca.location`` in
+    the BSP client YAML and ``schema_registry.ca_location`` point at the same
+    file. No ``secret_id`` means nothing is fetched, for a local run that has
+    the CA on disk already.
+    """
+
+    #: Secrets Manager name or ARN of the CA certificate, a plain PEM.
+    secret_id: Optional[str] = None
+    secret_region: str = "eu-west-1"
+    #: Where the CA is written. /tmp, because the container runs as a
+    #: non-root user that cannot write anywhere else outside its home.
+    path: str = "/tmp/ifc-certs/CARoot.pem"
+
+
 #: Environment variables the ECS product template sets from its CyberArk
 #: parameters, and the ``cyberark`` field each one fills.
 CYBERARK_ENV: Dict[str, str] = {
@@ -451,6 +468,7 @@ class ConnectorSettings(BaseModel):
     source: SourceSettings
     kafka: KafkaSettings
     schema_registry: SchemaRegistrySettings
+    ca_certificate: CaCertificateSettings = Field(default_factory=CaCertificateSettings)
     cyberark: Optional[CyberArkSettings] = None
     run_marker: RunMarkerSettings = Field(default_factory=RunMarkerSettings)
     audit: AuditSettings = Field(default_factory=AuditSettings)
