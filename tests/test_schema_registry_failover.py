@@ -208,3 +208,58 @@ class TestPreflight:
         network.append("registry-a.example")
 
         assert not self.run([A]).passed
+
+
+class TestBrokerDiagnostics:
+    """A failed metadata request names why each broker connection was dropped."""
+
+    SSL_ERROR = (
+        'KafkaError{code=_SSL,val=-181,str="sasl_ssl://broker:9092/bootstrap: SSL handshake '
+        'failed: error:0A00010B:SSL routines::wrong version number"}'
+    )
+
+    class Producer:
+        def __init__(self, config, errors):
+            self._config = config
+            self._errors = errors
+
+        def list_topics(self, topic, timeout):
+            raise RuntimeError('KafkaError{code=_TRANSPORT,val=-195,str="Failed to get metadata"}')
+
+        def poll(self, timeout):
+            # librdkafka serves error_cb from poll().
+            for error in self._errors:
+                self._config["error_cb"](error)
+
+    def factory(self, errors):
+        settings = load_settings(CONFIG)
+        factory = KafkaStackFactory(settings, metrics=None, shutdown=ShutdownSignal())
+        config = {"bootstrap.servers": "broker:9092", "security.protocol": "SASL_SSL"}
+        from utility.kafka_factory import _BrokerErrors
+
+        config["error_cb"] = factory._broker_errors = _BrokerErrors(None)
+        factory._metadata_checks(self.Producer(config, errors))
+        return factory.report.results[-1]
+
+    def test_the_tls_reason_is_reported_and_filed_as_authentication(self):
+        result = self.factory([self.SSL_ERROR, 'KafkaError{code=_ALL_BROKERS_DOWN,str="1/1 brokers are down"}'])
+
+        assert not result.passed
+        assert "wrong version number" in result.detail
+        assert "brokers are down" not in result.detail
+        assert result.scenario is catalog.AUTHENTICATION_FAILURE
+
+    def test_without_broker_errors_it_is_still_a_broker_failure(self):
+        result = self.factory([])
+
+        assert not result.passed
+        assert result.scenario is catalog.BROKER_UNAVAILABLE
+
+    def test_a_callback_from_the_bsp_config_is_still_called(self):
+        from utility.kafka_factory import _BrokerErrors
+
+        seen = []
+        errors = _BrokerErrors(seen.append)
+        errors("boom")
+
+        assert seen == ["boom"] and errors.recent == ["boom"]

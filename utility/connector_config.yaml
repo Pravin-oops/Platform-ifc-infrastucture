@@ -166,7 +166,13 @@ resilience:
   circuit_breaker_threshold: 20
   circuit_breaker_reset_seconds: 120
   preflight_enabled: true
-  preflight_timeout_seconds: 10
+  # Per-endpoint DNS/TCP connect timeout at preflight. Generous while the BSP
+  # connection is being brought up; an unreachable endpoint takes this long to
+  # report, so bring it back down once the path is proven.
+  preflight_timeout_seconds: 60
+  # The metadata request: librdkafka retries the TLS/SASL handshakes across the
+  # brokers within this window.
+  preflight_metadata_timeout_seconds: 60
   max_quarantine_ratio: 0.05
 
 health:

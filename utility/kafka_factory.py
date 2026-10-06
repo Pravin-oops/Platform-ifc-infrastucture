@@ -9,8 +9,10 @@ only failures left are genuine runtime ones.
 from __future__ import annotations
 
 import logging
+import os
+from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Deque, Dict, List, Optional
 
 from utility import ca_certificate
 from utility.auth_helper import BSPClient, TokenProvider
@@ -65,6 +67,36 @@ class _NoTokenProvider:
         )
 
 
+class _BrokerErrors:
+    """``error_cb`` that keeps librdkafka's recent per-broker errors.
+
+    A failed metadata request only says ``_TRANSPORT``; the reason each
+    connection was dropped - a TLS handshake failure, a SASL rejection - comes
+    through ``error_cb``, so it is kept to explain the failure. Any callback
+    the BSP config set is still called.
+    """
+
+    def __init__(self, chained: Any = None, *, keep: int = 10):
+        self._chained = chained if callable(chained) else None
+        self._messages: Deque[str] = deque(maxlen=keep)
+
+    def __call__(self, error: Any) -> None:
+        message = str(error)
+        logger.warning("librdkafka error: %s", message)
+        if message not in self._messages:
+            self._messages.append(message)
+        if self._chained is not None:
+            self._chained(error)
+
+    @property
+    def recent(self) -> List[str]:
+        return list(self._messages)
+
+
+#: Producer properties safe to log: no credentials, tokens or callbacks.
+_LOGGED_PROPERTIES = ("security.protocol", "sasl.mechanism", "ssl.ca.location", "ssl.endpoint.identification.algorithm")
+
+
 @dataclass
 class KafkaStack:
     publisher: Publisher
@@ -93,6 +125,7 @@ class KafkaStackFactory:
         self._shutdown = shutdown
         self._producer_factory = producer_factory
         self._report = pf.PreflightReport()
+        self._broker_errors: Optional[_BrokerErrors] = None
 
     @property
     def report(self) -> pf.PreflightReport:
@@ -133,6 +166,8 @@ class KafkaStackFactory:
         overrides.update(self._settings.kafka.overrides)
 
         config = bsp.producer_config(overrides) if bsp is not None else overrides
+        config["error_cb"] = self._broker_errors = _BrokerErrors(config.get("error_cb"))
+        self._log_client_config(config)
 
         if not self._producer_factory:
             try:
@@ -146,6 +181,32 @@ class KafkaStackFactory:
             self._producer_factory = Producer
 
         return config
+
+    @staticmethod
+    def _log_client_config(config: Dict[str, Any]) -> None:
+        """What librdkafka will actually connect with, after the BSP client built it.
+
+        The BSP client may supply the brokers and security settings itself, so
+        the YAML alone does not say what is in effect.
+        """
+        brokers = pf.parse_bootstrap_servers(config.get("bootstrap.servers", ""))
+        effective = {key: config.get(key) for key in _LOGGED_PROPERTIES}
+        ca_location = effective.get("ssl.ca.location")
+        logger.info(
+            "Kafka client config: security.protocol=%s sasl.mechanism=%s ssl.ca.location=%s "
+            "(exists=%s) brokers=%d ports=%s",
+            effective["security.protocol"],
+            effective["sasl.mechanism"],
+            ca_location,
+            bool(ca_location) and os.path.exists(str(ca_location)),
+            len(brokers),
+            sorted({port for _host, port in brokers}),
+            extra={
+                **{key.replace(".", "_"): value for key, value in effective.items()},
+                "bootstrap_servers": [f"{host}:{port}" for host, port in brokers],
+                "oauth_cb_set": callable(config.get("oauth_cb")),
+            },
+        )
 
     def _network_checks(self, config: Dict[str, Any]) -> None:
         settings = self._settings
@@ -249,10 +310,25 @@ class KafkaStackFactory:
         return local_schema, context["schema_id"], context
 
     def _metadata_checks(self, producer: Any) -> None:
-        timeout = float(self._settings.resilience.preflight_timeout_seconds)
+        timeout = float(self._settings.resilience.preflight_metadata_timeout_seconds)
 
         def fetch(topic: str) -> Dict[str, Any]:
-            metadata = producer.list_topics(topic=topic, timeout=timeout)
+            try:
+                metadata = producer.list_topics(topic=topic, timeout=timeout)
+            except Exception as exc:
+                # error_cb is only served by poll(): drain it, then name the
+                # per-broker reasons, which also lets the classifier file a
+                # TLS or SASL failure as authentication rather than "broker".
+                poll = getattr(producer, "poll", None)
+                if callable(poll):
+                    poll(0)
+                reasons = self._broker_errors.recent if self._broker_errors else []
+                # "N/N brokers are down" only restates the failure; keep it
+                # only when nothing more specific was reported.
+                reasons = [r for r in reasons if "_ALL_BROKERS_DOWN" not in r] or reasons
+                if not reasons:
+                    raise
+                raise RuntimeError(f"{exc}; broker errors: {' | '.join(reasons)}") from exc
             topic_metadata = metadata.topics.get(topic)
 
             if topic_metadata is None:

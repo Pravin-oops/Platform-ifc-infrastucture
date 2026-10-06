@@ -118,3 +118,6 @@ def test_the_bsp_yaml_and_the_registry_read_the_file_the_ca_is_written_to():
     # librdkafka reads ssl.ca.location only over TLS, and the brokers accept
     # nothing but SASL_SSL.
     assert bsp["security"]["security.protocol"] == "SASL_SSL"
+    # ...served on 9095; 9092 is not a TLS listener.
+    servers = bsp["servers"]["bootstrap.servers"].split(",")
+    assert servers and all(server.strip().endswith(":9095") for server in servers)

@@ -455,7 +455,12 @@ class ResilienceSettings(BaseModel):
     )
     circuit_breaker_reset_seconds: float = Field(default=120.0, gt=0)
     preflight_enabled: bool = True
+    #: Per-endpoint DNS/TCP connect timeout at preflight; short, so a dead
+    #: endpoint is reported quickly.
     preflight_timeout_seconds: int = Field(default=10, ge=1)
+    #: How long the metadata request may take. librdkafka retries the TLS and
+    #: SASL handshakes across the brokers within it, so it is the longer one.
+    preflight_metadata_timeout_seconds: int = Field(default=60, ge=1)
     #: Fail the run if more than this fraction of records is quarantined, so a
     #: run cannot silently publish a fraction of its content and report success.
     max_quarantine_ratio: float = Field(default=0.05, ge=0.0, le=1.0)
