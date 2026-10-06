@@ -288,6 +288,9 @@ class KafkaSettings(BaseModel):
 
 class SchemaRegistrySettings(BaseModel):
     mode: Literal["DEV", "SECURE"] = "SECURE"
+    #: One registry URL, or several separated by commas (a YAML list is also
+    #: accepted). Every one is checked at preflight; the schema is looked up on
+    #: the first that answers, so one registry node being down is not an outage.
     url: Optional[str] = None
     ca_location: Optional[str] = None
     timeout_seconds: int = Field(default=30, ge=1)
@@ -304,10 +307,25 @@ class SchemaRegistrySettings(BaseModel):
     #: needs the magic byte and id on every record, DEV or not.
     schema_id: Optional[int] = Field(default=None, ge=1)
 
+    @field_validator("url", mode="before")
+    @classmethod
+    def _join_a_list(cls, value: Any) -> Any:
+        if isinstance(value, (list, tuple)):
+            return ",".join(str(item) for item in value)
+        return value
+
+    @property
+    def urls(self) -> List[str]:
+        """The registry URLs in configured order, without trailing slashes."""
+        return [part.strip().rstrip("/") for part in (self.url or "").split(",") if part.strip()]
+
     @model_validator(mode="after")
     def _require_url_when_secure(self) -> "SchemaRegistrySettings":
-        if self.mode == "SECURE" and not self.url:
+        if self.mode == "SECURE" and not self.urls:
             raise ValueError("schema_registry.url is required when mode=SECURE")
+        malformed = [u for u in self.urls if not re.match(r"^https?://[^/\s:]+", u)]
+        if malformed:
+            raise ValueError(f"schema_registry.url entries must be http(s) URLs: {malformed}")
         return self
 
 

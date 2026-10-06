@@ -89,7 +89,9 @@ kafka:
 
 schema_registry:
   mode: SECURE
-  url: https://ldndsr000010177.intranet.barcapint.com:8095
+  # Comma-separated registry nodes. Each is checked at preflight; the schema is
+  # read from the first that answers, so one node down does not fail the run.
+  url: https://ldndsr000010177.intranet.barcapint.com:8095, https://gbrdsr00014551.intranet.barcapint.com:8095
   # The Barclays root CA, written at container start (ca_certificate below).
   ca_location: /tmp/ifc-certs/CARoot.pem
   timeout_seconds: 30

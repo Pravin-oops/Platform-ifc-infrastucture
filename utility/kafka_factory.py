@@ -162,11 +162,14 @@ class KafkaStackFactory:
         pf.check_dns(self._report, brokers, label="kafka")
         pf.check_tcp(self._report, brokers, label="kafka", timeout=timeout, require_all=False)
 
-        if settings.schema_registry.mode == "SECURE" and settings.schema_registry.url:
-            registry = [pf.parse_url_endpoint(settings.schema_registry.url)]
-            pf.check_dns(self._report, registry, label="schema_registry")
+        if settings.schema_registry.mode == "SECURE" and settings.schema_registry.urls:
+            # Every node is checked and reported; one reachable node is enough,
+            # since the lookup fails over to whichever answers.
+            registry = [pf.parse_url_endpoint(url) for url in settings.schema_registry.urls]
+            single = len(registry) == 1
+            pf.check_dns(self._report, registry, label="schema_registry", blocking=single)
             pf.check_tcp(
-                self._report, registry, label="schema_registry", timeout=timeout, require_all=True
+                self._report, registry, label="schema_registry", timeout=timeout, require_all=single
             )
 
     def _resolve_schema(self, tokens: TokenProvider) -> tuple[Dict[str, Any], int, Dict[str, Any]]:
@@ -192,7 +195,7 @@ class KafkaStackFactory:
             return local_schema, schema_id, {"mode": "DEV", "schema_id": schema_id}
 
         client = SchemaRegistryClient(
-            settings.schema_registry.url or "",
+            settings.schema_registry.urls,
             token_provider=tokens,
             ca_location=settings.schema_registry.ca_location,
             timeout=settings.schema_registry.timeout_seconds,
@@ -216,6 +219,7 @@ class KafkaStackFactory:
                     "subject": subject,
                     "schema_id": registered.schema_id,
                     "schema_version": registered.version,
+                    "registry_url": registered.url,
                     "findings": findings,
                 }
             )

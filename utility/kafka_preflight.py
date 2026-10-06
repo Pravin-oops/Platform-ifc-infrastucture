@@ -134,7 +134,19 @@ def parse_url_endpoint(url: str) -> Tuple[str, int]:
     return parsed.hostname or url, parsed.port or default_port
 
 
-def check_dns(report: PreflightReport, endpoints: List[Tuple[str, int]], *, label: str) -> None:
+def check_dns(
+    report: PreflightReport,
+    endpoints: List[Tuple[str, int]],
+    *,
+    label: str,
+    blocking: bool = True,
+) -> None:
+    """Resolve each endpoint's host.
+
+    ``blocking=False`` reports a host that does not resolve without failing the
+    run, for a set of endpoints where any one will do - the TCP quorum check
+    that follows still fails the run when none is reachable.
+    """
     for host, _port in endpoints:
         def resolve(host: str = host) -> Tuple[bool, str, Dict[str, Any]]:
             addresses = sorted({info[4][0] for info in socket.getaddrinfo(host, None)})
@@ -148,7 +160,8 @@ def check_dns(report: PreflightReport, endpoints: List[Tuple[str, int]], *, labe
                 duration_ms=ms,
                 detail=detail or f"resolved {context.get('addresses')}",
                 scenario=None if ok else raised or catalog.NETWORK_FAILURE,
-                context=context,
+                blocking=blocking,
+                context=context or {"host": host},
             )
         )
 
