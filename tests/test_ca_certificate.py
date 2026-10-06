@@ -84,15 +84,17 @@ def test_an_unusable_secret_fails_before_anything_is_written(tmp_path, response,
     with pytest.raises(PreflightError, match=message) as exc:
         ca_certificate.install(config, session=FakeSession(response))
 
-    assert exc.value.scenario is catalog.CONTAINER_FAILURE
+    assert exc.value.scenario is catalog.AUTHENTICATION_FAILURE
     assert not os.path.exists(config.path)
 
 
 def test_an_unreadable_secret_names_the_aws_error(tmp_path):
     denied = ClientError({"Error": {"Code": "AccessDeniedException"}}, "GetSecretValue")
 
-    with pytest.raises(PreflightError, match="AccessDeniedException"):
+    with pytest.raises(PreflightError, match="AccessDeniedException") as exc:
         ca_certificate.install(settings(tmp_path), session=FakeSession(denied))
+
+    assert exc.value.scenario is catalog.AUTHENTICATION_FAILURE
 
 
 def test_the_bsp_yaml_and_the_registry_read_the_file_the_ca_is_written_to():

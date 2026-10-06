@@ -63,11 +63,12 @@ def _read_secret(settings: CaCertificateSettings, session: Any) -> str:
         response = client.get_secret_value(SecretId=settings.secret_id)
     except ClientError as exc:
         # AccessDenied / ResourceNotFound / KMS decrypt: the task role or the
-        # secret is misconfigured, which retrying will not fix.
+        # secret is misconfigured, which retrying will not fix. Filed as an
+        # authentication (truststore) failure, as the CyberArk secrets are.
         raise PreflightError(
             "Could not read the CA certificate secret: "
             f"{exc.response.get('Error', {}).get('Code', 'ClientError')}",
-            catalog.CONTAINER_FAILURE,
+            catalog.AUTHENTICATION_FAILURE,
             context=context,
             cause=exc,
         ) from exc
@@ -87,14 +88,14 @@ def _read_secret(settings: CaCertificateSettings, session: Any) -> str:
     if "-----BEGIN CERTIFICATE-----" not in pem:
         raise PreflightError(
             "CA certificate secret is empty or not a PEM (no 'BEGIN CERTIFICATE' block)",
-            catalog.CONTAINER_FAILURE,
+            catalog.AUTHENTICATION_FAILURE,
             context=context,
         )
     if "PRIVATE KEY-----" in pem:
         # Never write a key to a world-readable trust file; never log its value.
         raise PreflightError(
             "CA certificate secret contains a private key; store only the CA certificate",
-            catalog.CONTAINER_FAILURE,
+            catalog.AUTHENTICATION_FAILURE,
             context=context,
         )
     return pem + "\n"
