@@ -366,3 +366,51 @@ class TestObservedOauthCallback:
         with pytest.raises(RuntimeError, match="BAM unreachable"):
             _observed_oauth_cb(broken)("cfg")
         assert any("oauth_cb raised RuntimeError" in r.getMessage() for r in caplog.records)
+
+
+class TestAwaitOauthToken:
+    """confluent-kafka 2.4 runs oauth_cb only from poll(): the factory polls until it has."""
+
+    class Producer:
+        def __init__(self, config, serve_after_polls):
+            self._config = config
+            self._serve_after = serve_after_polls
+            self.polls = 0
+
+        def poll(self, timeout):
+            self.polls += 1
+            if self._serve_after is not None and self.polls >= self._serve_after:
+                self._config["oauth_cb"]("sasl.oauthbearer.config")
+
+    @staticmethod
+    def config(expires_in=3600):
+        import time as time_module
+
+        from utility.kafka_factory import _observed_oauth_cb
+
+        return {"oauth_cb": _observed_oauth_cb(lambda _c: ("e30.e30.sig", time_module.time() + expires_in))}
+
+    def test_it_polls_until_the_token_is_supplied(self):
+        config = self.config()
+        producer = self.Producer(config, serve_after_polls=3)
+
+        KafkaStackFactory._await_oauth_token(producer, config, timeout=5)
+
+        assert config["oauth_cb"].supplied.is_set()
+        assert producer.polls == 3
+
+    def test_an_expired_token_does_not_count_and_the_wait_gives_up(self, caplog):
+        config = self.config(expires_in=-10)
+        producer = self.Producer(config, serve_after_polls=1)
+
+        KafkaStackFactory._await_oauth_token(producer, config, timeout=0.3)
+
+        assert not config["oauth_cb"].supplied.is_set()
+        assert any("supplied no usable token" in r.getMessage() for r in caplog.records)
+
+    def test_without_an_oauth_callback_nothing_is_polled(self):
+        producer = self.Producer({}, serve_after_polls=None)
+
+        KafkaStackFactory._await_oauth_token(producer, {}, timeout=5)
+
+        assert producer.polls == 0

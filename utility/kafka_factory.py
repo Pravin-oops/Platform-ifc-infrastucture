@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -185,8 +186,13 @@ def _observed_oauth_cb(callback: Callable[[Any], Any]) -> Callable[[Any], Any]:
                 "accepts the token but never refreshes it before the real expiry",
                 expiry,
             )
+        elif token:
+            observed.supplied.set()
         return result
 
+    #: Set once the callback has handed librdkafka a usable token; the
+    #: factory waits on it before the first broker request.
+    observed.supplied = threading.Event()  # type: ignore[attr-defined]
     return observed
 
 
@@ -445,6 +451,36 @@ class KafkaStackFactory:
 
         return local_schema, context["schema_id"], context
 
+    @staticmethod
+    def _await_oauth_token(producer: Any, config: Dict[str, Any], timeout: float = 15.0) -> None:
+        """Poll the new producer until the BSP ``oauth_cb`` has supplied its token.
+
+        confluent-kafka 2.4 (the image's version) runs ``oauth_cb`` only from
+        ``poll()``/``flush()``. ``list_topics()`` does not serve it, so a
+        metadata request made straight after the producer is built has no token
+        to authenticate with: every broker waits for one, and the request times
+        out as ``_TRANSPORT``. Newer clients call it on their own, and there the
+        first poll finds the token already set.
+        """
+        supplied = getattr(config.get("oauth_cb"), "supplied", None)
+        poll = getattr(producer, "poll", None)
+        if supplied is None or not callable(poll):
+            return
+
+        started = time.monotonic()
+        while not supplied.is_set() and time.monotonic() - started < timeout:
+            poll(0.1)
+
+        waited_ms = round((time.monotonic() - started) * 1000)
+        if supplied.is_set():
+            logger.info("Kafka producer has its OAuth token for SASL after %d ms", waited_ms)
+        else:
+            logger.error(
+                "The BSP oauth_cb supplied no usable token within %.0f s; the brokers cannot "
+                "authenticate this producer",
+                timeout,
+            )
+
     def _metadata_checks(self, producer: Any) -> None:
         timeout = float(self._settings.resilience.preflight_metadata_timeout_seconds)
 
@@ -469,7 +505,8 @@ class KafkaStackFactory:
                     key_lines = self._trace.key_lines(40)
                     logger.error(
                         "librdkafka trace before the failed metadata request: %d lines, %d about "
-                        "TLS/SASL/auth or failures",
+                        "TLS/SASL/auth or failures (queued until poll(), so each line's log "
+                        "timestamp is when it was released, not when it happened)",
                         len(self._trace.lines),
                         len(key_lines),
                         extra={
@@ -542,6 +579,8 @@ class KafkaStackFactory:
         self._report.raise_if_failed()
 
         producer = self._producer_factory(config)
+        # Before anything asks the brokers: SASL cannot start without it.
+        self._await_oauth_token(producer, config)
 
         if settings.resilience.preflight_enabled:
             self._metadata_checks(producer)
