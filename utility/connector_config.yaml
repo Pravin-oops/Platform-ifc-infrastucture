@@ -92,8 +92,15 @@ kafka:
   # CONFIRM: the CDD trigger topic. The BSP topic table lists
   # tc01_fncmtrgrbb_ifc_tbb_kyc_refresh for CDD (DEV).
   topic: tc01_fncmtrgrbb_ifc_tbb_kyc_refresh
-  # The BSP client YAML (librdkafka properties), not this file.
+  # The BSP client YAML (librdkafka properties), not this file: the default
+  # for any environment not listed in bsp_config_paths.
   bsp_config_path: utility/bsp_sit_config.yaml
+  # Per app.environment. IFC_KAFKA__BSP_CONFIG_PATH on a task overrides both.
+  #   DEV  PLAINTEXT on 9092, the unsecured DEV-only listener: no TLS, no token
+  #   SIT  SASL_SSL on 9095 with the BAM token
+  bsp_config_paths:
+    DEV: utility/bsp_dev_config.yaml
+    SIT: utility/bsp_sit_config.yaml
   # Broker limit is 800 KB; the guard sits just under it.
   max_message_bytes: 819200
   flush_timeout_seconds: 120

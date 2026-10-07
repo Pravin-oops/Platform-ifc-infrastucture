@@ -309,6 +309,10 @@ class KafkaSettings(BaseModel):
     #: local broker, where ``overrides`` supplies bootstrap.servers directly and
     #: the BSP client is not involved at all.
     bsp_config_path: Optional[str] = None
+    #: app.environment (any case) -> that environment's BSP client YAML. The
+    #: matching entry replaces bsp_config_path when the config is loaded,
+    #: unless IFC_KAFKA__BSP_CONFIG_PATH names one for the task.
+    bsp_config_paths: Dict[str, str] = Field(default_factory=dict)
     max_message_bytes: int = Field(default=DEFAULT_MAX_MESSAGE_BYTES, ge=1024)
     flush_timeout_seconds: int = Field(default=120, ge=1)
     local_queue_max_messages: int = Field(default=20000, ge=100)
@@ -761,6 +765,25 @@ def _deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]
     return merged
 
 
+def _select_bsp_config(layered: Dict[str, Any]) -> None:
+    """Put this environment's BSP client YAML into kafka.bsp_config_path.
+
+    An explicit IFC_KAFKA__BSP_CONFIG_PATH on the task wins; otherwise the
+    kafka.bsp_config_paths entry for app.environment does; an environment
+    without one keeps kafka.bsp_config_path.
+    """
+    if os.environ.get(f"{_ENV_PREFIX}KAFKA{_SECTION_SEP}BSP_CONFIG_PATH", "").strip():
+        return
+    kafka = layered.get("kafka")
+    if not isinstance(kafka, dict) or not isinstance(kafka.get("bsp_config_paths"), dict):
+        return
+    environment = str((layered.get("app") or {}).get("environment") or AppSettings().environment)
+    by_environment = {str(env).strip().upper(): path for env, path in kafka["bsp_config_paths"].items()}
+    chosen = by_environment.get(environment.strip().upper())
+    if chosen:
+        kafka["bsp_config_path"] = chosen
+
+
 def load_settings(config_path: str, *, reader=None) -> ConnectorSettings:
     """Read the YAML config, apply the ``IFC_`` env overlay, validate.
 
@@ -778,6 +801,7 @@ def load_settings(config_path: str, *, reader=None) -> ConnectorSettings:
     # IFC_ variables are applied last, so IFC_CYBERARK__* still overrides the
     # template's CYBERARK_* for a single task.
     layered = _deep_merge(_deep_merge(document, _cyberark_env_overlay()), _env_overlay())
+    _select_bsp_config(layered)
     settings = ConnectorSettings.model_validate(layered)
 
     # The month is read deep inside path expansion and the envelope builder,

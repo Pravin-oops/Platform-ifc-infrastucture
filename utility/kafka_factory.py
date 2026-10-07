@@ -265,6 +265,11 @@ class KafkaStackFactory:
                 "CyberArk is not enabled; relying on BSP_USERNAME/BSP_PASSWORD already in the environment"
             )
 
+        logger.info(
+            "BSP client config: %s (environment %s)",
+            settings.kafka.bsp_config_path,
+            settings.app.environment,
+        )
         # package_resource anchors a relative path at the connector root, so it
         # does not depend on the working directory.
         return BSPClient(materialise_local(package_resource(settings.kafka.bsp_config_path)))

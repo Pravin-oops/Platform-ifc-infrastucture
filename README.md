@@ -555,6 +555,19 @@ must belong to a schema that matches the bundled `.avsc`. DEV with neither a URL
 refuses to start. Records are always written in Confluent wire format, because the consumer's
 `KafkaAvroDeserializer` rejects anything else.
 
+### BSP client config per environment
+
+`kafka.bsp_config_paths` picks the BSP client YAML by `app.environment`; an environment not listed
+uses `kafka.bsp_config_path`, and `IFC_KAFKA__BSP_CONFIG_PATH` on a task overrides both.
+
+| Environment | File | Connection |
+|---|---|---|
+| `DEV` | `utility/bsp_dev_config.yaml` | `PLAINTEXT` on 9092, the DEV-only unsecured listener: no TLS, no SASL, no token |
+| `SIT` (and, until they have their own, the others) | `utility/bsp_sit_config.yaml` | `SASL_SSL` on 9095, BAM token via the BSP `oauth_cb` |
+
+A DEV run is `IFC_APP__ENVIRONMENT=DEV` with `IFC_SCHEMA_REGISTRY__MODE=DEV`: the DEV brokers,
+service number `SNSVC0084379`, schema id 1299, and no BAM token for the registry or the brokers.
+
 ### Without BSP
 
 A config that omits `kafka.bsp_config_path` and supplies `bootstrap.servers` in `kafka.overrides`
