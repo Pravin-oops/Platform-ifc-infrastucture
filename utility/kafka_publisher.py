@@ -1,22 +1,4 @@
-"""The Kafka publishing surface.
-
-Uses the plain ``Producer`` rather than ``SerializingProducer`` because records
-are serialised upstream (see ``serializers``), so the connector can size-check
-and audit the exact bytes it is about to send.
-
-Three behaviours here exist specifically because this runs as a container rather
-than as a Lambda:
-
-* ``BufferError`` from ``produce()`` is treated as back-pressure, not as an
-  error. A Lambda with a small fixed batch never hits it; a resident task
-  draining a large prefix hits it constantly, and growing the queue instead is
-  how a container ends up OOM-killed.
-* Delivery reports carry the partition and offset of every accepted message, so
-  the run manifest can state exactly what was written - the evidence the
-  reconciliation control needs.
-* Every delivery failure is classified as it arrives, so a run that dies later
-  can still report which scenario dominated.
-"""
+"""The Kafka publishing surface."""
 
 from __future__ import annotations
 
@@ -45,9 +27,7 @@ class DeliveryStats:
     latency_ms_total: float = 0.0
     latency_ms_max: float = 0.0
     first_failure: Optional[Classification] = None
-    #: Trigger IDs the broker actually acknowledged, and where it put them.
-    #: Only these are marked published in the state store, so an unacknowledged
-    #: message is retried by the next run rather than being silently dropped.
+    #: Trigger IDs the broker acknowledged, with partition and offset.
     acked: Dict[str, Tuple[Optional[int], Optional[int]]] = field(default_factory=dict)
     failed: List[str] = field(default_factory=list)
 
@@ -94,8 +74,6 @@ class Publisher:
         #: Send times, so ack latency is measured rather than guessed.
         self._sent_at: Dict[str, float] = {}
 
-    # -- delivery callbacks ------------------------------------------------
-
     def _record_offset(self, topic: str, partition: int, offset: int) -> None:
         partitions = self.stats.offsets.setdefault(topic, {})
         current = partitions.get(partition)
@@ -105,9 +83,7 @@ class Publisher:
         )
 
     def _on_delivery(self, err: Any, msg: Any, *, trigger_id: str) -> None:
-        # librdkafka can invoke the callback with no message on some errors,
-        # so every use of msg is guarded. The try/except stays for the C
-        # object itself, which can raise on attribute access after free.
+        # librdkafka may pass no message on some errors, and the C object can raise after free.
         kafka_key = None
         if msg is not None:
             try:
@@ -185,8 +161,6 @@ class Publisher:
                 "ack_latency_ms": round(latency, 1) if latency is not None else None,
             },
         )
-
-    # -- producing ---------------------------------------------------------
 
     def _produce_with_backpressure(
         self,
@@ -283,12 +257,7 @@ class Publisher:
             return 0
 
     def flush(self, timeout_seconds: float) -> int:
-        """Block until the queue drains or ``timeout_seconds`` elapses.
-
-        Returns the number of messages still queued: non-zero means delivery is
-        *uncertain*, not failed, and the caller must treat the run as incomplete
-        rather than successful.
-        """
+        """Block until the queue drains or ``timeout_seconds`` elapses."""
         logger.debug(
             "Flushing producer", extra={"queue_depth": self.queue_depth, "timeout_seconds": timeout_seconds}
         )

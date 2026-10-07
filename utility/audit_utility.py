@@ -1,16 +1,4 @@
-"""Run manifest, reconciliation and quarantine.
-
-The reconciliation control asks a simple question - can you prove every trigger
-event that was detected was either published or accounted for? The manifest
-answers it with an identity that must hold for every run::
-
-    records read = published + quarantined
-
-If it does not balance, the run fails even when every individual Kafka publish
-succeeded, because an unexplained gap is exactly the condition the control
-exists to catch. That is the difference between a producer that reports success
-and one that can evidence it.
-"""
+"""Run manifest, reconciliation and quarantine."""
 
 from __future__ import annotations
 
@@ -37,12 +25,7 @@ def new_run_id() -> str:
 
 
 def ecs_task_identity() -> Dict[str, Optional[str]]:
-    """Best-effort ECS task identity from the metadata endpoint's environment.
-
-    Read from the environment rather than by calling the metadata endpoint: the
-    call can hang when the network path is the thing that is broken, and this is
-    used on the failure path.
-    """
+    """Best-effort ECS task identity from the metadata endpoint's environment."""
     import os
 
     return {
@@ -138,8 +121,6 @@ class AuditWriter:
     def _base(self, prefix: str) -> str:
         return f"{self._settings.root}/{prefix.strip('/')}"
 
-    # -- quarantine --------------------------------------------------------
-
     def quarantine(
         self,
         *,
@@ -193,8 +174,6 @@ class AuditWriter:
         )
         return key
 
-    # -- serialised payload evidence ---------------------------------------
-
     def write_payload(self, *, trigger_id: str, avro_bytes: bytes, event_date: str) -> Optional[str]:
         if not (self.enabled and self._settings.write_payloads):
             return None
@@ -208,8 +187,6 @@ class AuditWriter:
         )
         write_bytes(key, avro_bytes)
         return key
-
-    # -- manifest ----------------------------------------------------------
 
     def write_manifest(self, manifest: Dict[str, Any]) -> Optional[str]:
         if not self.enabled:
@@ -248,11 +225,7 @@ def build_manifest(
     reason: Optional[str] = None,
     gate: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """The full record of one run, in the shape the reconciliation control reads.
-
-    ``stage`` says how far the invocation got: ``RUN`` for one that reached the
-    runner, or the gate / startup step that stopped it before then.
-    """
+    """The full record of one run, in the shape the reconciliation control reads."""
     return {
         "run_id": run_id,
         "stage": stage,
@@ -297,12 +270,7 @@ def write_invocation_manifest(
     classification: Optional[Classification] = None,
     gate: Optional[Dict[str, Any]] = None,
 ) -> str:
-    """Manifest for an invocation that stopped before the runner.
-
-    The runner writes its own manifest; this covers the gate skips, the upstream
-    recon block and startup failures, so every ECS invocation leaves a record.
-    Best-effort: a failed write is logged and never changes the exit code.
-    """
+    """Manifest for an invocation that stopped before the runner."""
     run_id = new_run_id()
     counters = RunCounters()
     manifest = build_manifest(

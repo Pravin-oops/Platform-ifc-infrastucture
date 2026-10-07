@@ -1,13 +1,4 @@
-"""Running one Athena query and reading its rows back.
-
-Shared by the two things this project reads from Athena: the trigger table
-(``trigger_source``) and the upstream reconciliation table (``recon_gate``).
-Both start a query in the configured workgroup, poll it to a terminal state,
-and page through ``GetQueryResults`` with each column's type restored.
-
-A query that cannot be run - a missing table, AccessDenied, a failed, cancelled
-or timed-out query - raises ``SourceAccessError``.
-"""
+"""Running one Athena query and reading its rows back."""
 
 from __future__ import annotations
 
@@ -22,10 +13,7 @@ from utility.connector_utility import SourceAccessError
 
 logger = logging.getLogger(__name__)
 
-#: Athena result types that are read back as something other than a string.
-#: Everything arrives from ``GetQueryResults`` as ``VarCharValue`` text; these
-#: restore the column's type, so a bigint CSID is an int and a date is a date by
-#: the time the caller sees it.
+#: Athena types read back as their Python type; everything else stays text.
 _INTEGER_TYPES = {"tinyint", "smallint", "integer", "int", "bigint"}
 _FLOAT_TYPES = {"double", "float", "real"}
 _NESTED_TYPES = ("array", "map", "row", "struct", "json")
@@ -34,20 +22,7 @@ _TERMINAL_STATES = {"SUCCEEDED", "FAILED", "CANCELLED"}
 
 
 def parse_timestamp(text: str) -> Optional[datetime]:
-    """Timestamp text as a naive UTC datetime, or ``None`` if it is not one.
-
-    Accepts every form the recon and trigger tables produce:
-
-    * Athena ``timestamp``: ``2026-10-05 06:12:13.790087``
-    * Athena ``timestamp with time zone``: ``2026-10-05 06:12:13.790087 UTC``
-      (or a region such as ``Europe/London``)
-    * ISO 8601 as Databricks writes it: ``2026-10-05T06:12:13.790+00:00``,
-      ``...Z``
-
-    A value carrying a zone or an offset is converted to UTC; one without is
-    taken as UTC already. Naive UTC throughout, so values from either form
-    compare and render alike.
-    """
+    """Timestamp text as a naive UTC datetime, or ``None`` if it is not one."""
     if not isinstance(text, str) or not text.strip():
         return None
     value = text.strip()
@@ -78,12 +53,7 @@ def parse_timestamp(text: str) -> Optional[datetime]:
 
 
 def coerce(value: Optional[str], athena_type: str) -> Any:
-    """One ``VarCharValue`` as the Python value its Athena column type implies.
-
-    A value that does not parse as its declared type is passed through as text:
-    the caller then accepts or rejects it per field, which reports the bad
-    column by name rather than failing the whole row here.
-    """
+    """One ``VarCharValue`` as the Python value its Athena column type implies."""
     if value is None:
         return None
     kind = athena_type.lower().split("(", 1)[0].strip()
@@ -122,11 +92,7 @@ def athena_client() -> Any:
 
 
 def string_literal(value: str) -> str:
-    """``value`` as an Athena string literal for ``ExecutionParameters``.
-
-    Execution parameters are substituted as SQL literals, so a string carries
-    its own quotes, and a quote inside it is doubled.
-    """
+    """``value`` as an Athena string literal for ``ExecutionParameters``."""
     return "'" + str(value).replace("'", "''") + "'"
 
 

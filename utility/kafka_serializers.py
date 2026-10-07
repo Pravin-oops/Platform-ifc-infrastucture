@@ -1,15 +1,4 @@
-"""Confluent wire-format Avro serialisation.
-
-Wire format is: one magic byte ``0x00``, the 4-byte big-endian schema id from
-the registry, then the schemaless Avro body.
-
-The serialiser here returns bytes to the caller rather than being handed to a
-``SerializingProducer``. That is deliberate: the connector must know the exact
-on-the-wire size *before* it produces, so an oversized record can be quarantined
-instead of being rejected by the broker, and so the same bytes can be written to
-the S3 audit trail. A ``SerializingProducer`` serialises inside ``produce()``
-and gives no such opportunity.
-"""
+"""Confluent wire-format Avro serialisation."""
 
 from __future__ import annotations
 
@@ -73,11 +62,7 @@ class AvroSerializer:
 
 
 class SizeGuard:
-    """Rejects records that the broker would reject, before they are sent.
-
-    Catching this locally is what makes 'Message Too Large' a quarantined record
-    with usable diagnostics rather than a delivery failure with none.
-    """
+    """Rejects records that the broker would reject, before they are sent."""
 
     def __init__(self, max_bytes: int):
         self._max_bytes = max_bytes

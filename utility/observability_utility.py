@@ -1,14 +1,4 @@
-"""Structured logging and CloudWatch metrics for an ECS-hosted connector.
-
-Two things matter here that do not matter in a Lambda:
-
-* Logs are the only forensic record once the task is gone, so every line is
-  JSON with a stable ``run_id`` and, where relevant, ``trigger_id``. CloudWatch
-  Logs Insights can then answer "what happened to trigger X" directly.
-* Metrics are emitted as embedded metric format (EMF) on stdout rather than via
-  ``PutMetricData``. No API call means no extra failure mode inside the very
-  path that reports failures, and CloudWatch still gets real metrics to alarm on.
-"""
+"""Structured logging and CloudWatch metrics for an ECS-hosted connector."""
 
 from __future__ import annotations
 
@@ -84,22 +74,9 @@ def configure_logging(level: str = "INFO") -> None:
     logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 
-# ---------------------------------------------------------------------------
-# Metrics
-# ---------------------------------------------------------------------------
-
 
 class Metrics:
-    """Counters and timers for one connector process.
-
-    Counters are running totals, and ``emit`` writes the current totals each
-    time it is called - at every progress report and again at the end of the
-    run. CloudWatch alarms on them must therefore use the ``Maximum``
-    statistic: ``Sum`` adds the same records up once per emit.
-
-    Thread-safe: the delivery-report callback fires on the librdkafka poll
-    thread while the main loop is still producing.
-    """
+    """Counters and timers for one connector process."""
 
     def __init__(self, *, namespace: str = EMF_NAMESPACE, dimensions: Optional[Dict[str, str]] = None):
         self._namespace = namespace
@@ -156,11 +133,7 @@ class Metrics:
 
 
 def process_rss_mb() -> Optional[float]:
-    """Resident set size in MiB, read from cgroup v2/v1 then /proc.
-
-    Used to publish a memory gauge so the 'Producer Out Of Memory' scenario is
-    visible as a trend before the task is killed with exit code 137.
-    """
+    """Resident set size in MiB, read from cgroup v2/v1 then /proc."""
     for path in ("/sys/fs/cgroup/memory.current", "/sys/fs/cgroup/memory/memory.usage_in_bytes"):
         try:
             with open(path, "r", encoding="utf-8") as handle:

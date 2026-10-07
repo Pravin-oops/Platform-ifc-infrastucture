@@ -1,16 +1,4 @@
-"""BSP client configuration and BAM token lifecycle.
-
-The BSP Python client owns the librdkafka SASL/OAUTHBEARER wiring, including the
-``oauth_cb`` that refreshes the broker token. This module wraps it so that:
-
-* the token returned by ``get_token`` is normalised (it comes back variously as
-  a string, a ``(token, expiry)`` tuple, or a dict) and shape-checked before it
-  is handed to the Schema Registry;
-* the token's ``exp`` claim is tracked, so a long run refreshes ahead of
-  expiry instead of failing a batch mid-flight - the one place where the ECS
-  runtime genuinely differs from a 15-minute Lambda;
-* failures classify onto the catalogue.
-"""
+"""BSP client configuration and BAM token lifecycle."""
 
 from __future__ import annotations
 
@@ -64,11 +52,7 @@ def normalize_token(raw: Any) -> str:
 
 
 def token_expiry(token: str) -> Optional[float]:
-    """Read the ``exp`` claim without verifying the signature.
-
-    Verification is the broker's and the registry's job; all that is needed here
-    is to know when to ask for a new one.
-    """
+    """Read the ``exp`` claim without verifying the signature."""
     try:
         payload = token.split(".")[1]
         payload += "=" * (-len(payload) % 4)  # restore base64url padding
@@ -83,13 +67,7 @@ def token_expiry(token: str) -> Optional[float]:
 
 @runtime_checkable
 class TokenProvider(Protocol):
-    """What a consumer of a bearer token actually needs.
-
-    ``BSPTokenProvider`` is the real implementation, but the local path uses a
-    stand-in that raises, and the tests use a fixed-token fake. Typing on the
-    behaviour rather than the class keeps all three legitimate without anyone
-    subclassing something they do not want the machinery of.
-    """
+    """What a consumer of a bearer token actually needs."""
 
     @property
     def seconds_remaining(self) -> float: ...
@@ -98,12 +76,7 @@ class TokenProvider(Protocol):
 
 
 class BSPTokenProvider:
-    """Caches and refreshes the BAM token used for the Schema Registry.
-
-    The broker's own token is refreshed by librdkafka through the BSP client's
-    ``oauth_cb``; this provider covers the Schema Registry REST calls, which sit
-    outside that callback.
-    """
+    """Caches and refreshes the BAM token used for the Schema Registry."""
 
     def __init__(
         self,
@@ -152,11 +125,7 @@ class BSPTokenProvider:
 
 
 class BSPClient:
-    """Thin wrapper over ``bsp_python_client.auth.bsp_authenticator``.
-
-    Imported lazily so the package can be installed, tested and reasoned about
-    on a machine that has no access to the internal BSP wheel.
-    """
+    """Thin wrapper over ``bsp_python_client.auth.bsp_authenticator``."""
 
     def __init__(self, config_path: str, *, authenticator: Any = None):
         self._config_path = config_path

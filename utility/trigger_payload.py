@@ -1,30 +1,4 @@
-"""The BSP trigger payload contract.
-
-BSP does not accept a domain object in the envelope's ``payload`` field. It
-accepts a JSON *string* holding a list of self-describing fields::
-
-    [{"fieldName": ..., "fieldValue": ...,
-      "fieldEncryptionPolicy": ..., "fieldDataType": ...}, ...]
-
-The string is the array itself. The envelope field is already called
-``payload``, so wrapping the array in a ``{"payload": ...}`` object would nest a
-payload inside the payload, which the Trigger Backbone consumer rejects.
-
-Every value travels as a string; ``fieldDataType`` tells the consumer how to
-read it. That is what lets one topic serve three business units without a schema
-change per trigger, and it is why each trigger's field set is declared as data
-(``FieldSpec`` lists in ``trigger_definitions``) rather than hand-built dicts.
-
-Two contract details bite if missed:
-
-* ``fieldValue`` has ``minLength: 1``. An optional field with no value must be
-  *omitted*, not sent empty - "" fails registry-side validation.
-* ``fieldEncryptionPolicy`` is mandatory but may be empty. Only PII fields carry
-  a tokenisation policy.
-
-``build_fields`` below is the only thing that constructs payloads, and it cannot
-produce a document that breaks either rule.
-"""
+"""The BSP trigger payload contract."""
 
 from __future__ import annotations
 
@@ -52,12 +26,7 @@ class DataType(str, Enum):
 DATE_FORMAT = "%y-%m-%d"
 
 
-# Tokenisation policies. NAME applies only to the Relationship Owner Name field.
-#
-# PII arrives already tokenised, so the connector never de-tokenises: it declares
-# the policy applied upstream so the consumer knows how to read the value. Only
-# PROD data is tokenised (envelope.tokenised_environments), so everywhere else
-# build_fields is told not to declare policies and every field goes out with "".
+# Tokenisation policies. PII arrives tokenised; NAME only declares the upstream policy.
 POLICY_NONE = ""
 POLICY_NAME = "UK_TOK_AC_L0R0_UNC_DE"
 
@@ -73,12 +42,7 @@ class PayloadBuildError(ValueError):
 
 @dataclass(frozen=True)
 class FieldSpec:
-    """One field in a trigger's payload contract.
-
-    ``name`` is what BSP consumers see; ``source`` is the key the upstream
-    produces. Keeping them separate means an upstream column rename is a one-line
-    change here rather than a breaking change on the topic.
-    """
+    """One field in a trigger's payload contract."""
 
     name: str
     source: str
@@ -87,24 +51,14 @@ class FieldSpec:
     encryption_policy: str = POLICY_NONE
     #: Applied before string conversion; used to flatten lists.
     transform: Optional[Callable[[Any], Any]] = None
-    #: Used when the source key is absent. For optional fields and for fixed
-    #: contract values such as Trigger_subType_detail.
+    #: Used when the source value is absent or blank.
     default: Any = None
-    #: Maximum length of the *rendered* string, from the consumer's data-length
-    #: column. A longer value is rejected rather than truncated: the consumer
-    #: sizes its columns to these numbers, and a silently clipped CSID or BRID
-    #: is a wrong identifier, not a cosmetic one.
+    #: Maximum length of the rendered value; longer values are rejected, not truncated.
     max_length: Optional[int] = None
 
 
 def normalise_identifier(value: Any) -> Any:
-    """Render an identifier that a reader widened to float as the integer it holds.
-
-    A JSON reader that turns a bigint CSID into ``9912345678.0`` would otherwise
-    publish that string - a different identifier, and one character over the
-    consumer's width. Non-integral floats are left alone so they fail the field's
-    own validation rather than being silently rounded.
-    """
+    """Render an identifier that a reader widened to float as the integer it holds."""
     if isinstance(value, float) and value.is_integer():
         return int(value)
     return value
@@ -161,18 +115,7 @@ def build_fields(
     *,
     declare_policies: bool = True,
 ) -> List[Dict[str, str]]:
-    """Project ``attributes`` through ``specs`` into BSP payload field objects.
-
-    ``declare_policies`` False sends every ``fieldEncryptionPolicy`` empty: the
-    environment's data is not tokenised, so naming a policy would tell the
-    consumer to de-tokenise a plain value.
-
-    A missing or blank source value is replaced by ``spec.default`` when the
-    spec declares one. Raises ``PayloadBuildError`` when a required field is
-    still missing or empty after that, or when any field's rendered value is
-    longer than its ``max_length``. Optional fields with no value are omitted,
-    because the contract forbids an empty ``fieldValue``.
-    """
+    """Project ``attributes`` through ``specs`` into BSP payload field objects."""
     fields: List[Dict[str, str]] = []
 
     for spec in specs:
@@ -234,9 +177,5 @@ def build_fields(
 
 
 def serialise(fields: List[Dict[str, str]]) -> str:
-    """The JSON string that goes into the envelope's ``payload`` field.
-
-    Compact separators and preserved key order: the envelope is size limited, and
-    a stable rendering keeps the trigger ID hash stable.
-    """
+    """The JSON string that goes into the envelope's ``payload`` field."""
     return json.dumps(fields, separators=(",", ":"), ensure_ascii=False)

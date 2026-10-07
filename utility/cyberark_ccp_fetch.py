@@ -1,29 +1,4 @@
-"""CyberArk Central Credential Provider (CCP) credential retrieval.
-
-The task proves its identity to CCP with a bank-signed client certificate; CCP
-checks the certificate's serial number against the restriction registered on
-the Application ID and returns the account from the Safe. The certificate and
-its private key live in AWS Secrets Manager and are read with the ECS task
-role, so nothing secret is baked into the image or the task definition; only
-the secret's *name* and the CCP query are configuration.
-
-The certificate and the key are two Secrets Manager secrets, each holding the
-plain PEM text as its SecretString (``-----BEGIN CERTIFICATE-----...`` and
-``-----BEGIN PRIVATE KEY-----...``).
-
-The key must be an unencrypted PEM: ``requests`` has no way to pass a
-passphrase. It is written to a private temporary directory only for the
-duration of the CCP call and removed straight after.
-
-In addition:
-
-* the CA bundle for the CCP server is resolved from candidate paths;
-* failures are classified onto the catalogue, so a rejected certificate
-  reports as AUTHENTICATION_FAILURE rather than as a bare ``RuntimeError``;
-* the credential is cached for the process lifetime, so CCP is called once
-  per run. ``get_credentials(refresh=True)`` re-reads both the certificate
-  and the account, which picks up a rotated password or a renewed certificate.
-"""
+"""CyberArk Central Credential Provider (CCP) credential retrieval."""
 
 from __future__ import annotations
 
@@ -47,9 +22,7 @@ from utility.resilience_utility import BackoffPolicy, retry
 
 logger = logging.getLogger(__name__)
 
-#: Path of the client-certificate-authenticated CCP REST endpoint, relative to
-#: ``base_url``. The non-certificate variant (``/AIMWebService/...``) relies on
-#: an OS-user restriction, which has no meaning inside a container.
+#: Client-certificate CCP endpoint, relative to ``base_url``.
 ACCOUNTS_PATH = "/AIMWebService_certs/api/Accounts"
 
 #: Searched in order. The first that exists wins.
@@ -136,8 +109,6 @@ class CyberArkAuthenticator:
         self._lock = threading.Lock()
         self._cached: Optional[Credentials] = None
 
-    # -- request shape -----------------------------------------------------
-
     @property
     def accounts_url(self) -> str:
         base = self._settings.base_url.rstrip("/")
@@ -163,8 +134,6 @@ class CyberArkAuthenticator:
     def _verify(self) -> Any:
         return resolve_ca_bundle(self._settings.ca_bundle_path, ssl_verify=self._settings.ssl_verify)
 
-    # -- flow --------------------------------------------------------------
-
     def _read_pem(self, secret_id: str, what: str, marker: str) -> str:
         """One PEM from its own secret: the SecretString is the PEM text itself."""
         context = {"secret_id": secret_id, "region": self._settings.secret_region}
@@ -174,9 +143,7 @@ class CyberArkAuthenticator:
             client = self._session.client("secretsmanager", region_name=self._settings.secret_region)
             response = client.get_secret_value(SecretId=secret_id)
         except ClientError as exc:
-            # AccessDenied / ResourceNotFound / KMS decrypt failures: the task
-            # role or the secret is misconfigured, which retrying will not fix.
-            # A secret created with no value yet is also ResourceNotFound.
+            # Access denied, missing (or still empty) secret or KMS failure: not worth a retry.
             raise PreflightError(
                 f"Could not read the CyberArk {what} secret: "
                 f"{exc.response.get('Error', {}).get('Code', 'ClientError')}",
@@ -260,9 +227,7 @@ class CyberArkAuthenticator:
                     error = {"error_code": body.get("ErrorCode"), "error_msg": body.get("ErrorMsg")}
             except ValueError:
                 error = {"response": response.text[:500]}
-            # A 5xx or a throttle is CCP (or the Vault behind it) being
-            # unavailable, which a retry can outlast; any other status is CCP
-            # rejecting this AppID, certificate or query.
+            # 5xx and throttling are retried; any other status is CCP rejecting the request.
             unavailable = response.status_code >= 500 or response.status_code == 429
             raise PreflightError(
                 f"CyberArk CCP returned HTTP {response.status_code}"
@@ -308,12 +273,7 @@ class CyberArkAuthenticator:
             return self._cached
 
     def export_to_environment(self, realm: str) -> Credentials:
-        """Publish the credential where the BSP client expects to find it.
-
-        The BSP Python client reads ``BSP_USERNAME`` / ``BSP_PASSWORD`` from the
-        environment (``credentials.method: env`` in the BSP YAML), so they are
-        set here immediately before the client is constructed.
-        """
+        """Publish the credential where the BSP client expects to find it."""
         credentials = self.get_credentials()
         os.environ["BSP_USERNAME"] = credentials.principal(realm)
         os.environ["BSP_PASSWORD"] = credentials.password

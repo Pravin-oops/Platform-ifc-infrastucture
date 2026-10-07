@@ -1,18 +1,4 @@
-"""Barclays root CA, fetched from Secrets Manager at container start.
-
-The CA (``CARoot.pem``) is neither committed nor baked into the image. It is
-one Secrets Manager secret, holding the plain PEM text as its SecretString,
-read with the ECS task role like the CyberArk client certificate. It is written
-to ``ca_certificate.path`` before the BSP client is built, because two readers
-expect a real file there:
-
-* ``ssl.ca.location`` in the BSP client YAML (``utility/bsp_sit_config.yaml``),
-  which librdkafka reads for the broker TLS;
-* ``schema_registry.ca_location``, which verifies the Schema Registry.
-
-A CA certificate is public, so unlike the CyberArk key it is written readable
-and left in place for the life of the container.
-"""
+"""Barclays root CA, fetched from Secrets Manager at container start."""
 
 from __future__ import annotations
 
@@ -32,11 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 def install(settings: CaCertificateSettings, *, session: Optional[Any] = None) -> Optional[str]:
-    """Write the CA from its secret to ``settings.path`` and return that path.
-
-    Returns None, writing nothing, when no secret is configured: a local run
-    that points the CA paths at a file of its own.
-    """
+    """Write the CA from its secret to ``settings.path`` and return that path."""
     if not settings.secret_id:
         logger.warning(
             "ca_certificate.secret_id is not set; expecting the CA files at the configured "
@@ -62,9 +44,7 @@ def _read_secret(settings: CaCertificateSettings, session: Any) -> str:
         client = session.client("secretsmanager", region_name=settings.secret_region)
         response = client.get_secret_value(SecretId=settings.secret_id)
     except ClientError as exc:
-        # AccessDenied / ResourceNotFound / KMS decrypt: the task role or the
-        # secret is misconfigured, which retrying will not fix. Filed as an
-        # authentication (truststore) failure, as the CyberArk secrets are.
+        # Access denied, missing secret or KMS failure: misconfiguration, not worth a retry.
         code = exc.response.get("Error", {}).get("Code", "ClientError")
         hint = (
             # The template creates the secret empty; it has no value, and so

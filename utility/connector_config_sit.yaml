@@ -1,58 +1,28 @@
-# IFC trigger connector - SIT.
-#
-# One file per environment: the container selects this one with
-# APP_CONFIG_PATH=utility/connector_config_sit.yaml. Everything SIT-specific -
-# the environment, its BSP client YAML and the SECURE registry - is fixed here
-# rather than set per task.
-#
-# Placeholders marked CONFIRM are open items tracked in the README; they are the
-# environment-readiness values the POC assessment lists as still outstanding.
-#
-# Any value here can still be overridden per task without republishing this
-# file, by setting an IFC_ environment variable in the ECS task definition.
-# Sections are separated by a double underscore, e.g. IFC_KAFKA__TOPIC,
-# IFC_RUN__TRIGGER.
+# IFC trigger connector - SIT. Selected with APP_CONFIG_PATH=utility/connector_config_sit.yaml.
+# Any value can be overridden per task with IFC_<SECTION>__<KEY>; CONFIRM marks open items.
 
 app:
   name: ifc-trigger-connector
-  # Selects envelope.originating_systems below.
   environment: SIT
   log_level: INFO
 
 envelope:
-  # Each environment's service number, sent as both triggerOriginatingSystem
-  # and idSystem, and the first part of every trigger ID. A run whose
-  # app.environment is not listed here stops at startup.
+  # Service number per environment: triggerOriginatingSystem, idSystem and the trigger ID prefix.
   originating_systems:
     DEV: SNSVC0084379
     SIT: SNSVC0084378
     PROD-ANALYTICS: SNSVC0084375
     PROD-PARALLEL: SNSVC0084371
     PROD: SNSVC0084373
-  # Environments whose upstream data is tokenised. Only there does a payload
-  # field declare its fieldEncryptionPolicy (UK_TOK_AC_L0R0_UNC_DE on Client
-  # Relationship Owner Name); in every other environment all policies are "".
+  # Only these environments declare UK_TOK_AC_L0R0_UNC_DE on Client Relationship Owner Name.
   tokenised_environments: [PROD]
 
 run:
-  # One ECS RunTask per trigger invocation: publish the month, then exit.
-  # EventBridge Scheduler sets IFC_RUN__TRIGGER on every invocation.
-  # Must be <= the task definition's stopTimeout (set to 120 in deploy/).
+  # Must be <= the task definition's stopTimeout (120).
   shutdown_grace_seconds: 90
 
 source:
-  # Athena is the only source: each trigger's Iceberg table (built by the dbt
-  # models on Databricks) is queried directly. The scheduler names the trigger
-  # ("trigger 9", IFC_RUN__TRIGGER=TRIGGER_9, ...) and the run queries only that
-  # trigger's table. No source.table fallback on purpose: an unmapped trigger
-  # fails rather than reading another trigger's data.
-  #
-  # The tables hold only the attribute columns. Every envelope publishes
-  # triggerType "KYCRefresh", with triggerSubType by trigger:
-  # TRIGGER_8 -> NewHRCRelationship, TRIGGER_9 -> AccountInactivity,
-  # TRIGGER_21 -> MultipleTMSARs.
-  #
-  # database.table per trigger, as shared by DevOps (SIT synthetic data).
+  # Athena table per trigger; IFC_RUN__TRIGGER picks one, and an unmapped trigger fails.
   trigger_tables:
     TRIGGER_8: bdb_ifc_synthetic_data_test.bdp_corp_ifc_trigger_8
     TRIGGER_9: bdb_ifc_synthetic_data_test.bdp_corp_ifc_trigger_9
@@ -61,141 +31,87 @@ source:
     # CONFIRM: the workgroup the task role may use.
     workgroup: primary
     catalog: AwsDataCatalog
-    # The DevOps stack's AthenaQueryResultsBucket + AthenaQureyResultsPrefix.
     # A workgroup that enforces its own result location overrides this.
     output_location: s3://sit1-logs-corpdeng-509153454187-eu-west-1/athena_output/
-    # business_date is always the last day of the month the rows describe, so a
-    # run reads the rows where it equals the last day of the previous month:
-    # any run in September 2026 queries business_date = 2026-08-31, and a rerun
-    # with IFC_RUN__MONTH=2026-08 queries 2026-07-31.
+    # A run reads the rows dated the last day of the previous month.
     business_date_column: business_date
     # Fixes row order, so a re-run allocates the same sequence numbers.
     order_by: [date_of_request, counterparty_csid_sds]
     poll_interval_seconds: 1.0
     query_timeout_seconds: 300
 
-# Upstream reconciliation gate, checked after the run gate's skips and before
-# any work: the run gate asks whether this month is due, this asks whether
-# upstream produced anything to run for. The Databricks recon job appends a row
-# per model run to the recon table; the newest row for the run's trigger
-# (matched on target_table_name) must be from the current month (UTC), SUCCESS,
-# with matching non-zero counts. FAILED (the dbt model did not run) and
-# RECON_FAILED block the run and alert with the row's details. SUCCESS with
-# both counts zero is a genuine empty month: exit 0, no alert, the month is
-# recorded delivered and TBB gets a batch event with zero messages.
-# The query runs through source.athena's workgroup, catalog and result location.
+# Upstream gate: the trigger's newest recon row must be this month's SUCCESS with matching counts.
+# SUCCESS with zero counts is an empty month: exit 0, no alert.
 recon:
   enabled: true
-  # The one batch recon table every trigger's rows are written to.
   table: bdb_ifc_synthetic_data_test.batch_recon
-  # The target_table_name value each trigger's rows carry in batch_recon - the
-  # Databricks table the trigger's model writes. A run reads only the rows
-  # whose target_table_name is its own trigger's, matched ignoring backticks
-  # and case, and the one with the latest last_modified_ts decides.
+  # The target_table_name each trigger's recon rows carry.
   trigger_targets:
     TRIGGER_8: "`sit_cds_snsvc0080860_prepared_db`.bdb_ifc_synthetic_data_test.BDP_Corp_IFC_Trigger_8"
     TRIGGER_9: "`sit_cds_snsvc0080860_prepared_db`.bdb_ifc_synthetic_data_test.BDP_Corp_IFC_Trigger_9"
     TRIGGER_21: "`sit_cds_snsvc0080860_prepared_db`.bdb_ifc_synthetic_data_test.BDP_Corp_IFC_Trigger_21"
 
 kafka:
-  # CONFIRM: the CDD trigger topic. The BSP topic table lists
-  # tc01_fncmtrgrbb_ifc_tbb_kyc_refresh for CDD (DEV).
+  # CONFIRM: the CDD trigger topic.
   topic: tc01_fncmtrgrbb_ifc_tbb_kyc_refresh
-  # The SIT BSP client YAML (librdkafka properties): SASL_SSL on 9095 with the
-  # BAM token.
+  # SASL_SSL on 9095 with the BAM token.
   bsp_config_path: utility/bsp_sit_config.yaml
-  # Broker limit is 800 KB; the guard sits just under it.
+  # Just under the broker's 800 KB limit.
   max_message_bytes: 819200
   flush_timeout_seconds: 120
   local_queue_max_messages: 20000
-  # librdkafka properties applied over the BSP client config. These match the
-  # Trigger Backbone team's Java producer. Their session.timeout.ms (30000) is
-  # left out: it is a consumer property, and librdkafka ignores it on a
-  # producer with a CONFWARN.
+  # Applied over the BSP client config; these match the Trigger Backbone Java producer.
   overrides:
     request.timeout.ms: 60000
     connections.max.idle.ms: 300000
     metadata.max.age.ms: 300000
-  # librdkafka debug trace, for diagnosis only (verbose). Set per task with
-  # IFC_KAFKA__DEBUG=security,broker,protocol rather than here; 'all' and
-  # 'conf' are refused because they print the client config.
+  # Diagnosis only; prefer IFC_KAFKA__DEBUG on the task. 'all' and 'conf' are refused.
   # debug: security,broker,protocol
 
 schema_registry:
-  # SIT always uses the secure registry.
   mode: SECURE
-
-  # The Barclays root CA, written at container start (ca_certificate below).
   ca_location: /tmp/ifc-certs/CARoot.pem
   timeout_seconds: 30
-  # Attempts at each registry request before preflight fails.
   max_attempts: 5
   schema_path: utility/schema.json
-
-  # Secure registry: port 8095, the BAM bearer token.
-  # Comma-separated nodes. Each is checked at preflight; the schema is read
-  # from the first that answers, so one node down does not fail the run.
+  # Port 8095 with the BAM token; the first node that answers is used.
   secure:
     url: https://ldndsr000010177.intranet.barcapint.com:8095, https://gbrdsr000014551.intranet.barcapint.com:8095
     token_refresh_margin_seconds: 300
 
-# Barclays root CA (CARoot.pem). Never committed or baked into the image: one
-# Secrets Manager secret holding the plain PEM, read with the ECS task role and
-# written to `path` before anything connects. ssl.ca.location in
-# utility/bsp_sit_config.yaml and schema_registry.ca_location above both point
-# at that path. Without a secret_id nothing is fetched (local runs).
+# Barclays root CA, read from Secrets Manager and written to `path` at start.
+# The PEM is stored in the secret by hand; until then the run fails at this read.
 ca_certificate:
-  # KafkaCABundleSecret in the infrastructure template. Created empty: the PEM
-  # is stored in it by hand, and until then the run fails at this read.
   secret_id: /ifc/bsp-event-processor/kafka/ca-bundle
   secret_region: eu-west-1
   path: /tmp/ifc-certs/CARoot.pem
 
-# CyberArk Central Credential Provider (CCP), client-certificate authentication.
-# Locations only: the client certificate and key are read from the Secrets
-# Manager secret below, and the account itself from CCP at runtime.
+# CyberArk CCP. In ECS, enabled, base_url, app_id, safe and object come from the
+# product template's CYBERARK_* variables; off, BSP_USERNAME/BSP_PASSWORD are used.
 cyberark:
-  # In ECS the product template (products/ecs/product.template.yaml) sets these
-  # from its CyberArk parameters, so they are not repeated here:
-  #   CYBERARK_ENABLED  -> enabled
-  #   CYBERARK_CCP_URL  -> base_url (the full .../AIMWebService_certs/api/Accounts URL)
-  #   CYBERARK_APP_ID   -> app_id
-  #   CYBERARK_SAFE     -> safe
-  #   CYBERARK_ACCOUNT  -> object
-  # Off by default, as in the template: dev runs publish without a BSP system
-  # account and take BSP_USERNAME/BSP_PASSWORD from the environment.
   enabled: false
   folder: Root
-  # Secrets Manager secrets created by DevOps, each holding one plain PEM: the
-  # certificate, and its unencrypted private key. Both are empty until the
-  # certificate is issued.
   client_cert_secret_id: /ifc/bsp-event-processor/cyberark/client-cert
   client_key_secret_id: /ifc/bsp-event-processor/cyberark/private-key
   secret_region: eu-west-1
   ca_bundle_path: /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
   ssl_verify: true
   request_timeout: 30
-  # Retries a CCP 5xx/429 or a connection failure; a rejection fails at once.
   max_attempts: 3
   principal_realm: "@INTRANET.BARCAPINT.COM"
 
-# Every invocation's outcome, appended as one JSON line to this file. The gate
-# reads it to decide whether the month is already delivered; Athena reads the
-# folder as a table (deploy/athena-run-markers.sql), so keep the folder to this
-# one file. Unset the path to switch the entry-point gate off. See README,
-# 'The invocation gate'.
+# One JSON line per invocation; decides whether the month is already delivered.
+# Keep the folder to this one file (Athena reads it as a table). Unset to turn the gate off.
 run_marker:
   path: s3://sit1-pre-cds01-509153454187-eu-west-1/dbx-sit-cds-snsvc0080860-prepared-db/ifc-bdp-audit-recon-json/run-markers/run_markers.json
 
 audit:
-  # Either a bare bucket name or a full s3://bucket/folder URI. The prefixes
-  # below are appended to it, so a URI naming a folder nests them under it.
+  # Bucket name or s3://bucket/folder; the prefixes are appended to it.
   bucket: s3://sit1-pre-cds01-509153454187-eu-west-1/dbx-sit-cds-snsvc0080860-prepared-db/ifc-bdp-audit-recon-json/audit-bucket
   manifest_prefix: manifests/
   quarantine_prefix: quarantine/
   payload_prefix: payloads/
-  # One S3 PUT per message. On for UAT so the control evidence exists during
-  # onboarding; review before production volumes.
+  # One S3 PUT per message; review before production volumes.
   write_payloads: true
 
 resilience:
@@ -205,16 +121,9 @@ resilience:
   circuit_breaker_threshold: 20
   circuit_breaker_reset_seconds: 120
   preflight_enabled: true
-  # Per-endpoint DNS/TCP connect timeout at preflight: an unreachable endpoint
-  # takes this long to report.
   preflight_timeout_seconds: 30
-  # Off: no explicit list_topics() at preflight. The first publish brings up the
-  # broker connection (TLS, SASL with the BAM token, metadata), as produce_app
-  # does; a missing topic or ACL comes back as a delivery error. Turn on with
-  # IFC_RESILIENCE__PREFLIGHT_METADATA_ENABLED=true to fail fast with the reason.
+  # Off: the first publish connects. On: list_topics() at preflight, to fail fast with the reason.
   preflight_metadata_enabled: false
-  # The metadata request, when on: librdkafka retries the TLS/SASL handshakes
-  # across the brokers within this window.
   preflight_metadata_timeout_seconds: 60
   max_quarantine_ratio: 0.05
 
@@ -227,8 +136,7 @@ notifications:
   # CONFIRM: the RTB alerting topic.
   sns_topic_arn: null
   application_label: IFC Trigger Connector
-  # CONFIRM: the Trigger Backbone batch-completion topic. Separate from the
-  # RTB alerting topic above - this one carries a successful business event.
+  # CONFIRM: the Trigger Backbone batch-completion topic.
   batch_sns_topic_arn: null
   trigger_originating_bu: UK-C
   batch_notifications_enabled: true

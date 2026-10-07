@@ -1,21 +1,4 @@
-"""The TBB/BSP failure catalogue, encoded.
-
-Every row of the agreed "Failure scenarios to be worked on" matrix appears here
-once, with three additions the document does not carry:
-
-* ``handling`` - what this connector does automatically when the scenario
-  occurs. ``Handling.NONE`` means the scenario is real but originates outside
-  the connector (Databricks, FRED), so all we can do is classify and report.
-* ``exit_code`` - the process exit code the connector uses, so an ECS task's
-  ``stoppedReason`` / exit code alone tells RTB which scenario fired without
-  reading logs.
-* ``retryable`` / ``producer_fix_required`` - drives the retry and circuit
-  breaker decisions in ``publisher.py``.
-
-Exit codes are grouped: 10-19 infrastructure, 20-29 data/contract,
-30-39 platform, 40-49 security. 0 is success, 75 is "drained cleanly but work
-remains" (EX_TEMPFAIL), which ECS should treat as a normal restart.
-"""
+"""The TBB/BSP failure catalogue, encoded."""
 
 from __future__ import annotations
 
@@ -107,7 +90,7 @@ class Scenario:
         }
 
 
-# Sentinel exit codes -------------------------------------------------------
+# Sentinel exit codes
 
 EXIT_OK = 0
 EXIT_WORK_REMAINING = 75  # EX_TEMPFAIL: drained on SIGTERM, more work pending.
@@ -123,9 +106,7 @@ def _register(scenario: Scenario) -> Scenario:
     return scenario
 
 
-# --------------------------------------------------------------------------
 # AWS infrastructure
-# --------------------------------------------------------------------------
 
 CONTAINER_FAILURE = _register(
     Scenario(
@@ -348,9 +329,7 @@ FRED_AUDIT_STORE_FAILURE = _register(
     )
 )
 
-# --------------------------------------------------------------------------
 # Databricks / TED layer
-# --------------------------------------------------------------------------
 
 TED_JOB_FAILURE = _register(
     Scenario(
@@ -429,9 +408,7 @@ RECONCILIATION_FAILURE = _register(
     )
 )
 
-# --------------------------------------------------------------------------
 # Kafka / BSP platform
-# --------------------------------------------------------------------------
 
 HIGH_PUBLISH_LATENCY = _register(
     Scenario(
@@ -597,9 +574,7 @@ SCHEMA_REGISTRY_UNAVAILABLE = _register(
     )
 )
 
-# --------------------------------------------------------------------------
 # Security
-# --------------------------------------------------------------------------
 
 AUTHENTICATION_FAILURE = _register(
     Scenario(

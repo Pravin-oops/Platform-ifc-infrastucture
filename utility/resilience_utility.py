@@ -1,14 +1,4 @@
-"""Retry, circuit breaking and shutdown coordination.
-
-All three exist because the connector is long-lived and container-hosted:
-
-* retries have to be interruptible, or a SIGTERM lands in the middle of a
-  60-second sleep and ECS escalates to SIGKILL;
-* a circuit breaker turns "BSP is down" from an infinite retry loop into a
-  clean exit, recorded as FAILURE so the next date in the window re-runs;
-* shutdown is cooperative, so the drain path is the same whether the task is
-  stopped by a deployment or an operator.
-"""
+"""Retry, circuit breaking and shutdown coordination."""
 
 from __future__ import annotations
 
@@ -26,12 +16,7 @@ T = TypeVar("T")
 
 
 class ShutdownSignal:
-    """Cooperative stop flag, set by SIGTERM/SIGINT.
-
-    ECS sends SIGTERM and then waits ``stopTimeout`` before SIGKILL, so every
-    blocking wait in the connector goes through ``sleep`` here rather than
-    ``time.sleep``.
-    """
+    """Cooperative stop flag, set by SIGTERM/SIGINT."""
 
     def __init__(self) -> None:
         self._event = threading.Event()
@@ -103,11 +88,7 @@ def retry(
     shutdown: Optional[ShutdownSignal] = None,
     description: str = "operation",
 ) -> T:
-    """Call ``operation`` until it succeeds, is not retryable, or attempts run out.
-
-    A shutdown signal during a backoff aborts immediately and re-raises the last
-    error, so the drain path is not delayed by a pending retry.
-    """
+    """Call ``operation`` until it succeeds, is not retryable, or attempts run out."""
     last_error: Optional[BaseException] = None
 
     for attempt in range(1, attempts + 1):
@@ -156,12 +137,7 @@ class CircuitOpen(RuntimeError):
 
 
 class CircuitBreaker:
-    """Trips after N consecutive failures; half-opens after a cooldown.
-
-    Consecutive, not windowed: the failure mode being guarded is a total BSP
-    outage, where every attempt fails. A run that is succeeding intermittently
-    should keep going and be caught by the reconciliation check instead.
-    """
+    """Trips after N consecutive failures; half-opens after a cooldown."""
 
     def __init__(self, *, threshold: int, reset_seconds: float, name: str = "publish"):
         self._threshold = threshold

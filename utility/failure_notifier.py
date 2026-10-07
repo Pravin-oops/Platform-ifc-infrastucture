@@ -1,10 +1,4 @@
-"""Turn a classification into an RTB-ready alert.
-
-The subject line alone has to be enough for the on-call engineer to route the
-incident, because that is all a paging integration shows. The body then answers,
-in order: what broke, what the connector already did about it, who owns it, and
-what to do next - all lifted from the agreed catalogue rather than invented here.
-"""
+"""Turn a classification into an RTB-ready alert."""
 
 from __future__ import annotations
 
@@ -99,11 +93,7 @@ def describe_aws_error(exc: Exception) -> str:
 
 
 class Notifier:
-    """Publishes alerts to SNS when configured; always logs them.
-
-    A failure to notify is never allowed to mask the failure being notified, so
-    SNS errors are logged and swallowed.
-    """
+    """Publishes alerts to SNS when configured; always logs them."""
 
     def __init__(
         self,

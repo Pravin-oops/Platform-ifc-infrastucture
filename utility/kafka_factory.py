@@ -1,10 +1,4 @@
-"""Assembles the Kafka publishing stack and runs the readiness checks.
-
-Everything that can fail before a record is read fails here, in the order the
-POC execution plan prescribes: source readable, state store reachable, DNS, TCP,
-BAM token, Schema Registry, cluster metadata. By the time ``build`` returns, the
-only failures left are genuine runtime ones.
-"""
+"""Assembles the Kafka publishing stack and runs the readiness checks."""
 
 from __future__ import annotations
 
@@ -42,9 +36,7 @@ from utility.connector_config import ConnectorSettings
 
 logger = logging.getLogger(__name__)
 
-#: librdkafka properties the connector insists on. The BSP client owns security;
-#: these are the delivery-guarantee and memory-bound properties the failure
-#: catalogue depends on, so they are applied over whatever BSP returns.
+#: Delivery and memory properties applied over the BSP client config.
 REQUIRED_PRODUCER_PROPERTIES: Dict[str, Any] = {
     # Exactly-once-per-partition on retry. Without it, the automatic retries
     # that make 'partition leader failure' self-healing create duplicates.
@@ -75,13 +67,7 @@ class _NoTokenProvider:
 
 
 class _BrokerErrors:
-    """``error_cb`` that keeps librdkafka's recent per-broker errors.
-
-    A failed metadata request only says ``_TRANSPORT``; the reason each
-    connection was dropped - a TLS handshake failure, a SASL rejection - comes
-    through ``error_cb``, so it is kept to explain the failure. Any callback
-    the BSP config set is still called.
-    """
+    """``error_cb`` that keeps librdkafka's recent per-broker errors."""
 
     def __init__(self, chained: Any = None, *, keep: int = 10):
         self._chained = chained if callable(chained) else None
@@ -101,11 +87,7 @@ class _BrokerErrors:
 
 
 class _LibrdkafkaTrace(logging.Handler):
-    """Keeps librdkafka's most recent log lines, to show what led to a failure.
-
-    confluent-kafka queues librdkafka's lines for the Python ``logger`` until
-    ``poll()``; the failed metadata request polls, so the lines arrive then.
-    """
+    """Keeps librdkafka's most recent log lines, to show what led to a failure."""
 
     #: The lines that say why a connection did not get through.
     KEY_LINE = re.compile(
@@ -144,15 +126,7 @@ def _jwt_claims(token: str) -> Dict[str, Any]:
 
 
 def _observed_oauth_cb(callback: Callable[[Any], Any]) -> Callable[[Any], Any]:
-    """Wrap the BSP client's ``oauth_cb`` to log what it gives librdkafka.
-
-    The brokers get their token through this callback, not through the
-    ``get_token`` call the Schema Registry uses, so a token the registry
-    accepts says nothing about this path. confluent-kafka expects
-    ``(token, expiry in epoch seconds[, principal, extensions])``; an expiry in
-    milliseconds, an exception, or the wrong shape leaves SASL waiting and the
-    metadata request failing as ``_TRANSPORT``. Never logs the token itself.
-    """
+    """Wrap the BSP client's ``oauth_cb`` to log what it gives librdkafka."""
 
     def observed(oauth_config: Any) -> Any:
         try:
@@ -245,8 +219,6 @@ class KafkaStackFactory:
     def report(self) -> pf.PreflightReport:
         return self._report
 
-    # -- pieces ------------------------------------------------------------
-
     def _bsp_client(self) -> Optional[BSPClient]:
         """None means a direct broker connection with no BSP involvement."""
         settings = self._settings
@@ -305,11 +277,7 @@ class KafkaStackFactory:
         return config
 
     def _enable_debug(self, config: Dict[str, Any]) -> None:
-        """Route librdkafka's debug trace into the JSON logs when kafka.debug is set.
-
-        Also honours a ``debug`` property that arrived through kafka.overrides
-        or the BSP config, so the trace is never left on stderr unparsed.
-        """
+        """Route librdkafka's debug trace into the JSON logs when kafka.debug is set."""
         debug = self._settings.kafka.debug or config.get("debug")
         if not debug:
             return
@@ -329,11 +297,7 @@ class KafkaStackFactory:
 
     @staticmethod
     def _log_client_config(config: Dict[str, Any]) -> None:
-        """What librdkafka will actually connect with, after the BSP client built it.
-
-        The BSP client may supply the brokers and security settings itself, so
-        the YAML alone does not say what is in effect.
-        """
+        """What librdkafka will actually connect with, after the BSP client built it."""
         brokers = pf.parse_bootstrap_servers(config.get("bootstrap.servers", ""))
         effective = {key: config.get(key) for key in _LOGGED_PROPERTIES}
         ca_location = effective.get("ssl.ca.location")
@@ -376,9 +340,7 @@ class KafkaStackFactory:
             settings.schema_registry.mode == "DEV" and settings.schema_registry.schema_id is not None
         )
         if registry_lookup:
-            # Every node is checked and reported; one reachable node is enough,
-            # since the lookup fails over to whichever answers. Either mode:
-            # DEV looks the schema up too, unless its id is pinned.
+            # Every registry node is checked; one reachable node is enough.
             registry = [pf.parse_url_endpoint(url) for url in settings.schema_registry.urls]
             single = len(registry) == 1
             pf.check_dns(self._report, registry, label="schema_registry", blocking=single)
@@ -475,15 +437,7 @@ class KafkaStackFactory:
 
     @staticmethod
     def _await_oauth_token(producer: Any, config: Dict[str, Any], timeout: float = 15.0) -> None:
-        """Poll the new producer until the BSP ``oauth_cb`` has supplied its token.
-
-        confluent-kafka 2.4 (the image's version) runs ``oauth_cb`` only from
-        ``poll()``/``flush()``. ``list_topics()`` does not serve it, so a
-        metadata request made straight after the producer is built has no token
-        to authenticate with: every broker waits for one, and the request times
-        out as ``_TRANSPORT``. Newer clients call it on their own, and there the
-        first poll finds the token already set.
-        """
+        """Poll the new producer until the BSP ``oauth_cb`` has supplied its token."""
         supplied = getattr(config.get("oauth_cb"), "supplied", None)
         poll = getattr(producer, "poll", None)
         if supplied is None or not callable(poll):
@@ -517,9 +471,7 @@ class KafkaStackFactory:
             try:
                 metadata = producer.list_topics(topic=topic, timeout=timeout)
             except Exception as exc:
-                # error_cb is only served by poll(): drain it, then name the
-                # per-broker reasons, which also lets the classifier file a
-                # TLS or SASL failure as authentication rather than "broker".
+                # error_cb only fires from poll(): drain it so the broker reasons are known.
                 poll = getattr(producer, "poll", None)
                 if callable(poll):
                     poll(0)
@@ -572,8 +524,6 @@ class KafkaStackFactory:
             topics=[self._settings.kafka.topic],
         )
 
-    # -- assembly ----------------------------------------------------------
-
     def build(self) -> KafkaStack:
         settings = self._settings
 
@@ -622,9 +572,7 @@ class KafkaStackFactory:
             self._metadata_checks(producer)
             self._report.raise_if_failed()
         else:
-            # As produce_app does: librdkafka fetches the topic's metadata
-            # itself when the first record is produced, and a missing topic or
-            # ACL comes back as that record's delivery error.
+            # The first produce fetches metadata; a missing topic or ACL is a delivery error.
             logger.debug(
                 "Topic metadata preflight is off; the first publish brings up the broker connection"
             )

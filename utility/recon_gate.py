@@ -1,42 +1,4 @@
-"""The upstream reconciliation gate.
-
-Before any work, this decides whether upstream has anything worth running for.
-The Databricks recon job appends one row per model run to a recon table that
-Athena reads::
-
-    target_table_name   `sit_cds_snsvc0080860_prepared_db`.bdb_ifc_synthetic_data_test.BDP_Corp_IFC_Trigger_9
-    status              SUCCESS | RECON_FAILED | FAILED
-    source_count, target_count, error_record_count
-    last_modified_ts    when the row was written (UTC)
-    idempotency_key, batch_id, model_name, job_run_id, env, dataproduct_name,
-    last_modified_by
-
-A rerun appends a new row rather than updating the old one, so the newest row
-for the run's trigger - matched on ``target_table_name`` - is upstream's current
-verdict. Only that row is read.
-
-What the newest row decides, each mapped onto the agreed failure catalogue so
-the ECS stopped-task record alone tells RTB which one fired:
-
-* no row for the trigger - upstream data was never received;
-* the row is not from the current month - upstream has not processed this month
-  yet, and publishing would republish last month;
-* ``FAILED`` - the dbt model itself did not run;
-* ``RECON_FAILED`` - the model ran but upstream's reconciliation failed;
-* ``SUCCESS`` with counts that disagree - upstream's own definition of a failed
-  reconciliation, reported as SUCCESS by mistake;
-* ``SUCCESS`` with both counts zero - a genuine month with no data. Not a
-  failure: exit 0, no alert, and the caller announces a zero-message batch to
-  TBB and closes the month;
-* ``SUCCESS`` with matching, non-zero counts - the run proceeds and publishes.
-
-Every blocking reason carries the row's own details (model, job run, batch,
-counts, timestamp), because that reason is what the alert says.
-
-Stopping is the safe direction: a recon table that cannot be queried, or a row
-that cannot be understood, blocks the run rather than letting it proceed on an
-assumption. A status outside the three is untrusted, never a green light.
-"""
+"""The upstream reconciliation gate."""
 
 from __future__ import annotations
 
@@ -101,14 +63,7 @@ class ReconDecision:
 
     @property
     def blocking_scenario(self) -> catalog.Scenario:
-        """The catalogue scenario behind a block.
-
-        ``scenario_key`` is optional because a *proceeding* decision has none,
-        which a caller on the blocking path can see is impossible but a type
-        checker cannot. This narrows it in one place instead of at every call
-        site, and falls back to ``UNKNOWN`` rather than raising: a gate that
-        blocked the run must still be able to report why.
-        """
+        """The catalogue scenario behind a block."""
         if not self.scenario_key:
             return catalog.UNKNOWN
         return catalog.get(self.scenario_key)
@@ -139,13 +94,7 @@ def _blocked(outcome: str, scenario, reason: str, **extra) -> ReconDecision:
 
 
 def parse_last_modified(value: Any) -> Optional[datetime]:
-    """The row's ``last_modified_ts`` as a naive UTC datetime, or ``None``.
-
-    Athena returns the column already typed; text is accepted too, in every
-    form ``athena_query.parse_timestamp`` reads - including Athena's
-    ``2026-10-05 06:12:13.790087 UTC`` for a ``timestamp with time zone``
-    column and Databricks' ``2026-10-05T06:12:13.790+00:00``.
-    """
+    """The row's ``last_modified_ts`` as a naive UTC datetime, or ``None``."""
     if isinstance(value, datetime):
         if value.tzinfo is not None:
             return value.astimezone(timezone.utc).replace(tzinfo=None)
@@ -172,13 +121,7 @@ def _as_int(value: Any) -> Optional[int]:
 
 
 def normalise_target(name: str) -> str:
-    """``target_table_name`` compared without backticks or case.
-
-    Databricks names are case-insensitive and the catalog part is quoted with
-    backticks because it holds hyphens, so a row written as
-    ```sit_cds_snsvc0080860_prepared_db`.bdb_ifc_synthetic_data_test.BDP_Corp_IFC_Trigger_9`` and a config
-    value written without the backticks still match.
-    """
+    """``target_table_name`` compared without backticks or case."""
     return str(name).replace("`", "").strip().lower()
 
 
@@ -214,15 +157,7 @@ def evaluate(
     client: Any = None,
     sleep: Callable[[float], None] = time.sleep,
 ) -> ReconDecision:
-    """Decide from the recon table whether upstream has produced this month's data.
-
-    ``settings`` is ``ReconSettings`` with ``table`` and ``target_table``
-    resolved; ``athena`` is ``source.athena`` (workgroup, catalog, result
-    location, polling). ``execution_month`` is ``YYYY-MM`` - the month the
-    newest row's ``last_modified_ts`` has to fall in. The entry point passes the
-    current month, not ``IFC_RUN__MONTH``: upstream writes its recon row when it
-    runs, even when an earlier month is being reprocessed.
-    """
+    """Decide from the recon table whether upstream has produced this month's data."""
     table, target = settings.table, settings.target_table
     if not table or not target:
         raise ValueError("recon.table and the run's recon target must be resolved before evaluating")
@@ -310,10 +245,7 @@ def evaluate(
         )
 
     if status != STATUS_SUCCESS:
-        # The contract is exactly three statuses. Anything else means the row
-        # does not match the contract it was read under, so it is untrusted
-        # rather than a fourth outcome to interpret - there is no state in which
-        # an unknown status is a green light.
+        # Only the three contract statuses are trusted; anything else blocks the run.
         return _blocked(
             "UPSTREAM_RECON_UNREADABLE",
             catalog.SCHEMA_VALIDATION_FAILURE,
@@ -347,10 +279,7 @@ def evaluate(
             **common,
         )
 
-    # Counts that disagree are upstream's own definition of a failed
-    # reconciliation, so a SUCCESS carrying them is a contradiction: upstream
-    # should have written RECON_FAILED and did not. Stop rather than publish a
-    # month upstream cannot account for.
+    # SUCCESS with mismatched counts contradicts itself: stop rather than publish.
     if source_count != target_count:
         return _blocked(
             "UPSTREAM_COUNT_MISMATCH",

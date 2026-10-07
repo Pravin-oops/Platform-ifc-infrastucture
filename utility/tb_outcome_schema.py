@@ -1,34 +1,4 @@
-"""Build and validate the TriggerBackboneTopicSchema envelope.
-
-Envelope values, as agreed with the Trigger Backbone:
-
-* ``timestamp`` is the business month the triggers belong to, not the moment
-  they were detected. Monthly triggers for June 2026 are produced in July, and
-  every one of them carries the last instant of June,
-  ``2026-06-30T23:59:59.999999999Z``. The business month is the calendar month
-  before the run date, in UK time.
-* ``triggerPostingTimestamp`` is when the event is posted, in the same RFC 3339
-  shape: UTC, nanosecond precision, ``Z``.
-* ``triggerOriginatingSystem`` and ``idSystem`` are both the environment's
-  service number (``SNSVC0084378`` in SIT), from ``envelope.originating_systems``
-  in the config, keyed by ``app.environment``. The same code starts every
-  trigger ID.
-* ``triggerType``, ``triggerOriginatingBU`` and ``idType`` are fixed constants
-  (see below), per the payload specification on Confluence. Neither the input
-  event nor config can change them.
-* ``idValue`` is the counterparty CSID from the BDP row
-  (``counterparty_csid_sds``). Nothing upstream supplies a separate customer id,
-  so the input wrapper carries no identity at all.
-
-The trigger ID follows the Trigger Backbone's format::
-
-    {system}_{triggerType}_{triggerSubType}_{timestamp}_{sequenceNumber}
-
-``timestamp`` is the business-month stamp, the same for every record in a run,
-and ``sequenceNumber`` is the record's position in the batch, so the ID is
-unique within a run. The file is read in order, so re-running the same file
-reproduces the same IDs. The trigger ID is also the Kafka message key.
-"""
+"""Build and validate the TriggerBackboneTopicSchema envelope."""
 
 from __future__ import annotations
 
@@ -57,9 +27,7 @@ from utility.trigger_payload import (
 
 logger = logging.getLogger(__name__)
 
-# Envelope constants, per the payload specification on Confluence. An input
-# event's own triggerType is ignored so upstream data cannot change them. The
-# originating system (also the idSystem) is per environment, so it is passed in.
+# Envelope constants; the input event's own triggerType is ignored.
 TRIGGER_TYPE = "KYCRefresh"
 ORIGINATING_BU = "UK-C"
 ID_TYPE = "Customer"
@@ -74,10 +42,7 @@ _BUSINESS_MONTH = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 
 
 def rfc3339(moment: datetime) -> str:
-    """UTC RFC 3339 with nanosecond precision, e.g. ``2026-07-15T09:30:01.123456000Z``.
-
-    Python datetimes stop at microseconds, so the last three digits are zero.
-    """
+    """UTC RFC 3339 with nanosecond precision, e.g. ``2026-07-15T09:30:01.123456000Z``."""
     utc = moment.astimezone(timezone.utc)
     return f"{utc:%Y-%m-%dT%H:%M:%S}.{utc.microsecond:06d}000Z"
 
@@ -103,11 +68,7 @@ def month_end_timestamp(business_month: str) -> str:
 
 
 def normalise_csid(value: Any) -> Optional[str]:
-    """The CSID as a string, or None when it is absent or unusable.
-
-    A reader that widens bigint to float would otherwise publish
-    ``9912345678.0``; an integral float is rendered as the integer it holds.
-    """
+    """The CSID as a string, or None when it is absent or unusable."""
     if value is None or isinstance(value, bool):
         return None
     if isinstance(value, float):
@@ -119,13 +80,7 @@ def normalise_csid(value: Any) -> Optional[str]:
 
 
 class SequenceAllocator(Protocol):
-    """Numbers the batch and counts each customer's occurrences.
-
-    ``allocate`` returns the record's position in the batch (1, 2, 3...), which
-    is the envelope's sequenceNumber and the end of its trigger ID, so it must
-    never repeat within a run. ``occurrences`` is the customer's count so far,
-    used to tell two events for one customer apart in the business key.
-    """
+    """Numbers the batch and counts each customer's occurrences."""
 
     def allocate(self, csid: str) -> int: ...
 
@@ -134,11 +89,7 @@ class SequenceAllocator(Protocol):
 
 @dataclass
 class TriggerEvent:
-    """One row of a trigger's Athena table.
-
-    ``attributes`` is the row's columns verbatim. The event carries only what the
-    row cannot say for itself: which trigger it belongs to, which is the run's.
-    """
+    """One row of a trigger's Athena table."""
 
     trigger_sub_type: str
     attributes: Dict[str, Any]
@@ -165,11 +116,7 @@ class BuiltRecord:
 
     @property
     def kafka_key(self) -> str:
-        """Message key: the trigger ID, as in the Trigger Backbone's reference records.
-
-        Unique per record, so records spread across partitions and two events
-        for one counterparty are not guaranteed to stay in order.
-        """
+        """Message key: the trigger ID, as in the Trigger Backbone's reference records."""
         return self.trigger_id
 
 
@@ -195,11 +142,7 @@ class EnvelopeBuilder:
         self._schema = avro_schema
         self._parsed_schema = parse_schema(avro_schema)
         if sequence_allocator is None:
-            # Imported here, not at module scope: the allocator needs
-            # MAX_SEQUENCE from this module, and there must be exactly one
-            # implementation - a second one drifts from this one the moment the
-            # numbering rule changes, which is how the local dry run ended up
-            # numbering by file position rather than by customer.
+            # Imported here to avoid a cycle: the allocator needs MAX_SEQUENCE from this module.
             from utility.sequence_allocator import (
                 SequenceAllocator as _DefaultAllocator,
             )
@@ -225,13 +168,7 @@ class EnvelopeBuilder:
         return self._event_timestamp
 
     def _assert_subtypes_encodable(self) -> None:
-        """Fail at construction if a definition cannot be written to the wire.
-
-        ``triggerSubType`` is an Avro enum. A symbol the schema does not carry
-        is not a validation warning - every record of that trigger is
-        unencodable. Catching it here turns a whole-batch quarantine into a
-        startup abort with the missing symbol named.
-        """
+        """Fail at construction if a definition cannot be written to the wire."""
         spec = next(
             (f for f in self._schema.get("fields", []) if f.get("name") == "triggerSubType"),
             None,
@@ -250,26 +187,13 @@ class EnvelopeBuilder:
                 context={"missing_symbols": missing, "schema_symbols": sorted(symbols)},
             )
 
-    # -- identity ----------------------------------------------------------
-
     def business_key(
         self,
         event: TriggerEvent,
         definition: TriggerDefinition,
         occurrence: int = 1,
     ) -> str:
-        """Canonical, stable identity of the business event.
-
-        Rendered as sorted-key JSON so the digest cannot change because an
-        upstream writer reordered its columns.
-
-        ``occurrence`` is the customer's Nth event in this batch, and is only
-        part of the key from the second onwards. Without it, two events for one
-        customer sharing a sub-event discriminator hash to the same trigger ID -
-        two different events published under one identity. Leaving the first
-        occurrence out keeps the identity of every ordinary record exactly what
-        it was before the field existed, so only a genuine repeat changes.
-        """
+        """Canonical, stable identity of the business event."""
         discriminator = (
             event.attributes.get(definition.event_key_source) if definition.event_key_source else None
         )
@@ -290,11 +214,7 @@ class EnvelopeBuilder:
         return json.dumps(parts, sort_keys=True, separators=(",", ":"))
 
     def trigger_id(self, definition: TriggerDefinition, sequence: int) -> str:
-        """``{system}_{triggerType}_{triggerSubType}_{timestamp}_{sequenceNumber}``.
-
-        The Trigger Backbone's format. ``timestamp`` is the envelope's, the same
-        for the whole run, so the sequence number is what makes the ID unique.
-        """
+        """``{system}_{triggerType}_{triggerSubType}_{timestamp}_{sequenceNumber}``."""
         return (
             f"{self._system}_"
             f"{TRIGGER_TYPE}_"
@@ -302,8 +222,6 @@ class EnvelopeBuilder:
             f"{self._event_timestamp}_"
             f"{sequence}"
         )
-
-    # -- construction ------------------------------------------------------
 
     def build(self, event: TriggerEvent) -> BuiltRecord:
         """Build one envelope, or raise ``RecordRejected`` for quarantine."""
@@ -350,9 +268,7 @@ class EnvelopeBuilder:
         record = {
             "triggerID": trigger_id,
             "triggerType": TRIGGER_TYPE,
-            # The published enum symbol, not the internal key. triggerSubType is
-            # an Avro enum on the BSP schema: an unknown spelling cannot be
-            # encoded at all, so this must come from the definition.
+            # triggerSubType is an Avro enum, so it must be the definition's published symbol.
             "triggerSubType": definition.published_sub_type,
             "timestamp": self._event_timestamp,
             "triggerPostingTimestamp": now_timestamp(),
@@ -381,12 +297,7 @@ class EnvelopeBuilder:
         )
 
     def validate(self, record: Dict[str, Any], definition: Optional[TriggerDefinition] = None) -> None:
-        """Validate against the local .avsc before the record reaches Kafka.
-
-        fastavro reports only that validation failed, so the offending fields are
-        worked out here - a bare 'record is not an example of the schema' is
-        useless at three in the morning.
-        """
+        """Validate against the local .avsc before the record reaches Kafka."""
         try:
             if avro_validate(record, self._parsed_schema, raise_errors=False):
                 return

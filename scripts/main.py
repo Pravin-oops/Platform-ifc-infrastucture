@@ -1,15 +1,4 @@
-"""ECS / CLI entry point for the IFC trigger connector.
-
-    python scripts/main.py --config s3://.../connector_config_sit.yaml
-
-IFC_RUN__TRIGGER picks the trigger, and with it the Athena table to read. The
-failure catalogue is available without a BSP connection:
-
-    python scripts/main.py catalogue
-
-The process exit code is the catalogue exit code for whatever scenario ended the
-run, so ECS's stopped task record identifies the failure without log archaeology.
-"""
+"""ECS / CLI entry point for the IFC trigger connector."""
 
 from __future__ import annotations
 

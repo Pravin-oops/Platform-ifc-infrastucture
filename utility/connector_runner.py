@@ -1,17 +1,4 @@
-"""The connector run loop.
-
-One run is one batch: query the trigger's month from Athena, build and validate
-each envelope, serialise, size-check, publish, flush, reconcile, write the
-manifest, and exit - the shape that matches the monthly cadence under
-EventBridge Scheduler and ECS RunTask.
-
-Nothing is de-duplicated here: the consuming team resolves duplicates, so a
-re-run republishes the month rather than the connector keeping durable state to
-recognise what it already sent.
-
-Every exit is deliberate and carries a catalogue exit code, so ECS's
-``stoppedReason`` and exit code alone tell RTB which scenario fired.
-"""
+"""The connector run loop."""
 
 from __future__ import annotations
 
@@ -63,10 +50,7 @@ class BatchResult:
     classification: Optional[Classification] = None
     #: The table, business date and Athena query execution id this run read.
     source: Dict[str, Any] = field(default_factory=dict)
-    #: Earliest and latest ``triggerPostingTimestamp`` published by this batch,
-    #: and the published sub-type they carried. The Trigger Backbone completion
-    #: notification reports the window; none of them is set by a batch that
-    #: published nothing.
+    #: Earliest and latest triggerPostingTimestamp published, and their sub-type.
     batch_start_timestamp: Optional[str] = None
     batch_end_timestamp: Optional[str] = None
     published_trigger_subtype: Optional[str] = None
@@ -150,15 +134,8 @@ class ConnectorRunner:
 
     @property
     def last_result(self) -> Optional[BatchResult]:
-        """The finished batch, for a caller that needs more than the exit code.
-
-        The run-gate needs to know whether anything was actually delivered
-        before it closes the execution month; an exit code cannot distinguish
-        'published nothing because there was nothing' from 'published 400'.
-        """
+        """The finished batch, for a caller that needs more than the exit code."""
         return self._last_result
-
-    # -- startup -----------------------------------------------------------
 
     def start(self) -> None:
         """Preflight, then build the publishing stack. Raises on any blocker."""
@@ -233,8 +210,6 @@ class ConnectorRunner:
             },
         )
 
-    # -- per-record handling -----------------------------------------------
-
     def _handle_rejection(
         self,
         *,
@@ -244,12 +219,7 @@ class ConnectorRunner:
         raw: Optional[str] = None,
         counters: RunCounters,
     ) -> None:
-        """Quarantine the rejected record to S3.
-
-        The quarantine object is the whole record of a rejection: there is no
-        DLQ topic, so this is where a rejected record is recovered from and the
-        only place its reason is kept.
-        """
+        """Quarantine the rejected record to S3."""
         counters.quarantined += 1
         self._metrics.incr("RecordsQuarantined")
 
@@ -298,14 +268,7 @@ class ConnectorRunner:
         counters.published += 1
 
     def _publish_with_retry(self, built: BuiltRecord, payload: bytes) -> None:
-        """Publish one record, retrying a retryable failure with backoff.
-
-        Every failed attempt counts towards the circuit breaker, so a total
-        outage abandons the batch after ``circuit_breaker_threshold`` attempts
-        rather than retrying each record in turn. A record that runs out of
-        attempts is not quarantined: it stays unpublished, and the
-        reconciliation fails the run.
-        """
+        """Publish one record, retrying a retryable failure with backoff."""
         assert self._stack is not None
         publisher = self._stack.publisher
 
@@ -326,8 +289,6 @@ class ConnectorRunner:
             description=f"publish of {built.trigger_id}",
         )
 
-    # -- batch -------------------------------------------------------------
-
     def _classify_outcome(
         self,
         outcome: str,
@@ -337,13 +298,7 @@ class ConnectorRunner:
         reconciliation,
         stream_exhausted: bool,
     ):
-        """Decide the final outcome of a run that did not fail outright.
-
-        Three ways a technically-successful batch is still not a clean run, in
-        priority order: it found nothing, its counts do not reconcile, or it
-        rejected more than the tolerated fraction. Returns
-        ``(outcome, exit_code, classification)``.
-        """
+        """Decide the final outcome of a run that did not fail outright."""
         settings = self._settings
 
         if outcome != "SUCCESS":
@@ -563,8 +518,6 @@ class ConnectorRunner:
 
         logger.info("Progress", extra={**counters.to_dict(), "queue_depth": self._stack.publisher.queue_depth})
 
-    # -- run ---------------------------------------------------------------
-
     def _report(
         self,
         *,
@@ -575,12 +528,7 @@ class ConnectorRunner:
         started_at: str,
         duration_seconds: float,
     ) -> None:
-        """Write the manifest, alert, and emit metrics for a finished run.
-
-        Everything here is evidence, not control flow: it runs whether the batch
-        succeeded, drained or failed, and a failure to record must not change the
-        exit code the run already earned.
-        """
+        """Write the manifest, alert, and emit metrics for a finished run."""
         counters = result.counters if result else RunCounters()
         reconciliation = result.reconciliation if result else reconcile(counters)
 

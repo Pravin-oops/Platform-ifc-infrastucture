@@ -1,23 +1,15 @@
-# YAML file with configuration. Be mindful of data types and use '@' to declare callback functions.
-# Documentation for security, producer, and consumer properties can be referred from
-# https://docs.confluent.io/legacy/platform/5.1.4/clients/librdkafka/CONFIGURATION.md.html or
-# https://github.com/confluentinc/librdkafka/blob/master/CONFIGURATION.md
-#
-# DEV BSP client config: kafka.bsp_config_path in connector_config_dev.yaml.
+# DEV BSP client config (librdkafka properties); '@' marks a callback function.
+# Reference: https://github.com/confluentinc/librdkafka/blob/master/CONFIGURATION.md
 
 ---
-# Provide comma seperated list of host/port pairs to use for establishing the initial connection to the Kafka cluster(DEV).
 servers:
-  # 9092: the unsecured listener, enabled only in EMEA DEV (security.protocol PLAINTEXT below).
+  # 9092: the unsecured listener, enabled only in EMEA DEV.
   bootstrap.servers: ldndsr000009490.intranet.barcapint.com:9092,ldndsr000009491.intranet.barcapint.com:9092,gbrdsr000012098.intranet.barcapint.com:9092
 
-# Provide protocol used to communicate with brokers, SASL mechanism used for client connections, SSL certificate and CA Locations (optional)
 security:
-  # PLAINTEXT: no TLS and no SASL, so librdkafka ignores sasl.mechanism and
-  # ssl.ca.location here and never asks the BSP oauth_cb for a token.
+  # No TLS or SASL, so sasl.mechanism and ssl.ca.location are unused and no token is requested.
   security.protocol: PLAINTEXT
   sasl.mechanism: OAUTHBEARER
-  # Unused under PLAINTEXT; the container's CA path rather than a workstation's.
   ssl.ca.location: /tmp/ifc-certs/CARoot.pem
 
 credentials:
@@ -30,18 +22,12 @@ bam:
   bam_url: BAM_URL
   bam_name: BAM_NAME
 
-# When defining callback functions, please prefix them with '@' to indicate their nature
-# For properties, ensure to specify the appropriate data type to maintain consistency and clarity
-
-# Provide Kafka producer properties/configurations
 producer:
   properties:
     acks: all
     compression.type: gzip
-    #on_delivery: "@delivery_report"
     request.timeout.ms: 40000
-    #error_cb: "@error"
-    enable.idempotence: True             # MUST                      # MUST
+    enable.idempotence: True             # MUST
     retries: 2147483647                  # MUST
     max.in.flight.requests.per.connection: 5
 
@@ -49,6 +35,6 @@ producer:
 consumer:
   properties:
     error_cb: "@error"
-    group.id: GROUP_ID_HERE # Must follow naming convention: https://confluence.barcapint.com/display/EDPRT/Naming+Conventions
+    group.id: GROUP_ID_HERE # Must follow the BSP naming convention
     auto.offset.reset: earliest
-    enable.auto.commit: !!bool false # data type boolean Valid User Name format: systemAccountmock@intranet.barcapint.com
+    enable.auto.commit: !!bool false

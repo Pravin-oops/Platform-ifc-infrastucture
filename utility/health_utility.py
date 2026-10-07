@@ -1,15 +1,4 @@
-"""HTTP health endpoints for the ECS container health check.
-
-ECS decides whether a task is healthy from the container's ``healthCheck``
-command. Without one, a task wedged on a stuck socket looks perfectly healthy
-and quietly publishes nothing - the 'Producer Container Failure' scenario in its
-most dangerous form, where nothing crashes.
-
-  /health/live     the process is not wedged (a failure means restart me)
-  /metrics         current counters, as JSON
-
-The server runs on a daemon thread and never blocks the run loop.
-"""
+"""HTTP health endpoints for the ECS container health check."""
 
 from __future__ import annotations
 
@@ -87,9 +76,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._respond(404, {"error": "not found", "path": path})
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - base class name
-        # Health probes are constant; routing them through the app logger at
-        # DEBUG keeps them out of the run narrative. The parameter keeps the
-        # base class's name so a keyword call from http.server still binds.
+        # Probes log at DEBUG; the parameter keeps the base class's name for keyword calls.
         logger.debug("health probe: " + format, *args)
 
 
@@ -105,9 +92,7 @@ class HealthServer:
         self._state = state
         self._host = host
         self._port = port
-        # Annotated, and a lambda rather than the bare ``dict`` class: both
-        # return {} when no provider is supplied, but the class object widens
-        # the attribute to a union that cannot be wrapped in staticmethod().
+        # A lambda, not ``dict``, so the attribute's type stays wrappable in staticmethod().
         self._metrics_provider: Callable[[], Dict[str, Any]] = (
             metrics_provider if metrics_provider is not None else lambda: {}
         )

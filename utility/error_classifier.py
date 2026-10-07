@@ -1,14 +1,4 @@
-"""Map any runtime error onto exactly one catalogue scenario.
-
-The connector never reports a bare stack trace to RTB. Every failure is resolved
-to a ``Scenario``, which carries the owning team, the agreed action and the exit
-code, so the on-call response is the same whether the failure surfaced in
-preflight, in a delivery callback or in the top-level handler.
-
-Matching order is deliberate: narrow, unambiguous signatures are tested before
-broad ones, because several Kafka errors share substrings (a 401 from the
-Schema Registry is an authentication failure, not a registry outage).
-"""
+"""Map any runtime error onto exactly one catalogue scenario."""
 
 from __future__ import annotations
 
@@ -21,10 +11,6 @@ from utility.failure_catalog import Scenario
 
 logger = logging.getLogger(__name__)
 
-
-# ---------------------------------------------------------------------------
-# Connector exception hierarchy
-# ---------------------------------------------------------------------------
 
 
 class ConnectorError(RuntimeError):
@@ -57,11 +43,7 @@ class PublishError(ConnectorError):
 
 
 class RecordRejected(Exception):
-    """One record cannot be published and must be quarantined.
-
-    Not a ``ConnectorError``: the run continues. It carries the scenario so the
-    quarantine object records why the record was rejected.
-    """
+    """One record cannot be published and must be quarantined."""
 
     def __init__(self, message: str, scenario: Scenario, *, detail: Optional[Dict[str, Any]] = None):
         super().__init__(message)
@@ -72,10 +54,6 @@ class RecordRejected(Exception):
 class ZeroRecordsError(ConnectorError):
     """The source held nothing. Upstream (TED/FRED) failure until proven otherwise."""
 
-
-# ---------------------------------------------------------------------------
-# Pattern table
-# ---------------------------------------------------------------------------
 
 # (scenario, substrings). Evaluated top to bottom; first hit wins.
 _PATTERNS: Sequence[Tuple[Scenario, List[str]]] = (
@@ -137,9 +115,7 @@ _PATTERNS: Sequence[Tuple[Scenario, List[str]]] = (
             "NETWORKEXCEPTION", "DISCONNECTEXCEPTION", "DISCONNECTED", "_ALL_BROKERS_DOWN",
         ],
     ),
-    # Ahead of publish latency: separators are ignored when matching, so that
-    # row's "_TIMED_OUT" also matches "connection timed out", which is a
-    # network fault, not a slow broker.
+    # Before publish latency, so "connection timed out" is a network fault, not a slow broker.
     (
         catalog.NETWORK_FAILURE,
         [
@@ -290,9 +266,7 @@ def classify(
         scenario = (
             catalog.BDP_WRITE_FAILURE if error.operation == "write" else catalog.BDP_READ_FAILURE
         )
-        # An AccessDenied on a read is still a permissions problem, but the
-        # catalogue routes reads and writes to different rows; keep the
-        # operation authoritative and record the S3 code as evidence.
+        # The operation decides the scenario; the S3 error code is kept as evidence.
         return Classification(
             scenario=scenario,
             raw_error=str(error),

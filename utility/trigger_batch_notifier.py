@@ -1,8 +1,4 @@
-"""The Trigger Backbone batch-completion SNS event.
-
-Sent once a run has delivered its month, so TBB can start downstream processing.
-The message is the notification's fields as JSON, keyed exactly as TBB expects.
-"""
+"""The Trigger Backbone batch-completion SNS event."""
 
 from __future__ import annotations
 
@@ -33,12 +29,7 @@ class TriggerBatchNotification:
         return asdict(self)
 
 class TriggerBatchNotifier:
-    """
-    Sends the Trigger Backbone batch-completion SNS event.
-
-    Unlike failure_notifier.py, this represents a successful
-    business event which TBB uses to begin downstream processing.
-    """
+    """Sends the Trigger Backbone batch-completion SNS event."""
 
     def __init__(
         self,
@@ -68,9 +59,7 @@ class TriggerBatchNotifier:
             "correlation_id": notification.Correlation_Id,
         }
 
-        # The whole message goes into the line itself, not only into structured
-        # fields, so the ECS console and a plain CloudWatch search both show
-        # exactly what TBB was (or would have been) sent.
+        # The full message goes in the log line, so the console shows exactly what TBB got.
         sns_fields = {
             "sns_kind": "batch_complete",
             "sns_topic_arn": self._sns_topic_arn,
@@ -79,9 +68,7 @@ class TriggerBatchNotifier:
             "sns_message_attributes": attributes,
         }
 
-        #
         # Local DEV mode
-        #
         if not self._sns_topic_arn:
             logger.info(
                 "SNS batch notification NOT sent (no topic configured); "

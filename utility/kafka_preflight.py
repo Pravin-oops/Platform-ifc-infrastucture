@@ -1,16 +1,4 @@
-"""Readiness checks run before a single record is read or published.
-
-The POC readiness assessment lists the things that were unproven for the AWS to
-on-prem BSP path: DNS from the AWS runtime, TCP on 9095/8095, BAM token
-acquisition, registry access, cluster metadata, then publish. Those are exactly
-the checks here, in that order, so a broken environment is diagnosed by the
-connector's own startup log instead of by a separate diagnostic exercise.
-
-Ordering is cheapest-and-most-likely-first: a firewall rule that was never
-implemented should fail in under a second, not after a full auth handshake.
-Each check returns a result rather than raising, so the log shows every check's
-outcome before the run aborts on the first blocking failure.
-"""
+"""Readiness checks run before a single record is read or published."""
 
 from __future__ import annotations
 
@@ -82,11 +70,7 @@ class PreflightReport:
         }
 
     def summary(self) -> str:
-        """Each check group's outcome, e.g. ``dns:kafka 3/3, tcp:kafka 3/3, auth:bam_token ok``.
-
-        DNS and TCP checks are counted per label rather than listed per endpoint;
-        the TCP quorum line is left out, since the count already says it.
-        """
+        """Each check group's outcome, e.g. ``dns:kafka 3/3, tcp:kafka 3/3, auth:bam_token ok``."""
         groups: Dict[str, List[CheckResult]] = {}
         for result in self.results:
             parts = result.name.split(":")
@@ -140,13 +124,7 @@ class PreflightReport:
 def _timed(
     fn: Callable[[], Tuple[bool, str, Dict[str, Any]]],
 ) -> Tuple[bool, str, Dict[str, Any], float, Optional[Scenario]]:
-    """Run a check, returning its outcome, timing and the scenario its error carried.
-
-    A ``ConnectorError`` has already been classified where it was raised, and
-    that scenario is returned so the check does not re-derive it from the
-    message text - a registry outage reads "Schema Registry ..." exactly as a
-    schema fault does.
-    """
+    """Run a check, returning its outcome, timing and the scenario its error carried."""
     start = time.perf_counter()
     scenario: Optional[Scenario] = None
     try:
@@ -157,10 +135,6 @@ def _timed(
             scenario = exc.scenario
     return ok, detail, context, (time.perf_counter() - start) * 1000.0, scenario
 
-
-# ---------------------------------------------------------------------------
-# Individual checks
-# ---------------------------------------------------------------------------
 
 
 def parse_bootstrap_servers(bootstrap: str) -> List[Tuple[str, int]]:
@@ -187,12 +161,7 @@ def check_dns(
     label: str,
     blocking: bool = True,
 ) -> None:
-    """Resolve each endpoint's host.
-
-    ``blocking=False`` reports a host that does not resolve without failing the
-    run, for a set of endpoints where any one will do - the TCP quorum check
-    that follows still fails the run when none is reachable.
-    """
+    """Resolve each endpoint's host."""
     for host, _port in endpoints:
         def resolve(host: str = host) -> Tuple[bool, str, Dict[str, Any]]:
             addresses = sorted({info[4][0] for info in socket.getaddrinfo(host, None)})
@@ -220,12 +189,7 @@ def check_tcp(
     timeout: int,
     require_all: bool = False,
 ) -> None:
-    """Open a socket to each endpoint.
-
-    ``require_all`` is False for Kafka bootstrap servers: one reachable broker is
-    enough to bootstrap a cluster, and failing because a single broker is down
-    would be a self-inflicted outage. Unreachable brokers are still reported.
-    """
+    """Open a socket to each endpoint."""
     reachable = 0
 
     for host, port in endpoints:
@@ -303,9 +267,7 @@ def check_schema_registry(report: PreflightReport, *, resolve: Callable[[], Dict
 
     ok, detail, context, ms, raised = _timed(run)
 
-    # The registry client and the compatibility check raise errors that already
-    # name their scenario - an outage, a rejected token, a missing ACL or an
-    # incompatible schema - so the alert reaches the right team.
+    # The raised error already names its scenario, so keep it.
     report.add(
         CheckResult(
             name="schema_registry:subject",
@@ -332,12 +294,7 @@ def check_topic_metadata(
     fetch: Callable[[str], Dict[str, Any]],
     topics: List[str],
 ) -> None:
-    """Fetch metadata with the real producer principal.
-
-    This is the check that separates 'topic does not exist' from 'no ACL for
-    this principal' - the two most common onboarding failures, which look
-    identical from a publish timeout.
-    """
+    """Fetch metadata with the real producer principal."""
     for topic in topics:
         def run(topic: str = topic) -> Tuple[bool, str, Dict[str, Any]]:
             return True, "", fetch(topic)
@@ -346,9 +303,7 @@ def check_topic_metadata(
 
         scenario = raised
         if not ok and scenario is None:
-            # librdkafka reports through the message text. The classifier keeps
-            # a missing ACL (authorisation) apart from a rejected login
-            # (authentication) and a missing topic; anything else is the broker.
+            # Classify from the message: ACL, login or missing topic; anything else is the broker.
             classified = classify(detail).scenario
             scenario = classified if classified in _METADATA_SCENARIOS else catalog.BROKER_UNAVAILABLE
 

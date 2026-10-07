@@ -1,28 +1,4 @@
-"""IFC CDD trigger payload definitions for Triggers 8, 9 and 21.
-
-Each definition is the data contract between FRED (which writes the trigger
-event into the Trigger BDP) and the IFC Backbone consumers. Changing a
-``FieldSpec.name`` here is a consumer-visible change and needs the BSP schema
-change process; changing a ``FieldSpec.source`` is an internal remap and does not.
-
-The payload is now a *single* eight-field set, identical for every trigger:
-
-    Date of Request, Counterparty Full Legal Entity Name, Counterparty ID,
-    Client Relationship Owner Name, Client Relationship Owner BRID,
-    Client Relationship Owner Business Unit,
-    Client Relationship Owner Location, Region
-
-Everything else the earlier drafts published - ``Trigger_subType_detail``,
-``Customer Segment``, ``Business Date``, ``Last Run Date`` and the whole
-Trigger 21 alert-volume block - is no longer on the wire. The trigger a message
-belongs to is already carried by the envelope's ``triggerSubType``, so the
-payload does not repeat it.
-
-Only ``Client Relationship Owner Name`` carries a tokenisation policy
-(``UK_TOK_AC_L0R0_UNC_DE``, the tokenisation applied upstream), and only in an
-environment whose data is tokenised (PROD); every other field, and every field
-elsewhere, goes out with an empty policy.
-"""
+"""IFC CDD trigger payload definitions for Triggers 8, 9 and 21."""
 
 from __future__ import annotations
 
@@ -42,24 +18,16 @@ TRIGGER_8 = "TRIGGER_8"
 TRIGGER_9 = "TRIGGER_9"
 TRIGGER_21 = "TRIGGER_21"
 
-# Published values for the envelope's triggerSubType field. Since the BSP
-# schema made triggerSubType an Avro *enum*, only these exact spellings can be
-# serialised - anything else is an unencodable record, not a soft mismatch.
+# triggerSubType values; the BSP schema's enum accepts only these spellings.
 SUBTYPE_NEW_HRC_RELATIONSHIP = "NewHRCRelationship"
 SUBTYPE_ACCOUNT_INACTIVITY = "AccountInactivity"
 SUBTYPE_MULTIPLE_TM_SARS = "MultipleTMSARs"
 
-#: Contract defaults for the two payload fields the specification defaults
-#: rather than requires on the row. Both are mandatory on the wire; when the
-#: source row omits one, the connector fills it in.
+#: Filled in when the source row has no value for these mandatory fields.
 DEFAULT_BUSINESS_UNIT = "UK Corporate"
 DEFAULT_LOCATION = "UK"
 
-#: Consumer-side column widths, from the SIEBEL data-length column of the
-#: payload specification. They size the consumer's table, so a value longer
-#: than its width is rejected here rather than truncated on the wire: a clipped
-#: CSID or BRID is a different identifier, not a cosmetic difference. Changing
-#: one of these is a consumer-visible change, like changing a FieldSpec.name.
+#: Consumer column widths from the payload specification; longer values are rejected.
 MAX_LENGTHS = {
     "date_of_request": 10,                       # rendered YY-MM-DD (8)
     "counterparty_full_legal_entity_name": 100,
@@ -71,26 +39,18 @@ MAX_LENGTHS = {
     "region": 50,
 }
 
-#: Symbols the registered enum carries that this connector does not produce.
-#: Held here so an event asking for one fails with "out of scope for this
-#: connector" rather than "unknown trigger".
+#: Enum symbols this connector does not produce.
 OUT_OF_SCOPE_SYMBOLS = {"UBOChanges", "SigChanges"}
 
 
 @dataclass(frozen=True)
 class TriggerDefinition:
     sub_type: str
-    #: Value written to the envelope's triggerSubType enum. Separated from
-    #: ``sub_type`` for the same reason FieldSpec separates name from source:
-    #: the consumer-visible spelling is governed by the BSP schema change
-    #: process, the internal key is ours to change freely.
+    #: The triggerSubType enum symbol published for ``sub_type``.
     published_sub_type: str
     subtype_detail: str
     fields: Sequence[FieldSpec]
-    #: Attribute that distinguishes sub-events for the same customer in one run.
-    #: Trigger 8 raises one sub-event per high-risk country, Trigger 9 one per
-    #: account. Without this in the sub-event key the second sub-event of a
-    #: customer would be suppressed as a duplicate of the first.
+    #: Attribute that separates a customer's sub-events within one run.
     event_key_source: Optional[str] = None
 
     def field_names(self) -> List[str]:
@@ -102,22 +62,7 @@ class TriggerDefinition:
 
 
 def _payload_fields() -> List[FieldSpec]:
-    """The eight fields every IFC trigger publishes, in contract order.
-
-    One list, shared by all three definitions: the payload section is identical
-    for Triggers 8, 9 and 21. A new trigger joins by reusing this list, not by
-    declaring its own.
-
-    All eight are mandatory: the requirement marks every attribute Mandatory = Y
-    and demands that a row missing one is rejected rather than published with a
-    hole. Two of them carry a contractual default - Business Unit and Location -
-    so an absent source value is filled in rather than failing the row; every
-    other field has to arrive on the row, and a row without it is quarantined
-    with ``PayloadBuildError`` instead of going on the wire.
-
-    Each field also carries the consumer's column width from ``MAX_LENGTHS``; a
-    value longer than its width is quarantined the same way.
-    """
+    """The eight fields every IFC trigger publishes, in contract order."""
     return [
         # The date the trigger file was generated. Source values arrive as a full
         # timestamp; DataType.DATE renders the date part only, as YY-MM-DD.
@@ -169,26 +114,15 @@ def _payload_fields() -> List[FieldSpec]:
     ]
 
 
-# ---------------------------------------------------------------------------
-# Trigger 8 - bdp_corp_ifc_trigger_8
-# ---------------------------------------------------------------------------
-
 TRIGGER_8_DEFINITION = TriggerDefinition(
     sub_type=TRIGGER_8,
     published_sub_type=SUBTYPE_NEW_HRC_RELATIONSHIP,
     subtype_detail="Trig_8_Cross_Border_Transactions",
-    # The table has no sub-event column; the grain is one row per counterparty
-    # per business date, so the business date is what separates two rows for the
-    # same counterparty inside one execution month. business_date is read from
-    # the source row for the sub-event key only - it is not published.
+    # One row per counterparty per business date; business_date keys sub-events, unpublished.
     event_key_source="business_date",
     fields=_payload_fields(),
 )
 
-
-# ---------------------------------------------------------------------------
-# Trigger 9 - bdp_corp_ifc_trigger_9
-# ---------------------------------------------------------------------------
 
 TRIGGER_9_DEFINITION = TriggerDefinition(
     sub_type=TRIGGER_9,
@@ -198,13 +132,6 @@ TRIGGER_9_DEFINITION = TriggerDefinition(
     fields=_payload_fields(),
 )
 
-
-# ---------------------------------------------------------------------------
-# Trigger 21 - bdp_corp_ifc_trigger_21 (multiple TM alerts / SARs)
-#
-# The table has the same columns as Triggers 8 and 9, and publishes the same
-# eight header fields: there is no alert-volume column.
-# ---------------------------------------------------------------------------
 
 TRIGGER_21_DEFINITION = TriggerDefinition(
     sub_type=TRIGGER_21,
@@ -221,9 +148,7 @@ DEFINITIONS: Dict[str, TriggerDefinition] = {
     TRIGGER_21: TRIGGER_21_DEFINITION,
 }
 
-# Tolerated spellings from upstream systems, mapped to the canonical sub-type.
-# The published enum symbols are included so the connector still resolves an
-# event once FRED starts writing the BSP spelling instead of the internal key.
+# Upstream spellings and the published symbols, mapped to the canonical sub-type.
 _ALIASES = {
     "TRIGGER8": TRIGGER_8, "TRIG_8": TRIGGER_8, "T8": TRIGGER_8, "8": TRIGGER_8,
     "TRIGGER9": TRIGGER_9, "TRIG_9": TRIGGER_9, "T9": TRIGGER_9, "9": TRIGGER_9,

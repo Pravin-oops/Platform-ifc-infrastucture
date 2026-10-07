@@ -1,13 +1,4 @@
-"""BSP Schema Registry REST client.
-
-The secure registry (port 8095) accepts a BAM bearer token and rejects basic
-auth, so there is deliberately no username/password path here.
-
-Beyond fetching the schema id needed for the Confluent wire format, this client
-compares the locally bundled ``.avsc`` with the registered subject at startup.
-That check is what turns "Schema Validation Failure" from a per-message
-production incident into a deployment that refuses to start.
-"""
+"""BSP Schema Registry REST client."""
 
 from __future__ import annotations
 
@@ -36,13 +27,7 @@ class RegisteredSchema:
 
 
 class SchemaRegistryClient:
-    """Reads from one registry node, or fails over across several.
-
-    The nodes of a registry cluster share one schema store, so any of them
-    gives the same answer. A node that is unreachable or answers 5xx is passed
-    over for the next; a 401, 403 or 404 is the cluster's answer and is final.
-    The node that last answered is tried first next time.
-    """
+    """Reads from one registry node, or fails over across several."""
 
     def __init__(
         self,
@@ -67,8 +52,6 @@ class SchemaRegistryClient:
         self._backoff = backoff or BackoffPolicy()
         self._attempts = attempts
         self._shutdown = shutdown
-
-    # -- transport ---------------------------------------------------------
 
     @property
     def urls(self) -> List[str]:
@@ -169,8 +152,6 @@ class SchemaRegistryClient:
             description=description,
         )
 
-    # -- API ---------------------------------------------------------------
-
     def latest_schema(self, subject: str) -> RegisteredSchema:
         document, node = self._get_with_retry(
             f"/subjects/{subject}/versions/latest", f"schema registry lookup for {subject}"
@@ -214,10 +195,6 @@ def value_subject(topic: str) -> str:
     return f"{topic}-value"
 
 
-# ---------------------------------------------------------------------------
-# Local schema vs registered schema
-# ---------------------------------------------------------------------------
-
 
 def _field_types(schema: Dict[str, Any]) -> Dict[str, Any]:
     return {field["name"]: field.get("type") for field in schema.get("fields", [])}
@@ -244,15 +221,7 @@ def _enum_of(type_: Any) -> Optional[Dict[str, Any]]:
 
 
 def _compare_enum(name: str, local: Dict[str, Any], registered: Dict[str, Any]) -> List[str]:
-    """Compare two enum field types symbol by symbol.
-
-    Whole-dict equality is the wrong test: ``doc`` strings, key order and
-    symbol order all differ harmlessly between a hand-maintained .avsc and what
-    the registry returns, while the one difference that matters - a symbol the
-    producer writes that the registry does not know - is invisible in a diff of
-    the JSON. A record carrying an unregistered symbol is unencodable by the
-    consumer, so that direction is blocking; extra registry symbols are not.
-    """
+    """Compare two enum field types symbol by symbol."""
     findings: List[str] = []
     local_symbols = list(local.get("symbols", []))
     registered_symbols = set(registered.get("symbols", []))
@@ -280,21 +249,7 @@ def _compare_enum(name: str, local: Dict[str, Any], registered: Dict[str, Any]) 
 
 
 def compare_schemas(local: Dict[str, Any], registered: Dict[str, Any]) -> Tuple[bool, List[str]]:
-    """Compare the bundled schema with the registered one.
-
-    Not a full Avro resolution check - that is the registry's job. This catches
-    the drift that actually happens in practice and that the registry will not
-    catch for us, because the producer writes with the *local* schema under the
-    *registered* schema's id:
-
-    * a field the producer will write that the registry does not know about
-      (the consumer decodes with the registered schema and mis-reads the record);
-    * a mandatory registered field the producer does not populate;
-    * a type change on a shared field.
-
-    Returns ``(compatible, findings)``. Findings are returned even when
-    compatible, so additive registry changes are logged rather than hidden.
-    """
+    """Compare the bundled schema with the registered one."""
     findings: List[str] = []
 
     local_types = _field_types(local)
