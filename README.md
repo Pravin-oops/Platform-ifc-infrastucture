@@ -536,15 +536,30 @@ delivered. See [Input contract](#input-contract).
 python scripts/main.py catalogue
 ```
 
-### Without BSP — DEV registry mode
+### Schema Registry modes — SECURE and DEV
+
+`schema_registry.mode` in `connector_config.yaml` picks one; `IFC_SCHEMA_REGISTRY__MODE` on the
+task overrides it (any case; an empty value leaves it to the file). Each mode has its own block,
+`schema_registry.secure` and `schema_registry.dev`, whose values override the shared ones under
+`schema_registry` while that mode is active.
+
+| | SECURE | DEV |
+|---|---|---|
+| Registry | `secure.url`, port 8095 | `dev.url`, port 8082 |
+| Authentication | BAM bearer token (needs `kafka.bsp_config_path`) | none |
+| Schema id | looked up, and the bundled `.avsc` checked against it | looked up and checked the same way, unless `dev.schema_id` pins it |
+
+To override a mode's URLs per task, set that block's value, e.g. `IFC_SCHEMA_REGISTRY__DEV__URL`.
+A pinned DEV id (`schema_registry.dev.schema_id`) skips the registry and the drift check, so it
+must belong to a schema that matches the bundled `.avsc`. DEV with neither a URL nor a pinned id
+refuses to start. Records are always written in Confluent wire format, because the consumer's
+`KafkaAvroDeserializer` rejects anything else.
+
+### Without BSP
 
 A config that omits `kafka.bsp_config_path` and supplies `bootstrap.servers` in `kafka.overrides`
 connects straight to a broker. There is no BAM authentication on that path, which is why the
-config validator refuses it with `schema_registry.mode: SECURE`. DEV does not look the schema id
-up, so it must be pinned with `schema_registry.schema_id` (or `IFC_SCHEMA_REGISTRY__SCHEMA_ID`);
-the connector refuses to start without one. Records are still written in Confluent wire format,
-because the consumer's `KafkaAvroDeserializer` rejects anything else. DEV skips the drift check,
-so the pinned id must belong to a schema that matches the bundled `.avsc`.
+config validator refuses it with `schema_registry.mode: SECURE`; use DEV.
 
 ### Publishing — properties worth knowing before changing it
 

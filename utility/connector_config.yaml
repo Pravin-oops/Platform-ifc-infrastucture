@@ -112,17 +112,29 @@ kafka:
   # debug: security,broker,protocol
 
 schema_registry:
+  # DEV | SECURE. IFC_SCHEMA_REGISTRY__MODE on the task overrides this.
   mode: SECURE
-  # Comma-separated registry nodes. Each is checked at preflight; the schema is
-  # read from the first that answers, so one node down does not fail the run.
-  url: https://ldndsr000010177.intranet.barcapint.com:8095, https://gbrdsr00014551.intranet.barcapint.com:8095
+
+  # Shared by both modes. A mode block below may set any of these too; the
+  # active mode's value wins.
   # The Barclays root CA, written at container start (ca_certificate below).
   ca_location: /tmp/ifc-certs/CARoot.pem
   timeout_seconds: 30
-  token_refresh_margin_seconds: 300
   # Attempts at each registry request before preflight fails.
   max_attempts: 5
   schema_path: utility/schema.json
+
+  # DEV registry: port 8082, no bearer token. The schema is looked up and
+  # checked like SECURE; set schema_id here instead to pin it without a lookup.
+  dev:
+    url: https://ldndsr000010177.intranet.barcapint.com:8082, https://gbrdsr000014551.intranet.barcapint.com:8082
+
+  # Secure registry: port 8095, the BAM bearer token.
+  # Comma-separated nodes. Each is checked at preflight; the schema is read
+  # from the first that answers, so one node down does not fail the run.
+  secure:
+    url: https://ldndsr000010177.intranet.barcapint.com:8095, https://gbrdsr000014551.intranet.barcapint.com:8095
+    token_refresh_margin_seconds: 300
 
 # Barclays root CA (CARoot.pem). Never committed or baked into the image: one
 # Secrets Manager secret holding the plain PEM, read with the ECS task role and

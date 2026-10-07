@@ -330,8 +330,40 @@ class KafkaSettings(BaseModel):
         return ",".join(sorted(contexts)) or None
 
 
+def _join_url_list(value: Any) -> Any:
+    """A YAML list of registry URLs, as the comma-separated string the rest expects."""
+    if isinstance(value, (list, tuple)):
+        return ",".join(str(item) for item in value)
+    return value
+
+
+class SchemaRegistryModeSettings(BaseModel):
+    """Values for one registry mode. Each one set here overrides the shared
+    ``schema_registry`` value while that mode is active; unset ones fall back."""
+
+    url: Optional[str] = None
+    ca_location: Optional[str] = None
+    timeout_seconds: Optional[int] = Field(default=None, ge=1)
+    token_refresh_margin_seconds: Optional[int] = Field(default=None, ge=30)
+    max_attempts: Optional[int] = Field(default=None, ge=1)
+    schema_path: Optional[str] = None
+    schema_id: Optional[int] = Field(default=None, ge=1)
+
+    @field_validator("url", mode="before")
+    @classmethod
+    def _join_a_list(cls, value: Any) -> Any:
+        return _join_url_list(value)
+
+
 class SchemaRegistrySettings(BaseModel):
+    #: SECURE: the 8095 registry with the BAM bearer token. DEV: the 8082
+    #: registry with no token, or a schema_id pinned in config. Set in the
+    #: YAML; IFC_SCHEMA_REGISTRY__MODE on the task overrides it.
     mode: Literal["DEV", "SECURE"] = "SECURE"
+    #: Per-mode values; the block for ``mode`` overrides the shared values
+    #: below, so the rest of the connector reads one set of settings.
+    dev: Optional[SchemaRegistryModeSettings] = None
+    secure: Optional[SchemaRegistryModeSettings] = None
     #: One registry URL, or several separated by commas (a YAML list is also
     #: accepted). Every one is checked at preflight; the schema is looked up on
     #: the first that answers, so one registry node being down is not an outage.
@@ -346,17 +378,28 @@ class SchemaRegistrySettings(BaseModel):
     #: Local .avsc used to serialise. Compared against the registered subject at
     #: preflight so producer/registry drift fails before any publish happens.
     schema_path: str = "utility/schema.json"
-    #: DEV only: the registry id to frame records with, since DEV does not look
-    #: it up. Consumers deserialise with Confluent's KafkaAvroDeserializer, which
-    #: needs the magic byte and id on every record, DEV or not.
+    #: DEV only: a registry id to frame records with instead of looking it up.
+    #: Consumers deserialise with Confluent's KafkaAvroDeserializer, which needs
+    #: the magic byte and id on every record, DEV or not.
     schema_id: Optional[int] = Field(default=None, ge=1)
+
+    @field_validator("mode", mode="before")
+    @classmethod
+    def _mode_any_case(cls, value: Any) -> Any:
+        return value.strip().upper() if isinstance(value, str) else value
 
     @field_validator("url", mode="before")
     @classmethod
     def _join_a_list(cls, value: Any) -> Any:
-        if isinstance(value, (list, tuple)):
-            return ",".join(str(item) for item in value)
-        return value
+        return _join_url_list(value)
+
+    @model_validator(mode="after")
+    def _apply_mode_block(self) -> "SchemaRegistrySettings":
+        block = self.dev if self.mode == "DEV" else self.secure
+        if block is not None:
+            for name, value in block.model_dump(exclude_none=True).items():
+                setattr(self, name, value)
+        return self
 
     @property
     def urls(self) -> List[str]:
@@ -366,7 +409,7 @@ class SchemaRegistrySettings(BaseModel):
     @model_validator(mode="after")
     def _require_url_when_secure(self) -> "SchemaRegistrySettings":
         if self.mode == "SECURE" and not self.urls:
-            raise ValueError("schema_registry.url is required when mode=SECURE")
+            raise ValueError("schema_registry.url (or schema_registry.secure.url) is required when mode=SECURE")
         malformed = [u for u in self.urls if not re.match(r"^https?://[^/\s:]+", u)]
         if malformed:
             raise ValueError(f"schema_registry.url entries must be http(s) URLs: {malformed}")
@@ -672,12 +715,20 @@ def _coerce(raw: str) -> Any:
         return raw
 
 
+#: Settings where an empty IFC_ variable means "not set, use the config file".
+#: Elsewhere an empty value is a deliberate null (an empty
+#: IFC_CA_CERTIFICATE__SECRET_ID turns the CA download off).
+_EMPTY_MEANS_UNSET = {("schema_registry", "mode")}
+
+
 def _env_overlay() -> Dict[str, Any]:
     overlay: Dict[str, Any] = {}
     for key, value in os.environ.items():
         if not key.startswith(_ENV_PREFIX):
             continue
         path = key[len(_ENV_PREFIX) :].lower().split(_SECTION_SEP)
+        if not value.strip() and tuple(path) in _EMPTY_MEANS_UNSET:
+            continue
         cursor: Any = overlay
         for part in path[:-1]:
             nxt = cursor.setdefault(part, {})

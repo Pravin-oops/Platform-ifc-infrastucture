@@ -201,7 +201,7 @@ class ConnectorRunner:
         context = self._stack.schema_context
         mode = settings.schema_registry.mode
 
-        if mode == "DEV":
+        if not context.get("subject"):
             schema_source = "pinned in config (not checked against the registry)"
         else:
             schema_source = (

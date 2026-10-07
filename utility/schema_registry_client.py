@@ -48,7 +48,7 @@ class SchemaRegistryClient:
         self,
         base_url: Union[str, Sequence[str]],
         *,
-        token_provider: Any,
+        token_provider: Any = None,
         ca_location: Optional[str] = None,
         timeout: int = 30,
         backoff: Optional[BackoffPolicy] = None,
@@ -60,6 +60,7 @@ class SchemaRegistryClient:
         if not self._urls:
             raise ValueError("SchemaRegistryClient needs at least one registry URL")
         self._preferred = self._urls[0]
+        #: None for the DEV registry (8082), which takes no bearer token.
         self._tokens = token_provider
         self._verify: Any = ca_location if ca_location else True
         self._timeout = timeout
@@ -112,15 +113,14 @@ class SchemaRegistryClient:
 
     def _request_node(self, base: str, path: str, *, force_refresh: bool = False) -> Any:
         url = f"{base}{path}"
-        token = self._tokens.get(force_refresh=force_refresh)
+        headers = {"Content-Type": "application/vnd.schemaregistry.v1+json"}
+        if self._tokens is not None:
+            headers["Authorization"] = f"Bearer {self._tokens.get(force_refresh=force_refresh)}"
 
         try:
             response = requests.get(
                 url,
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Content-Type": "application/vnd.schemaregistry.v1+json",
-                },
+                headers=headers,
                 verify=self._verify,
                 timeout=self._timeout,
             )
@@ -135,7 +135,7 @@ class SchemaRegistryClient:
         if response.status_code == 200:
             return response.json()
 
-        if response.status_code in (401, 403) and not force_refresh:
+        if response.status_code in (401, 403) and not force_refresh and self._tokens is not None:
             # The cached token may have been revoked or rotated early; one
             # forced refresh distinguishes an expiry from a real ACL problem.
             logger.warning(

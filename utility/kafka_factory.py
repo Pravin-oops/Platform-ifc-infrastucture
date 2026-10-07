@@ -365,9 +365,13 @@ class KafkaStackFactory:
         pf.check_dns(self._report, brokers, label="kafka")
         pf.check_tcp(self._report, brokers, label="kafka", timeout=timeout, require_all=False)
 
-        if settings.schema_registry.mode == "SECURE" and settings.schema_registry.urls:
+        registry_lookup = settings.schema_registry.urls and not (
+            settings.schema_registry.mode == "DEV" and settings.schema_registry.schema_id is not None
+        )
+        if registry_lookup:
             # Every node is checked and reported; one reachable node is enough,
-            # since the lookup fails over to whichever answers.
+            # since the lookup fails over to whichever answers. Either mode:
+            # DEV looks the schema up too, unless its id is pinned.
             registry = [pf.parse_url_endpoint(url) for url in settings.schema_registry.urls]
             single = len(registry) == 1
             pf.check_dns(self._report, registry, label="schema_registry", blocking=single)
@@ -379,17 +383,9 @@ class KafkaStackFactory:
         settings = self._settings
         local_schema = load_schema_document(settings.schema_registry.schema_path)
 
-        if settings.schema_registry.mode == "DEV":
+        mode = settings.schema_registry.mode
+        if mode == "DEV" and settings.schema_registry.schema_id is not None:
             schema_id = settings.schema_registry.schema_id
-            if schema_id is None:
-                # Unframed Avro is undecodable by KafkaAvroDeserializer, so refuse
-                # to start rather than publish records no consumer can read.
-                raise PreflightError(
-                    "schema_registry.mode is DEV but schema_registry.schema_id is not set; "
-                    "records must carry the Confluent wire-format header",
-                    catalog.SCHEMA_VALIDATION_FAILURE,
-                    context={"mode": "DEV"},
-                )
             logger.warning(
                 "Schema Registry mode is DEV: framing records with the configured schema id %s "
                 "without checking the local schema against the registry",
@@ -397,9 +393,27 @@ class KafkaStackFactory:
             )
             return local_schema, schema_id, {"mode": "DEV", "schema_id": schema_id}
 
+        if mode == "DEV" and not settings.schema_registry.urls:
+            # Unframed Avro is undecodable by KafkaAvroDeserializer, so refuse
+            # to start rather than publish records no consumer can read.
+            raise PreflightError(
+                "schema_registry.mode is DEV but neither schema_registry.dev.url nor "
+                "schema_registry.schema_id is set; records must carry the Confluent "
+                "wire-format header",
+                catalog.SCHEMA_VALIDATION_FAILURE,
+                context={"mode": "DEV"},
+            )
+
+        if mode == "DEV":
+            logger.info(
+                "Schema Registry mode is DEV: looking the schema up on %s without a bearer token",
+                ", ".join(settings.schema_registry.urls),
+            )
+
         client = SchemaRegistryClient(
             settings.schema_registry.urls,
-            token_provider=tokens,
+            # The DEV registry takes no token; SECURE sends the BAM bearer token.
+            token_provider=None if mode == "DEV" else tokens,
             ca_location=settings.schema_registry.ca_location,
             timeout=settings.schema_registry.timeout_seconds,
             backoff=BackoffPolicy(
@@ -419,6 +433,7 @@ class KafkaStackFactory:
 
             context.update(
                 {
+                    "mode": mode,
                     "subject": subject,
                     "schema_id": registered.schema_id,
                     "schema_version": registered.version,
