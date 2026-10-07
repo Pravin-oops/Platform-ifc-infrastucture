@@ -4,10 +4,12 @@
 # https://github.com/confluentinc/librdkafka/blob/master/CONFIGURATION.md
 
 ---
-# Provide comma seperated list of host/port pairs to use for establishing the initial connection to the Kafka cluster(DEV).
+# Provide comma seperated list of host/port pairs to use for establishing the initial connection to the Kafka cluster.
 servers:
+  # The brokers the SIT run of 7 October 2026 published through. The BSP
+  # toolkit gives the official list per environment: bin\windows\env.cmd -v icp\emea\uat
   # 9095: the Barclays SASL_SSL listener (security.protocol below).
-  bootstrap.servers: ldndsr000009490.intranet.barcapint.com:9095,ldndsr000009491.intranet.barcapint.com:9095,gbrdsr000012098.intranet.barcapint.com:9095
+  bootstrap.servers: ldndsr000009480.intranet.barcapint.com:9095,ldndsr000009481.intranet.barcapint.com:9095,gbrdsr000011990.intranet.barcapint.com:9095,gbrdsr000011993.intranet.barcapint.com:9095,gbrdsr000013930.intranet.barcapint.com:9095
 
 # Provide protocol used to communicate with brokers, SASL mechanism used for client connections, SSL certificate and CA Locations (optional)
 security:
