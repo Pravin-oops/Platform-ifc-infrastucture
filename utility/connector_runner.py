@@ -95,6 +95,9 @@ class ConnectorRunner:
         self._producer_factory = producer_factory
 
         self._run_id = new_run_id()
+        # Resolved here, before any network call, so an environment with no
+        # code configured stops the run instead of publishing under another's.
+        self._originating_system = settings.originating_system
         self._sequence = SequenceAllocator()
         # Fixed once, so the rows queried and the business month stamped on them
         # cannot disagree even if the run crosses midnight at a month end.
@@ -178,8 +181,14 @@ class ConnectorRunner:
 
         self._envelopes = EnvelopeBuilder(
             avro_schema=self._stack.serializer.schema,
+            originating_system=self._originating_system,
             sequence_allocator=self._sequence,
             business_month=self._business_month,
+        )
+        logger.info(
+            "Envelope identity: triggerOriginatingSystem=idSystem=%s (environment %s)",
+            self._originating_system,
+            settings.app.environment,
         )
 
         self._health.update(schema_id=self._stack.schema_id, topic=settings.kafka.topic)

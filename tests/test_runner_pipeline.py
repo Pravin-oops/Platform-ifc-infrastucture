@@ -220,6 +220,8 @@ def make_settings(**overrides) -> ConnectorSettings:
         "audit": {"bucket": None},
         "resilience": {"preflight_enabled": False, "max_quarantine_ratio": 1.0},
         "health": {"enabled": False},
+        # TEST is not a real environment; it publishes under the SIT code.
+        "envelope": {"originating_systems": {"TEST": "SNSVC0084378"}},
     }
     for section, values in overrides.items():
         document.setdefault(section, {}).update(values)
@@ -250,6 +252,7 @@ def build_runner(rows, *, producer=None, athena=None, **overrides):
     runner._stack = build_stack(producer, settings, metrics)
     runner._envelopes = EnvelopeBuilder(
         avro_schema=runner._stack.serializer.schema,
+        originating_system=runner._originating_system,
         sequence_allocator=runner._sequence,
         business_month="2026-06",
     )

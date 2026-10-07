@@ -9,8 +9,21 @@
 
 app:
   name: ifc-trigger-connector
+  # Selects envelope.originating_systems below. Set per task with
+  # IFC_APP__ENVIRONMENT (DEV | SIT | PROD-ANALYTICS | PROD-PARALLEL | PROD).
   environment: SIT
   log_level: INFO
+
+envelope:
+  # Each environment's service number, sent as both triggerOriginatingSystem
+  # and idSystem, and the first part of every trigger ID. A run whose
+  # app.environment is not listed here stops at startup.
+  originating_systems:
+    DEV: SNSVC0084379
+    SIT: SNSVC0084378
+    PROD-ANALYTICS: SNSVC0084375
+    PROD-PARALLEL: SNSVC0084371
+    PROD: SNSVC0084373
 
 run:
   # One ECS RunTask per trigger invocation: publish the month, then exit.
@@ -177,10 +190,9 @@ resilience:
   circuit_breaker_threshold: 20
   circuit_breaker_reset_seconds: 120
   preflight_enabled: true
-  # Per-endpoint DNS/TCP connect timeout at preflight. Generous while the BSP
-  # connection is being brought up; an unreachable endpoint takes this long to
-  # report, so bring it back down once the path is proven.
-  preflight_timeout_seconds: 60
+  # Per-endpoint DNS/TCP connect timeout at preflight: an unreachable endpoint
+  # takes this long to report.
+  preflight_timeout_seconds: 30
   # Off: no explicit list_topics() at preflight. The first publish brings up the
   # broker connection (TLS, SASL with the BAM token, metadata), as produce_app
   # does; a missing topic or ACL comes back as a delivery error. Turn on with

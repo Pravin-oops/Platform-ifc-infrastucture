@@ -409,13 +409,26 @@ Upstream supplies no customer id, business unit or timestamp — the connector d
 | `timestamp` | last instant of the **business month**, the month before the run month (UK time): a July 2026 run stamps every record `2026-06-30T23:59:59.999999999Z` |
 | `triggerPostingTimestamp` | when the record is posted, same RFC 3339 format (UTC, nanosecond precision) |
 | `sequenceNumber` | the record's position in the batch — 1, 2, 3… across all customers |
-| `triggerOriginatingSystem` | fixed: `SNSVC0084378` |
+| `triggerOriginatingSystem` | the environment's service number, from `envelope.originating_systems` by `app.environment` (table below) |
 | `triggerOriginatingBU` | fixed: `UK-C` |
-| `idSystem` | fixed: `Corelation id` |
+| `idSystem` | the same service number as `triggerOriginatingSystem` |
 | `idType` | fixed: `Customer` |
 | `idValue` | `counterparty_csid_sds`, as a string; a row without one is quarantined |
 | `upstreamTriggerID` | always null: the trigger tables carry no upstream trigger id |
 | `payload` | the eight contract fields above |
+
+The service number depends on the environment the task runs in, set by `app.environment`
+(`IFC_APP__ENVIRONMENT` on the task). It is sent as both `triggerOriginatingSystem` and
+`idSystem`, and starts every trigger ID. A run whose environment is not listed stops at startup
+rather than publish under another environment's number.
+
+| `app.environment` | Service number |
+|---|---|
+| `DEV` | `SNSVC0084379` |
+| `SIT` | `SNSVC0084378` |
+| `PROD-ANALYTICS` | `SNSVC0084375` |
+| `PROD-PARALLEL` | `SNSVC0084371` |
+| `PROD` | `SNSVC0084373` |
 
 The sub-event discriminator is the row's `business_date`. Neither table has a sub-event column,
 and the grain is one row per counterparty per business date, so without it a second row for one
@@ -431,6 +444,8 @@ counterparty inside a business month would collide with the first on trigger ID.
 {system}_{triggerType}_{triggerSubType}_{timestamp}_{sequenceNumber}
 SNSVC0084378_KYCRefresh_NewHRCRelationship_2026-06-30T23:59:59.999999999Z_1
 ```
+
+`{system}` is the environment's service number (`SNSVC0084378` in SIT, above).
 
 `timestamp` is the envelope's business-month stamp, the same for every record in a run, so the
 **sequence number is what makes the ID unique**. `sequenceNumber` is the record's position in the

@@ -9,9 +9,13 @@ Envelope values, as agreed with the Trigger Backbone:
   before the run date, in UK time.
 * ``triggerPostingTimestamp`` is when the event is posted, in the same RFC 3339
   shape: UTC, nanosecond precision, ``Z``.
-* ``triggerType``, ``triggerOriginatingSystem``, ``triggerOriginatingBU``,
-  ``idType`` and ``idSystem`` are fixed constants (see below), per the payload
-  specification on Confluence. Neither the input event nor config can change them.
+* ``triggerOriginatingSystem`` and ``idSystem`` are both the environment's
+  service number (``SNSVC0084378`` in SIT), from ``envelope.originating_systems``
+  in the config, keyed by ``app.environment``. The same code starts every
+  trigger ID.
+* ``triggerType``, ``triggerOriginatingBU`` and ``idType`` are fixed constants
+  (see below), per the payload specification on Confluence. Neither the input
+  event nor config can change them.
 * ``idValue`` is the counterparty CSID from the BDP row
   (``counterparty_csid_sds``). Nothing upstream supplies a separate customer id,
   so the input wrapper carries no identity at all.
@@ -54,12 +58,11 @@ from utility.trigger_payload import (
 logger = logging.getLogger(__name__)
 
 # Envelope constants, per the payload specification on Confluence. An input
-# event's own triggerType is ignored so upstream data cannot change them.
+# event's own triggerType is ignored so upstream data cannot change them. The
+# originating system (also the idSystem) is per environment, so it is passed in.
 TRIGGER_TYPE = "KYCRefresh"
-ORIGINATING_SYSTEM = "SNSVC0084378"
 ORIGINATING_BU = "UK-C"
 ID_TYPE = "Customer"
-ID_SYSTEM = "Corelation id"
 
 #: BDP column holding the counterparty CSID: the envelope's idValue.
 CSID_SOURCE = "counterparty_csid_sds"
@@ -177,9 +180,14 @@ class EnvelopeBuilder:
         self,
         *,
         avro_schema: Dict[str, Any],
+        originating_system: str,
         sequence_allocator: Optional[SequenceAllocator] = None,
         business_month: Optional[str] = None,
     ):
+        if not originating_system or not str(originating_system).strip():
+            raise ValueError("EnvelopeBuilder needs the environment's originating system code")
+        #: triggerOriginatingSystem and idSystem, and the trigger ID's first part.
+        self._system = str(originating_system).strip()
         self._schema = avro_schema
         self._parsed_schema = parse_schema(avro_schema)
         if sequence_allocator is None:
@@ -203,6 +211,10 @@ class EnvelopeBuilder:
     @property
     def business_month(self) -> str:
         return self._business_month
+
+    @property
+    def originating_system(self) -> str:
+        return self._system
 
     @property
     def event_timestamp(self) -> str:
@@ -259,7 +271,7 @@ class EnvelopeBuilder:
         )
 
         parts = {
-            "system": ORIGINATING_SYSTEM,
+            "system": self._system,
             "triggerType": TRIGGER_TYPE,
             # The published symbol, so the identity a consumer can reconstruct
             # from the message matches the one the connector hashed.
@@ -280,7 +292,7 @@ class EnvelopeBuilder:
         for the whole run, so the sequence number is what makes the ID unique.
         """
         return (
-            f"{ORIGINATING_SYSTEM}_"
+            f"{self._system}_"
             f"{TRIGGER_TYPE}_"
             f"{definition.published_sub_type}_"
             f"{self._event_timestamp}_"
@@ -339,11 +351,11 @@ class EnvelopeBuilder:
             "timestamp": self._event_timestamp,
             "triggerPostingTimestamp": now_timestamp(),
             "sequenceNumber": int(sequence),
-            "triggerOriginatingSystem": ORIGINATING_SYSTEM,
+            "triggerOriginatingSystem": self._system,
             "triggerOriginatingBU": ORIGINATING_BU,
             "idType": ID_TYPE,
             "idValue": csid,
-            "idSystem": ID_SYSTEM,
+            "idSystem": self._system,
             # Nullable in the schema, and the trigger tables carry no upstream
             # trigger id: an IFC trigger is the origin, not a derived event.
             "upstreamTriggerID": None,

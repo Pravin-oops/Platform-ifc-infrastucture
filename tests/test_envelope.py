@@ -32,6 +32,7 @@ def schema():
 def make_builder(schema, **overrides):
     options = dict(
         avro_schema=schema,
+        originating_system="SNSVC0084378",
         business_month="2026-06",
     )
     options.update(overrides)
@@ -92,7 +93,7 @@ class TestEnvelope:
         assert record["triggerOriginatingSystem"] == "SNSVC0084378"
         assert record["triggerOriginatingBU"] == "UK-C"
         assert record["idType"] == "Customer"
-        assert record["idSystem"] == "Corelation id"
+        assert record["idSystem"] == "SNSVC0084378"
         assert built.trigger_id.startswith("SNSVC0084378_KYCRefresh_NewHRCRelationship_")
 
     def test_only_client_relationship_owner_name_carries_an_encryption_policy(self, builder):

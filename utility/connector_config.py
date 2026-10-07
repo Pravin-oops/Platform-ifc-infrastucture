@@ -33,10 +33,41 @@ DEFAULT_MAX_MESSAGE_BYTES = 800 * 1024
 
 class AppSettings(BaseModel):
     name: str = "ifc-trigger-connector"
+    #: Selects the envelope's triggerOriginatingSystem and idSystem (see
+    #: EnvelopeSettings). The other envelope constants (triggerType,
+    #: triggerOriginatingBU, idType) are in tb_outcome_schema.
     environment: str = "UAT"
     log_level: str = "INFO"
-    # Envelope identity values (triggerType, triggerOriginatingSystem, idSystem,
-    # ...) are constants in tb_outcome_schema, not configuration.
+
+
+#: triggerOriginatingSystem and idSystem for each app.environment: the
+#: environment's service number.
+DEFAULT_ORIGINATING_SYSTEMS: Dict[str, str] = {
+    "DEV": "SNSVC0084379",
+    "SIT": "SNSVC0084378",
+    "PROD-ANALYTICS": "SNSVC0084375",
+    "PROD-PARALLEL": "SNSVC0084371",
+    "PROD": "SNSVC0084373",
+}
+
+_SYSTEM_CODE = re.compile(r"^[A-Za-z0-9-]+$")
+
+
+class EnvelopeSettings(BaseModel):
+    #: app.environment (any case) -> the value sent as both
+    #: triggerOriginatingSystem and idSystem, and the first part of every
+    #: trigger ID. An environment missing here stops the run at startup.
+    originating_systems: Dict[str, str] = Field(default_factory=lambda: dict(DEFAULT_ORIGINATING_SYSTEMS))
+
+    @field_validator("originating_systems")
+    @classmethod
+    def _normalise(cls, value: Dict[str, str]) -> Dict[str, str]:
+        systems = {str(env).strip().upper(): str(code).strip() for env, code in value.items()}
+        # The code is the trigger ID's first part, which is '_'-separated.
+        bad = {env: code for env, code in systems.items() if not _SYSTEM_CODE.match(code)}
+        if bad:
+            raise ValueError(f"envelope.originating_systems codes must be letters, digits or '-': {bad}")
+        return systems
 
 
 class RunSettings(BaseModel):
@@ -468,9 +499,9 @@ class ResilienceSettings(BaseModel):
     )
     circuit_breaker_reset_seconds: float = Field(default=120.0, gt=0)
     preflight_enabled: bool = True
-    #: Per-endpoint DNS/TCP connect timeout at preflight; short, so a dead
-    #: endpoint is reported quickly.
-    preflight_timeout_seconds: int = Field(default=10, ge=1)
+    #: Per-endpoint DNS/TCP connect timeout at preflight: how long an
+    #: unreachable endpoint takes to report.
+    preflight_timeout_seconds: int = Field(default=30, ge=1)
     #: Off: the first publish brings the broker connection up, as the Trigger
     #: Backbone's produce_app does, and topic or ACL problems arrive as
     #: delivery errors. On: an explicit list_topics() before any record is read,
@@ -517,6 +548,7 @@ class ConnectorSettings(BaseModel):
     health: HealthSettings = Field(default_factory=HealthSettings)
     notifications: NotificationSettings = Field(default_factory=NotificationSettings)
     recon: ReconSettings = Field(default_factory=ReconSettings)
+    envelope: EnvelopeSettings = Field(default_factory=EnvelopeSettings)
 
     @field_validator("app")
     @classmethod
@@ -554,6 +586,24 @@ class ConnectorSettings(BaseModel):
             return False
         target = self.recon.target_table or self.recon.trigger_targets.get(self.run.trigger or "")
         return bool(self.recon.table and target)
+
+    @property
+    def originating_system(self) -> str:
+        """The environment's service number: triggerOriginatingSystem and idSystem.
+
+        Looked up from ``app.environment`` (any case). Resolved when a run starts,
+        not at load, so tooling can read a config for an environment it does not
+        publish from; a run never falls back to another environment's code.
+        """
+        environment = self.app.environment.strip().upper()
+        try:
+            return self.envelope.originating_systems[environment]
+        except KeyError:
+            raise ValueError(
+                f"app.environment {self.app.environment!r} has no envelope.originating_systems "
+                f"entry, so triggerOriginatingSystem/idSystem cannot be set; known: "
+                f"{sorted(self.envelope.originating_systems)}"
+            ) from None
 
     @property
     def gate_active(self) -> bool:
