@@ -124,9 +124,12 @@ schema_registry:
   max_attempts: 5
   schema_path: utility/schema.json
 
-  # DEV registry: port 8082, no bearer token. The schema is looked up and
-  # checked like SECURE; set schema_id here instead to pin it without a lookup.
+  # DEV: no BAM token or BSP username/password for the registry (the DEV
+  # registry is not password protected), and the schema id is the constant
+  # 1299, so the registry is not contacted at all. Remove schema_id to look the
+  # id up on the url nodes instead (port 8082, no token).
   dev:
+    schema_id: 1299
     url: https://ldndsr000010177.intranet.barcapint.com:8082, https://gbrdsr000014551.intranet.barcapint.com:8082
 
   # Secure registry: port 8095, the BAM bearer token.

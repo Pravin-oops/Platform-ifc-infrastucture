@@ -383,12 +383,16 @@ class TestAwaitOauthToken:
                 self._config["oauth_cb"]("sasl.oauthbearer.config")
 
     @staticmethod
-    def config(expires_in=3600):
+    def config(expires_in=3600, protocol="SASL_SSL"):
         import time as time_module
 
         from utility.kafka_factory import _observed_oauth_cb
 
-        return {"oauth_cb": _observed_oauth_cb(lambda _c: ("e30.e30.sig", time_module.time() + expires_in))}
+        return {
+            "security.protocol": protocol,
+            "sasl.mechanism": "OAUTHBEARER",
+            "oauth_cb": _observed_oauth_cb(lambda _c: ("e30.e30.sig", time_module.time() + expires_in)),
+        }
 
     def test_it_polls_until_the_token_is_supplied(self):
         config = self.config()
@@ -407,6 +411,15 @@ class TestAwaitOauthToken:
 
         assert not config["oauth_cb"].supplied.is_set()
         assert any("supplied no usable token" in r.getMessage() for r in caplog.records)
+
+    def test_a_plaintext_connection_does_not_wait_for_a_token(self):
+        """PLAINTEXT (the DEV 9092 listener) never asks for one: no 15 s stall, no false error."""
+        config = self.config(protocol="PLAINTEXT")
+        producer = self.Producer(config, serve_after_polls=None)
+
+        KafkaStackFactory._await_oauth_token(producer, config, timeout=5)
+
+        assert producer.polls == 0
 
     def test_without_an_oauth_callback_nothing_is_polled(self):
         producer = self.Producer({}, serve_after_polls=None)

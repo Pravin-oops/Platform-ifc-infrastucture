@@ -61,13 +61,15 @@ REQUIRED_PRODUCER_PROPERTIES: Dict[str, Any] = {
 
 
 class _NoTokenProvider:
-    """Stand-in for the local, non-BSP path, where nothing needs a bearer token."""
+    """Stand-in where the registry needs no bearer token: the DEV registry, or
+    the local, non-BSP path."""
 
     seconds_remaining = 0.0
 
     def get(self, *, force_refresh: bool = False) -> str:
         raise PreflightError(
-            "A Schema Registry token was requested, but no BSP client is configured",
+            "A Schema Registry token was requested, but this run does not acquire one "
+            "(schema_registry.mode is DEV, or no BSP client is configured)",
             catalog.AUTHENTICATION_FAILURE,
         )
 
@@ -481,6 +483,13 @@ class KafkaStackFactory:
         poll = getattr(producer, "poll", None)
         if supplied is None or not callable(poll):
             return
+        if not (
+            str(config.get("security.protocol", "")).upper().startswith("SASL")
+            and str(config.get("sasl.mechanism", "")).upper() == "OAUTHBEARER"
+        ):
+            # PLAINTEXT (the DEV-only 9092 listener) never asks for a token, so
+            # waiting for one would only stall and then log a false error.
+            return
 
         started = time.monotonic()
         while not supplied.is_set() and time.monotonic() - started < timeout:
@@ -576,7 +585,9 @@ class KafkaStackFactory:
             # an auth timeout would mask the real cause.
             self._report.raise_if_failed()
 
-        if bsp is not None:
+        if bsp is not None and settings.schema_registry.mode == "SECURE":
+            # Only the secure registry takes the BAM token. The brokers get
+            # theirs from the BSP oauth_cb, which does not go through here.
             tokens = bsp.token_provider(
                 refresh_margin_seconds=settings.schema_registry.token_refresh_margin_seconds
             )
@@ -588,6 +599,11 @@ class KafkaStackFactory:
             pf.check_authentication(self._report, acquire=acquire_token)
             self._report.raise_if_failed()
         else:
+            if bsp is not None:
+                logger.info(
+                    "Schema Registry mode is DEV: no BAM token is requested; the DEV registry "
+                    "is not password protected"
+                )
             tokens = _NoTokenProvider()
 
         local_schema, schema_id, schema_context = self._resolve_schema(tokens)

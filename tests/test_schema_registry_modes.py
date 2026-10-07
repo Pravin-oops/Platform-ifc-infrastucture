@@ -185,3 +185,62 @@ class TestClientWithoutAToken:
         assert len(seen) == 1
         assert "Authorization" not in seen[0]
         assert seen[0]["Content-Type"] == "application/vnd.schemaregistry.v1+json"
+
+
+class TestDevNeedsNoBamToken:
+    """DEV: the registry is not password protected and the id is pinned (1299)."""
+
+    class FakeBsp:
+        def __init__(self):
+            self.tokens_requested = 0
+
+        def producer_config(self, overrides):
+            return {"bootstrap.servers": "localhost:9092", **overrides}
+
+        def token_provider(self, **_kwargs):
+            self.tokens_requested += 1
+            raise AssertionError("DEV must not ask BAM for a token")
+
+    def build(self, monkeypatch, **registry):
+        from tests.test_runner_pipeline import FakeProducer, make_settings
+
+        settings = make_settings(schema_registry=registry)
+        bsp = self.FakeBsp()
+        monkeypatch.setattr(KafkaStackFactory, "_bsp_client", lambda self: bsp)
+        factory = KafkaStackFactory(
+            settings, metrics=None, shutdown=ShutdownSignal(), producer_factory=lambda _c: FakeProducer()
+        )
+        return factory, bsp
+
+    def test_dev_with_bsp_builds_without_a_bam_token(self, monkeypatch):
+        factory, bsp = self.build(monkeypatch, mode="DEV", dev={"schema_id": 1299})
+
+        stack = factory.build()
+
+        assert bsp.tokens_requested == 0
+        assert stack.schema_id == 1299
+        assert not any(r.name == "auth:bam_token" for r in factory.report.results)
+
+    def test_secure_with_bsp_still_asks_for_the_token(self, monkeypatch):
+        factory, bsp = self.build(monkeypatch, mode="SECURE", secure={"url": "https://r:8095"})
+
+        with pytest.raises(AssertionError, match="must not ask BAM"):
+            factory.build()
+        assert bsp.tokens_requested == 1
+
+    def test_the_shipped_dev_config_pins_1299_and_skips_the_registry(self, registry, monkeypatch):
+        settings = registry("DEV")
+        assert settings.schema_id == 1299
+
+        from tests.test_runner_pipeline import make_settings
+
+        full = make_settings(schema_registry=settings.model_dump(exclude={"dev", "secure"}))
+        checked = []
+        monkeypatch.setattr(kafka_factory.pf, "check_dns", lambda report, endpoints, label, **_k: checked.append(label))
+        monkeypatch.setattr(kafka_factory.pf, "check_tcp", lambda report, endpoints, label, **_k: checked.append(label))
+        KafkaStackFactory(full, metrics=None, shutdown=ShutdownSignal())._network_checks(
+            {"bootstrap.servers": "broker:9092"}
+        )
+
+        assert "schema_registry" not in checked
+        assert checked == ["kafka", "kafka"]

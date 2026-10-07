@@ -545,9 +545,9 @@ task overrides it (any case; an empty value leaves it to the file). Each mode ha
 
 | | SECURE | DEV |
 |---|---|---|
-| Registry | `secure.url`, port 8095 | `dev.url`, port 8082 |
-| Authentication | BAM bearer token (needs `kafka.bsp_config_path`) | none |
-| Schema id | looked up, and the bundled `.avsc` checked against it | looked up and checked the same way, unless `dev.schema_id` pins it |
+| Registry | `secure.url`, port 8095 | not contacted while the id is pinned; otherwise `dev.url`, port 8082 |
+| Authentication | BAM bearer token (needs `kafka.bsp_config_path`) | none: no BAM token is requested and no BSP username/password is used for the registry, which is not password protected |
+| Schema id | looked up, and the bundled `.avsc` checked against it | the constant `1299`, pinned with `dev.schema_id`; remove it to look the id up on `dev.url` instead |
 
 To override a mode's URLs per task, set that block's value, e.g. `IFC_SCHEMA_REGISTRY__DEV__URL`.
 A pinned DEV id (`schema_registry.dev.schema_id`) skips the registry and the drift check, so it
