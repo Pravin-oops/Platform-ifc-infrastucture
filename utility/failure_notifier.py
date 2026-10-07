@@ -166,7 +166,7 @@ class Notifier:
             )
             return {"subject": subject, "message": body}
 
-        logger.info(
+        logger.debug(
             "SNS failure alert sending: topic=%s subject=%r message=\n%s",
             self._topic_arn,
             subject,

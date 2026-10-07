@@ -56,8 +56,10 @@ class PreflightReport:
 
     def add(self, result: CheckResult) -> CheckResult:
         self.results.append(result)
+        # One line per check, endpoint by endpoint: DEBUG while it passes. At
+        # INFO the run gets log_summary()'s single line instead.
         logger.log(
-            logging.INFO if result.passed else logging.ERROR,
+            logging.DEBUG if result.passed else logging.ERROR,
             "Preflight %s: %s",
             result.name,
             "ok" if result.passed else result.detail,
@@ -79,10 +81,54 @@ class PreflightReport:
             "checks": [r.to_dict() for r in self.results],
         }
 
+    def summary(self) -> str:
+        """Each check group's outcome, e.g. ``dns:kafka 3/3, tcp:kafka 3/3, auth:bam_token ok``.
+
+        DNS and TCP checks are counted per label rather than listed per endpoint;
+        the TCP quorum line is left out, since the count already says it.
+        """
+        groups: Dict[str, List[CheckResult]] = {}
+        for result in self.results:
+            parts = result.name.split(":")
+            if parts[0] in ("dns", "tcp"):
+                if parts[-1] == "quorum":
+                    continue
+                group = ":".join(parts[:2])
+            else:
+                group = result.name
+            groups.setdefault(group, []).append(result)
+
+        described = []
+        for group, results in groups.items():
+            if len(results) == 1:
+                described.append(f"{group} {'ok' if results[0].passed else 'FAILED'}")
+            else:
+                described.append(f"{group} {sum(r.passed for r in results)}/{len(results)}")
+        return ", ".join(described)
+
+    def log_summary(self) -> None:
+        """The preflight's one INFO line (ERROR when it failed)."""
+        if not self.results:
+            return
+        duration_ms = sum(r.duration_ms for r in self.results)
+        logger.log(
+            logging.INFO if self.passed else logging.ERROR,
+            "Preflight %s in %.0f ms: %s",
+            "passed" if self.passed else "failed",
+            duration_ms,
+            self.summary(),
+            extra={
+                "preflight_passed": self.passed,
+                "preflight_checks": len(self.results),
+                "preflight_duration_ms": round(duration_ms, 1),
+            },
+        )
+
     def raise_if_failed(self) -> None:
         if self.passed:
             return
 
+        self.log_summary()
         first = self.failures[0]
         raise PreflightError(
             f"Preflight check '{first.name}' failed: {first.detail}",

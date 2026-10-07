@@ -133,7 +133,7 @@ class BSPTokenProvider:
         self._expires_at = exp if exp else time.time() + DEFAULT_TOKEN_LIFETIME_SECONDS
         self._token = token
 
-        logger.info(
+        logger.debug(
             "BAM token acquired",
             extra={"expires_in_seconds": round(self._expires_at - time.time())},
         )

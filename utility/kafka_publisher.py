@@ -170,7 +170,7 @@ class Publisher:
 
         # Logged on the broker's acknowledgement, not on produce(): only an ack
         # means the record is on the topic.
-        logger.info(
+        logger.debug(
             "Message published: topic=%s partition=%s offset=%s trigger_id=%s",
             self._topic,
             partition,
@@ -289,7 +289,7 @@ class Publisher:
         *uncertain*, not failed, and the caller must treat the run as incomplete
         rather than successful.
         """
-        logger.info(
+        logger.debug(
             "Flushing producer", extra={"queue_depth": self.queue_depth, "timeout_seconds": timeout_seconds}
         )
         remaining = self._producer.flush(timeout_seconds)

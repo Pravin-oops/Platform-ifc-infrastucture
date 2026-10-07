@@ -56,7 +56,7 @@ def install(settings: CaCertificateSettings, *, session: Optional[Any] = None) -
 
 def _read_secret(settings: CaCertificateSettings, session: Any) -> str:
     context = {"secret_id": settings.secret_id, "region": settings.secret_region}
-    logger.info("Reading the Barclays root CA from Secrets Manager", extra=context)
+    logger.debug("Reading the Barclays root CA from Secrets Manager", extra=context)
 
     try:
         client = session.client("secretsmanager", region_name=settings.secret_region)

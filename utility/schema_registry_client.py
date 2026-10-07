@@ -193,7 +193,7 @@ class SchemaRegistryClient:
             schema=schema,
             url=node,
         )
-        logger.info(
+        logger.debug(
             "Resolved registry subject",
             extra={
                 "subject": subject,

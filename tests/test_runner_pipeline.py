@@ -309,12 +309,15 @@ class TestRunLogs:
     def messages(self, caplog, prefix):
         return [r.getMessage() for r in caplog.records if r.getMessage().startswith(prefix)]
 
-    def test_each_acknowledged_message_is_logged_as_published(self, runner_factory, caplog):
-        caplog.set_level("INFO")
+    def test_each_acknowledged_message_is_logged_as_published_at_debug(self, runner_factory, caplog):
+        """Per message, so DEBUG only: at INFO the publish summary carries the totals."""
+        caplog.set_level("DEBUG")
         runner, _ = runner_factory([VALID_ROW])
         runner.run_batch()
 
-        [published] = self.messages(caplog, "Message published:")
+        [record] = [r for r in caplog.records if r.getMessage().startswith("Message published:")]
+        assert record.levelname == "DEBUG"
+        published = record.getMessage()
         assert "topic=test_ifc_topic" in published
         assert f"trigger_id={FIRST_TRIGGER_ID}" in published
         assert "offset=1" in published

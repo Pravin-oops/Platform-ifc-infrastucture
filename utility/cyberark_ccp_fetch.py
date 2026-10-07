@@ -168,7 +168,7 @@ class CyberArkAuthenticator:
     def _read_pem(self, secret_id: str, what: str, marker: str) -> str:
         """One PEM from its own secret: the SecretString is the PEM text itself."""
         context = {"secret_id": secret_id, "region": self._settings.secret_region}
-        logger.info(f"Reading CyberArk {what} from Secrets Manager", extra=context)
+        logger.debug(f"Reading CyberArk {what} from Secrets Manager", extra=context)
 
         try:
             client = self._session.client("secretsmanager", region_name=self._settings.secret_region)
@@ -222,7 +222,7 @@ class CyberArkAuthenticator:
         return _ClientCertificate(cert_pem=cert_pem, key_pem=key_pem)
 
     def _fetch_account(self, certificate: _ClientCertificate) -> Credentials:
-        logger.info("Retrieving system-account credential from CyberArk CCP", extra=self._context)
+        logger.debug("Retrieving system-account credential from CyberArk CCP", extra=self._context)
 
         try:
             with _materialised(certificate) as client_cert:

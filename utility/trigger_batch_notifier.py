@@ -92,7 +92,7 @@ class TriggerBatchNotifier:
             )
             return payload
 
-        logger.info(
+        logger.debug(
             "SNS batch notification sending: topic=%s subject=%r message=%s",
             self._sns_topic_arn,
             subject,

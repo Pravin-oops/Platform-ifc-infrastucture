@@ -165,7 +165,7 @@ def _observed_oauth_cb(callback: Callable[[Any], Any]) -> Callable[[Any], Any]:
         token = parts[0] if parts else None
         expiry = parts[1] if len(parts) > 1 else None
         expires_in = expiry - time.time() if isinstance(expiry, (int, float)) else None
-        logger.info(
+        logger.debug(
             "oauth_cb supplied a token: shape=%d-tuple token_type=%s expires_in_seconds=%s principal=%s",
             len(parts),
             type(token).__name__,
@@ -265,7 +265,7 @@ class KafkaStackFactory:
                 "CyberArk is not enabled; relying on BSP_USERNAME/BSP_PASSWORD already in the environment"
             )
 
-        logger.info(
+        logger.debug(
             "BSP client config: %s (environment %s)",
             settings.kafka.bsp_config_path,
             settings.app.environment,
@@ -337,7 +337,7 @@ class KafkaStackFactory:
         brokers = pf.parse_bootstrap_servers(config.get("bootstrap.servers", ""))
         effective = {key: config.get(key) for key in _LOGGED_PROPERTIES}
         ca_location = effective.get("ssl.ca.location")
-        logger.info(
+        logger.debug(
             "Kafka client config: security.protocol=%s sasl.mechanism=%s ssl.ca.location=%s "
             "(exists=%s) brokers=%d ports=%s request.timeout.ms=%s connections.max.idle.ms=%s "
             "metadata.max.age.ms=%s",
@@ -412,7 +412,7 @@ class KafkaStackFactory:
             )
 
         if mode == "DEV":
-            logger.info(
+            logger.debug(
                 "Schema Registry mode is DEV: looking the schema up on %s without a bearer token",
                 ", ".join(settings.schema_registry.urls),
             )
@@ -451,7 +451,7 @@ class KafkaStackFactory:
 
             for finding in findings:
                 logger.log(
-                    logging.ERROR if finding.startswith("BLOCKING") else logging.INFO,
+                    logging.ERROR if finding.startswith("BLOCKING") else logging.DEBUG,
                     "Schema comparison: %s",
                     finding,
                     extra={"subject": subject},
@@ -502,7 +502,7 @@ class KafkaStackFactory:
 
         waited_ms = round((time.monotonic() - started) * 1000)
         if supplied.is_set():
-            logger.info("Kafka producer has its OAuth token for SASL after %d ms", waited_ms)
+            logger.debug("Kafka producer has its OAuth token for SASL after %d ms", waited_ms)
         else:
             logger.error(
                 "The BSP oauth_cb supplied no usable token within %.0f s; the brokers cannot "
@@ -605,7 +605,7 @@ class KafkaStackFactory:
             self._report.raise_if_failed()
         else:
             if bsp is not None:
-                logger.info(
+                logger.debug(
                     "Schema Registry mode is DEV: no BAM token is requested; the DEV registry "
                     "is not password protected"
                 )
@@ -625,7 +625,7 @@ class KafkaStackFactory:
             # As produce_app does: librdkafka fetches the topic's metadata
             # itself when the first record is produced, and a missing topic or
             # ACL comes back as that record's delivery error.
-            logger.info(
+            logger.debug(
                 "Topic metadata preflight is off; the first publish brings up the broker connection"
             )
 

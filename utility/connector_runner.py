@@ -178,6 +178,7 @@ class ConnectorRunner:
 
         self._stack = factory.build()
         self._preflight = self._stack.preflight
+        factory.report.log_summary()
 
         self._envelopes = EnvelopeBuilder(
             avro_schema=self._stack.serializer.schema,

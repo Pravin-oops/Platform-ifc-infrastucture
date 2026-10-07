@@ -327,7 +327,7 @@ class TestObservedOauthCallback:
 
         from utility.kafka_factory import _observed_oauth_cb
 
-        with caplog.at_level(logging_module.INFO, logger="utility.kafka_factory"):
+        with caplog.at_level(logging_module.DEBUG, logger="utility.kafka_factory"):
             returned = _observed_oauth_cb(lambda _config: result)("cfg")
         return returned, caplog.records
 

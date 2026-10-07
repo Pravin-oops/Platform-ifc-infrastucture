@@ -134,7 +134,7 @@ class HealthServer:
 
         self._thread = threading.Thread(target=self._server.serve_forever, name="health", daemon=True)
         self._thread.start()
-        logger.info("Health server listening", extra={"host": self._host, "port": self._port})
+        logger.debug("Health server listening", extra={"host": self._host, "port": self._port})
         return self
 
     def stop(self) -> None:

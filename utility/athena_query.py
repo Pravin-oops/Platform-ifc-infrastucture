@@ -142,7 +142,7 @@ def start(client: Any, athena: Any, sql: str, parameters: List[str], *, label: s
         request["ResultConfiguration"] = {"OutputLocation": athena.output_location}
 
     query_id = client.start_query_execution(**request)["QueryExecutionId"]
-    logger.info(
+    logger.debug(
         "Athena query started",
         extra={"query_execution_id": query_id, "table": label, "workgroup": athena.workgroup},
     )
