@@ -274,6 +274,11 @@ In PROD, `UK_TOK_AC_L0R0_UNC_DE` goes on `Client Relationship Owner Name` and on
 In every other environment (DEV, SIT, PROD-ANALYTICS, PROD-PARALLEL) every field ships with an empty
 `fieldEncryptionPolicy`, the owner name included, because that data is not tokenised.
 
+The list is `envelope.tokenised_environments` in the config file. An ECS task can replace it
+without a new config with `IFC_ENVELOPE__TOKENISED_ENVIRONMENTS`, e.g. `DEV` to test the policy in
+DEV, or `DEV,PROD` (a JSON list works too); an empty value leaves it to the file. It only declares
+the policy: the connector never tokenises, so the owner name must already arrive tokenised.
+
 The three definitions in `trigger_definitions.py` therefore share one `_payload_fields()` list. A
 new trigger joins the topic by reusing it, not by declaring its own field set.
 

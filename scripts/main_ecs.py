@@ -16,6 +16,10 @@ Environment (all optional except the config path and the trigger):
     IFC_RUN__MONTH    YYYY-MM (or AUGUST_2026) - rerun that month's run instead of
                       the current one; add IFC_RUN__FORCE=true if it was delivered
     IFC_LOG_LEVEL     overrides app.log_level
+    IFC_ENVELOPE__TOKENISED_ENVIRONMENTS
+                      DEV,PROD (or ["DEV","PROD"]) - environments whose payload
+                      declares the owner name's tokenisation policy; replaces
+                      envelope.tokenised_environments, empty leaves it to the file
     IFC_*             any other setting, e.g. IFC_KAFKA__TOPIC
 
 ``ecs_handler()`` returns the run summary as a dict so the same code can be

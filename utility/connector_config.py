@@ -64,6 +64,15 @@ class EnvelopeSettings(BaseModel):
     #: fieldEncryptionPolicy is empty.
     tokenised_environments: List[str] = Field(default_factory=lambda: ["PROD"])
 
+    @field_validator("tokenised_environments", mode="before")
+    @classmethod
+    def _split_a_string(cls, value: Any) -> Any:
+        """Accept ``DEV,PROD`` as well as a list, so the ECS task can set
+        IFC_ENVELOPE__TOKENISED_ENVIRONMENTS without writing JSON."""
+        if isinstance(value, str):
+            return value.split(",")
+        return value
+
     @field_validator("tokenised_environments")
     @classmethod
     def _upper(cls, value: List[str]) -> List[str]:
@@ -737,7 +746,11 @@ def _coerce(raw: str) -> Any:
 #: Settings where an empty IFC_ variable means "not set, use the config file".
 #: Elsewhere an empty value is a deliberate null (an empty
 #: IFC_CA_CERTIFICATE__SECRET_ID turns the CA download off).
-_EMPTY_MEANS_UNSET = {("schema_registry", "mode"), ("app", "environment")}
+_EMPTY_MEANS_UNSET = {
+    ("schema_registry", "mode"),
+    ("app", "environment"),
+    ("envelope", "tokenised_environments"),
+}
 
 
 def _env_overlay() -> Dict[str, Any]:
