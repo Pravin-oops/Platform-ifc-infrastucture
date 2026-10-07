@@ -253,6 +253,7 @@ def build_runner(rows, *, producer=None, athena=None, **overrides):
     runner._envelopes = EnvelopeBuilder(
         avro_schema=runner._stack.serializer.schema,
         originating_system=runner._originating_system,
+        declare_encryption_policies=runner._settings.declares_encryption_policies,
         sequence_allocator=runner._sequence,
         business_month="2026-06",
     )

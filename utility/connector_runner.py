@@ -182,12 +182,15 @@ class ConnectorRunner:
         self._envelopes = EnvelopeBuilder(
             avro_schema=self._stack.serializer.schema,
             originating_system=self._originating_system,
+            declare_encryption_policies=settings.declares_encryption_policies,
             sequence_allocator=self._sequence,
             business_month=self._business_month,
         )
         logger.info(
-            "Envelope identity: triggerOriginatingSystem=idSystem=%s (environment %s)",
+            "Envelope identity: triggerOriginatingSystem=idSystem=%s, field encryption "
+            "policies %s (environment %s)",
             self._originating_system,
+            "declared" if settings.declares_encryption_policies else "empty",
             settings.app.environment,
         )
 

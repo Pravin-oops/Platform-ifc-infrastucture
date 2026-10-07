@@ -19,8 +19,9 @@ belongs to is already carried by the envelope's ``triggerSubType``, so the
 payload does not repeat it.
 
 Only ``Client Relationship Owner Name`` carries a tokenisation policy
-(``UK_TOK_AC_L0R0_UNC_DE``, the tokenisation applied upstream); every other
-field goes out with an empty policy.
+(``UK_TOK_AC_L0R0_UNC_DE``, the tokenisation applied upstream), and only in an
+environment whose data is tokenised (PROD); every other field, and every field
+elsewhere, goes out with an empty policy.
 """
 
 from __future__ import annotations

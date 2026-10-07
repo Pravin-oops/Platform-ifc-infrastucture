@@ -58,6 +58,16 @@ class EnvelopeSettings(BaseModel):
     #: triggerOriginatingSystem and idSystem, and the first part of every
     #: trigger ID. An environment missing here stops the run at startup.
     originating_systems: Dict[str, str] = Field(default_factory=lambda: dict(DEFAULT_ORIGINATING_SYSTEMS))
+    #: Environments (any case) whose upstream data is tokenised, so payload
+    #: fields declare the policy applied to them (UK_TOK_AC_L0R0_UNC_DE on
+    #: Client Relationship Owner Name). Everywhere else every
+    #: fieldEncryptionPolicy is empty.
+    tokenised_environments: List[str] = Field(default_factory=lambda: ["PROD"])
+
+    @field_validator("tokenised_environments")
+    @classmethod
+    def _upper(cls, value: List[str]) -> List[str]:
+        return sorted({str(env).strip().upper() for env in value if str(env).strip()})
 
     @field_validator("originating_systems")
     @classmethod
@@ -651,6 +661,11 @@ class ConnectorSettings(BaseModel):
                 f"entry, so triggerOriginatingSystem/idSystem cannot be set; known: "
                 f"{sorted(self.envelope.originating_systems)}"
             ) from None
+
+    @property
+    def declares_encryption_policies(self) -> bool:
+        """Whether payload fields carry their tokenisation policy in this environment."""
+        return self.app.environment.strip().upper() in self.envelope.tokenised_environments
 
     @property
     def gate_active(self) -> bool:

@@ -347,6 +347,7 @@ class TestEndToEnd:
         builder = EnvelopeBuilder(
             avro_schema=load_schema_document("utility/schema.json"),
             originating_system="SNSVC0084378",
+            declare_encryption_policies=False,
             business_month="2026-08",
         )
         event = list(make(FakeAthena()).stream())[0]
@@ -385,6 +386,7 @@ class TestEndToEnd:
         built = EnvelopeBuilder(
             avro_schema=load_schema_document("utility/schema.json"),
             originating_system="SNSVC0084378",
+            declare_encryption_policies=False,
             business_month="2026-08",
         ).build(event)
 

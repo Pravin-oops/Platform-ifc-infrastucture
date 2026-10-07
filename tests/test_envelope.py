@@ -33,6 +33,8 @@ def make_builder(schema, **overrides):
     options = dict(
         avro_schema=schema,
         originating_system="SNSVC0084378",
+        # PROD-like: these tests cover the policy a tokenised field declares.
+        declare_encryption_policies=True,
         business_month="2026-06",
     )
     options.update(overrides)

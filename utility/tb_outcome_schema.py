@@ -181,6 +181,7 @@ class EnvelopeBuilder:
         *,
         avro_schema: Dict[str, Any],
         originating_system: str,
+        declare_encryption_policies: bool,
         sequence_allocator: Optional[SequenceAllocator] = None,
         business_month: Optional[str] = None,
     ):
@@ -188,6 +189,9 @@ class EnvelopeBuilder:
             raise ValueError("EnvelopeBuilder needs the environment's originating system code")
         #: triggerOriginatingSystem and idSystem, and the trigger ID's first part.
         self._system = str(originating_system).strip()
+        #: Only where the upstream data is tokenised (PROD) do fields name their
+        #: policy; required, so no caller can leave it to a default.
+        self._declare_policies = bool(declare_encryption_policies)
         self._schema = avro_schema
         self._parsed_schema = parse_schema(avro_schema)
         if sequence_allocator is None:
@@ -321,7 +325,9 @@ class EnvelopeBuilder:
             )
 
         try:
-            payload_fields = build_fields(definition.fields, event.attributes)
+            payload_fields = build_fields(
+                definition.fields, event.attributes, declare_policies=self._declare_policies
+            )
         except PayloadBuildError as exc:
             raise RecordRejected(
                 f"{definition.sub_type} payload build failed: {exc}",

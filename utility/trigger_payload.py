@@ -47,12 +47,12 @@ class DataType(str, Enum):
     BOOLEAN = "BOOLEAN"
 
 
-# Tokenisation policies. NAME is from the payload specification on Confluence
-# and applies only to the Relationship Owner Name field. ACCOUNT is a
-# PLACEHOLDER to be confirmed with the tokenisation team before UAT.
+# Tokenisation policies. NAME applies only to the Relationship Owner Name field.
 #
 # PII arrives already tokenised, so the connector never de-tokenises: it declares
-# the policy applied upstream so the consumer knows how to read the value.
+# the policy applied upstream so the consumer knows how to read the value. Only
+# PROD data is tokenised (envelope.tokenised_environments), so everywhere else
+# build_fields is told not to declare policies and every field goes out with "".
 POLICY_NONE = ""
 POLICY_NAME = "UK_TOK_AC_L0R0_UNC_DE"
 
@@ -148,8 +148,17 @@ def _stringify(value: Any, data_type: DataType, spec: FieldSpec) -> str:
         ) from exc
 
 
-def build_fields(specs: Sequence[FieldSpec], attributes: Dict[str, Any]) -> List[Dict[str, str]]:
+def build_fields(
+    specs: Sequence[FieldSpec],
+    attributes: Dict[str, Any],
+    *,
+    declare_policies: bool = True,
+) -> List[Dict[str, str]]:
     """Project ``attributes`` through ``specs`` into BSP payload field objects.
+
+    ``declare_policies`` False sends every ``fieldEncryptionPolicy`` empty: the
+    environment's data is not tokenised, so naming a policy would tell the
+    consumer to de-tokenise a plain value.
 
     A missing or blank source value is replaced by ``spec.default`` when the
     spec declares one. Raises ``PayloadBuildError`` when a required field is
@@ -202,7 +211,7 @@ def build_fields(specs: Sequence[FieldSpec], attributes: Dict[str, Any]) -> List
             {
                 "fieldName": spec.name,
                 "fieldValue": rendered,
-                "fieldEncryptionPolicy": spec.encryption_policy,
+                "fieldEncryptionPolicy": spec.encryption_policy if declare_policies else POLICY_NONE,
                 "fieldDataType": spec.data_type.value,
             }
         )

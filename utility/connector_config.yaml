@@ -24,6 +24,10 @@ envelope:
     PROD-ANALYTICS: SNSVC0084375
     PROD-PARALLEL: SNSVC0084371
     PROD: SNSVC0084373
+  # Environments whose upstream data is tokenised. Only there does a payload
+  # field declare its fieldEncryptionPolicy (UK_TOK_AC_L0R0_UNC_DE on Client
+  # Relationship Owner Name); in every other environment all policies are "".
+  tokenised_environments: [PROD]
 
 run:
   # One ECS RunTask per trigger invocation: publish the month, then exit.

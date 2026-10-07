@@ -233,7 +233,8 @@ Two details that bite:
 - `fieldValue` has `minLength: 1`. An optional field with no value must be **omitted**, not sent
   empty. `build_fields` drops them; the validator rejects an empty one explicitly.
 - `fieldEncryptionPolicy` is mandatory but may be `""`. Only `Client Relationship Owner Name`
-  carries a policy (`UK_TOK_AC_L0R0_UNC_DE`), and the
+  carries a policy (`UK_TOK_AC_L0R0_UNC_DE`), only in **PROD** (`envelope.tokenised_environments`),
+  where the upstream data is tokenised; elsewhere every field's policy is `""`. The
   connector never de-tokenises — per the POC RAIDD assumption, values arrive tokenised and the
   connector declares which policy was applied upstream.
 
@@ -253,7 +254,7 @@ Every trigger publishes the **same eight fields**, in this order:
 | 1 | `Date of Request` | `DATE` | `date_of_request` | — |
 | 2 | `Counterparty Full Legal Entity Name` | `STRING` | `counterparty_full_legal_entity_name` | — |
 | 3 | `Counterparty ID` | `STRING` | `counterparty_csid_sds` | — |
-| 4 | `Client Relationship Owner Name` | `STRING` | `client_relationship_owner_name` | `UK_TOK_AC_L0R0_UNC_DE` |
+| 4 | `Client Relationship Owner Name` | `STRING` | `client_relationship_owner_name` | `UK_TOK_AC_L0R0_UNC_DE` in PROD, `""` elsewhere |
 | 5 | `Client Relationship Owner BRID` | `STRING` | `client_relationship_owner_brid` | — |
 | 6 | `Client Relationship Owner Business Unit` | `STRING` | `client_relationship_owner_business_unit` | — |
 | 7 | `Client Relationship Owner Location` | `STRING` | `client_relationship_owner_location` | — |
@@ -266,8 +267,9 @@ field is a string taken from the source row unchanged.
 `Counterparty ID` is the counterparty's CSID SDS value. It also travels as the envelope's
 `idValue`.
 
-`UK_TOK_AC_L0R0_UNC_DE` goes on `Client Relationship Owner Name` and on **nothing else** — every other
-field ships with an empty `fieldEncryptionPolicy`.
+In PROD, `UK_TOK_AC_L0R0_UNC_DE` goes on `Client Relationship Owner Name` and on **nothing else**.
+In every other environment (DEV, SIT, PROD-ANALYTICS, PROD-PARALLEL) every field ships with an empty
+`fieldEncryptionPolicy`, the owner name included, because that data is not tokenised.
 
 The three definitions in `trigger_definitions.py` therefore share one `_payload_fields()` list. A
 new trigger joins the topic by reusing it, not by declaring its own field set.
@@ -1036,7 +1038,7 @@ problem.
 | CyberArk client certificate and key | Secrets `/ifc/bsp-event-processor/cyberark/client-cert` and `.../private-key` exist but are empty; the CCP query comes from the product template's `CYBERARK_*` variables |
 | Confirmed IFC CDD topic name and registry subject | `tc01_fncmtrgrbb_ifc_tbb_kyc_refresh` assumed from the topic table |
 | Kafka ACLs for the producer principal on the topic | Needed; preflight distinguishes a missing ACL from a missing topic |
-| **Tokenisation policy name** | `UK_TOK_AC_L0R0_UNC_DE` on Client Relationship Owner Name (`POLICY_NAME` in `utility/trigger_payload.py`), replacing the earlier `DPASS_POLICY_NAME`; the consumer should confirm they de-tokenise with it |
+| **Tokenisation policy name** | `UK_TOK_AC_L0R0_UNC_DE` on Client Relationship Owner Name (`POLICY_NAME` in `utility/trigger_payload.py`), replacing the earlier `DPASS_POLICY_NAME`, declared only in PROD; the consumer should confirm they de-tokenise with it, and whether PROD-ANALYTICS and PROD-PARALLEL data is tokenised too |
 | Timestamp format agreement with TBB | See drift item 4 |
 | Athena workgroup, and the task role's Athena / Glue / S3 / Lake Formation permissions | `workgroup: primary` is a placeholder; the role needs `athena:StartQueryExecution`, `GetQueryExecution`, `GetQueryResults`, `StopQueryExecution`, `GetTableMetadata`, Glue `GetTable`/`GetPartitions`, read on the table data, read/write on `s3://sit1-logs-corpdeng-509153454187-eu-west-1/athena_output/`, and `SELECT` if Lake Formation governs the tables |
 | `date_of_request` text format | A `string` column; the payload publishes its first ten characters, which is the date for ISO text (`2026-08-10 02:15:04`). Confirm upstream writes ISO |

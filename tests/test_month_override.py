@@ -102,7 +102,8 @@ class TestLoadedFromTheEnvironment:
 
     def test_the_records_are_stamped_as_the_august_run_stamped_them(self, settings):
         builder = EnvelopeBuilder(
-            avro_schema=load_schema_document("utility/schema.json"), originating_system="SNSVC0084378"
+            avro_schema=load_schema_document("utility/schema.json"), originating_system="SNSVC0084378",
+            declare_encryption_policies=False,
         )
         assert builder.business_month == "2026-07"
         assert builder.event_timestamp == "2026-07-31T23:59:59.999999999Z"
