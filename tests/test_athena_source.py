@@ -345,7 +345,10 @@ class TestCoerce:
 class TestEndToEnd:
     def test_an_athena_row_builds_a_schema_valid_envelope(self):
         builder = EnvelopeBuilder(
-            avro_schema=load_schema_document("utility/schema.json"), business_month="2026-08"
+            avro_schema=load_schema_document("utility/schema.json"),
+            originating_system="SNSVC0084378",
+            declare_encryption_policies=False,
+            business_month="2026-08",
         )
         event = list(make(FakeAthena()).stream())[0]
 
@@ -381,7 +384,10 @@ class TestEndToEnd:
         )
         event = list(source.stream())[0]
         built = EnvelopeBuilder(
-            avro_schema=load_schema_document("utility/schema.json"), business_month="2026-08"
+            avro_schema=load_schema_document("utility/schema.json"),
+            originating_system="SNSVC0084378",
+            declare_encryption_policies=False,
+            business_month="2026-08",
         ).build(event)
 
         assert f"FROM {table} " in client.started[0]["QueryString"]

@@ -23,7 +23,7 @@ from urllib.parse import urlparse
 
 from utility import failure_catalog as catalog
 from utility.failure_catalog import Scenario
-from utility.error_classifier import PreflightError
+from utility.error_classifier import ConnectorError, PreflightError, classify
 
 logger = logging.getLogger(__name__)
 
@@ -91,13 +91,25 @@ class PreflightReport:
         )
 
 
-def _timed(fn: Callable[[], Tuple[bool, str, Dict[str, Any]]]) -> Tuple[bool, str, Dict[str, Any], float]:
+def _timed(
+    fn: Callable[[], Tuple[bool, str, Dict[str, Any]]],
+) -> Tuple[bool, str, Dict[str, Any], float, Optional[Scenario]]:
+    """Run a check, returning its outcome, timing and the scenario its error carried.
+
+    A ``ConnectorError`` has already been classified where it was raised, and
+    that scenario is returned so the check does not re-derive it from the
+    message text - a registry outage reads "Schema Registry ..." exactly as a
+    schema fault does.
+    """
     start = time.perf_counter()
+    scenario: Optional[Scenario] = None
     try:
         ok, detail, context = fn()
     except Exception as exc:  # a check must never crash the run itself
         ok, detail, context = False, f"{type(exc).__name__}: {exc}", {}
-    return ok, detail, context, (time.perf_counter() - start) * 1000.0
+        if isinstance(exc, ConnectorError):
+            scenario = exc.scenario
+    return ok, detail, context, (time.perf_counter() - start) * 1000.0, scenario
 
 
 # ---------------------------------------------------------------------------
@@ -122,21 +134,34 @@ def parse_url_endpoint(url: str) -> Tuple[str, int]:
     return parsed.hostname or url, parsed.port or default_port
 
 
-def check_dns(report: PreflightReport, endpoints: List[Tuple[str, int]], *, label: str) -> None:
+def check_dns(
+    report: PreflightReport,
+    endpoints: List[Tuple[str, int]],
+    *,
+    label: str,
+    blocking: bool = True,
+) -> None:
+    """Resolve each endpoint's host.
+
+    ``blocking=False`` reports a host that does not resolve without failing the
+    run, for a set of endpoints where any one will do - the TCP quorum check
+    that follows still fails the run when none is reachable.
+    """
     for host, _port in endpoints:
         def resolve(host: str = host) -> Tuple[bool, str, Dict[str, Any]]:
             addresses = sorted({info[4][0] for info in socket.getaddrinfo(host, None)})
             return True, "", {"host": host, "addresses": addresses}
 
-        ok, detail, context, ms = _timed(resolve)
+        ok, detail, context, ms, raised = _timed(resolve)
         report.add(
             CheckResult(
                 name=f"dns:{label}:{host}",
                 passed=ok,
                 duration_ms=ms,
                 detail=detail or f"resolved {context.get('addresses')}",
-                scenario=None if ok else catalog.NETWORK_FAILURE,
-                context=context,
+                scenario=None if ok else raised or catalog.NETWORK_FAILURE,
+                blocking=blocking,
+                context=context or {"host": host},
             )
         )
 
@@ -162,7 +187,7 @@ def check_tcp(
             with socket.create_connection((host, port), timeout=timeout):
                 return True, "", {"host": host, "port": port}
 
-        ok, detail, context, ms = _timed(connect)
+        ok, detail, context, ms, raised = _timed(connect)
         reachable += 1 if ok else 0
         report.add(
             CheckResult(
@@ -170,7 +195,7 @@ def check_tcp(
                 passed=ok,
                 duration_ms=ms,
                 detail=detail or f"connected to {host}:{port}",
-                scenario=None if ok else catalog.NETWORK_FAILURE,
+                scenario=None if ok else raised or catalog.NETWORK_FAILURE,
                 blocking=require_all,
                 context={"host": host, "port": port},
             )
@@ -196,14 +221,14 @@ def check_source(report: PreflightReport, *, table: str, probe: Callable[[], Any
         probe()
         return True, "", {"source_table": table}
 
-    ok, detail, context, ms = _timed(run)
+    ok, detail, context, ms, raised = _timed(run)
     report.add(
         CheckResult(
             name="source:readable",
             passed=ok,
             duration_ms=ms,
             detail=detail or "readable",
-            scenario=None if ok else catalog.BDP_READ_FAILURE,
+            scenario=None if ok else raised or catalog.BDP_READ_FAILURE,
             context=context or {"source_table": table},
         )
     )
@@ -213,14 +238,14 @@ def check_authentication(report: PreflightReport, *, acquire: Callable[[], Dict[
     def run() -> Tuple[bool, str, Dict[str, Any]]:
         return True, "", acquire()
 
-    ok, detail, context, ms = _timed(run)
+    ok, detail, context, ms, raised = _timed(run)
     report.add(
         CheckResult(
             name="auth:bam_token",
             passed=ok,
             duration_ms=ms,
             detail=detail or "token acquired",
-            scenario=None if ok else catalog.AUTHENTICATION_FAILURE,
+            scenario=None if ok else raised or catalog.AUTHENTICATION_FAILURE,
             context=context,
         )
     )
@@ -230,28 +255,29 @@ def check_schema_registry(report: PreflightReport, *, resolve: Callable[[], Dict
     def run() -> Tuple[bool, str, Dict[str, Any]]:
         return True, "", resolve()
 
-    ok, detail, context, ms = _timed(run)
+    ok, detail, context, ms, raised = _timed(run)
 
-    # A compatibility finding is a schema fault, not a registry outage; route it
-    # so the alert names the right team.
-    scenario = None
-    if not ok:
-        scenario = (
-            catalog.SCHEMA_VALIDATION_FAILURE
-            if "compat" in detail.lower() or "schema" in detail.lower()
-            else catalog.SCHEMA_REGISTRY_UNAVAILABLE
-        )
-
+    # The registry client and the compatibility check raise errors that already
+    # name their scenario - an outage, a rejected token, a missing ACL or an
+    # incompatible schema - so the alert reaches the right team.
     report.add(
         CheckResult(
             name="schema_registry:subject",
             passed=ok,
             duration_ms=ms,
             detail=detail or f"subject resolved (id={context.get('schema_id')})",
-            scenario=scenario,
+            scenario=None if ok else raised or catalog.SCHEMA_REGISTRY_UNAVAILABLE,
             context=context,
         )
     )
+
+
+#: What a failed metadata fetch can be reported as, besides the broker itself.
+_METADATA_SCENARIOS = (
+    catalog.AUTHORISATION_FAILURE,
+    catalog.AUTHENTICATION_FAILURE,
+    catalog.TOPIC_UNAVAILABLE,
+)
 
 
 def check_topic_metadata(
@@ -270,17 +296,15 @@ def check_topic_metadata(
         def run(topic: str = topic) -> Tuple[bool, str, Dict[str, Any]]:
             return True, "", fetch(topic)
 
-        ok, detail, context, ms = _timed(run)
+        ok, detail, context, ms, raised = _timed(run)
 
-        scenario = None
-        if not ok:
-            upper = detail.upper()
-            if "AUTH" in upper or "403" in upper:
-                scenario = catalog.AUTHORISATION_FAILURE
-            elif "UNKNOWN_TOPIC" in upper.replace(" ", "_"):
-                scenario = catalog.TOPIC_UNAVAILABLE
-            else:
-                scenario = catalog.BROKER_UNAVAILABLE
+        scenario = raised
+        if not ok and scenario is None:
+            # librdkafka reports through the message text. The classifier keeps
+            # a missing ACL (authorisation) apart from a rejected login
+            # (authentication) and a missing topic; anything else is the broker.
+            classified = classify(detail).scenario
+            scenario = classified if classified in _METADATA_SCENARIOS else catalog.BROKER_UNAVAILABLE
 
         report.add(
             CheckResult(

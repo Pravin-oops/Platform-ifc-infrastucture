@@ -32,6 +32,9 @@ def schema():
 def make_builder(schema, **overrides):
     options = dict(
         avro_schema=schema,
+        originating_system="SNSVC0084378",
+        # PROD-like: these tests cover the policy a tokenised field declares.
+        declare_encryption_policies=True,
         business_month="2026-06",
     )
     options.update(overrides)
@@ -92,13 +95,13 @@ class TestEnvelope:
         assert record["triggerOriginatingSystem"] == "SNSVC0084378"
         assert record["triggerOriginatingBU"] == "UK-C"
         assert record["idType"] == "Customer"
-        assert record["idSystem"] == "Corelation id"
+        assert record["idSystem"] == "SNSVC0084378"
         assert built.trigger_id.startswith("SNSVC0084378_KYCRefresh_NewHRCRelationship_")
 
     def test_only_client_relationship_owner_name_carries_an_encryption_policy(self, builder):
         fields = builder.build(trigger_8_event()).payload_fields
         policies = {f["fieldName"]: f["fieldEncryptionPolicy"] for f in fields}
-        assert policies.pop("Client Relationship Owner Name") == "DPASS_POLICY_NAME"
+        assert policies.pop("Client Relationship Owner Name") == "UK_TOK_AC_L0R0_UNC_DE"
         assert set(policies.values()) == {""}
 
     def test_the_payload_is_the_eight_contract_fields_in_order(self, builder):

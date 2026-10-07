@@ -1,13 +1,20 @@
+"""The Trigger Backbone batch-completion SNS event.
+
+Sent once a run has delivered its month, so TBB can start downstream processing.
+The message is the notification's fields as JSON, keyed exactly as TBB expects.
+"""
+
 from __future__ import annotations
 
 import json
 import logging
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
+
+from utility.failure_notifier import describe_aws_error
 
 logger = logging.getLogger(__name__)
 
@@ -109,10 +116,10 @@ class TriggerBatchNotifier:
                 "SNS batch notification FAILED to send: topic=%s error=%s "
                 "subject=%r message=%s",
                 self._sns_topic_arn,
-                _describe_error(exc),
+                describe_aws_error(exc),
                 subject,
                 message,
-                extra={**sns_fields, "sns_error": _describe_error(exc)},
+                extra={**sns_fields, "sns_error": describe_aws_error(exc)},
             )
             raise
 
@@ -126,11 +133,3 @@ class TriggerBatchNotifier:
         )
 
         return response
-
-
-def _describe_error(exc: Exception) -> str:
-    """``AuthorizationError: User ... is not authorized`` rather than a bare class name."""
-    if isinstance(exc, ClientError):
-        error = exc.response.get("Error", {})
-        return f"{error.get('Code', 'ClientError')}: {error.get('Message', exc)}"
-    return f"{type(exc).__name__}: {exc}"

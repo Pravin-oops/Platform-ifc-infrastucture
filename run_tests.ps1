@@ -4,7 +4,7 @@
 
 .DESCRIPTION
     Runs the unit tests, then exercises the two entry points on the paths that
-    need no network. Nothing here touches AWS, BSP, CSM, BAM or a Kafka broker:
+    need no network. Nothing here touches AWS, BSP, CyberArk, BAM or a Kafka broker:
     every check runs against the bundled schemas, so it
     is safe on a laptop and in CI without credentials.
 

@@ -1,9 +1,8 @@
 """End-to-end batch behaviour, with Kafka and the Schema Registry faked out.
 
 These are the tests that actually exercise the ECS-specific behaviour: draining
-on SIGTERM, suppressing duplicates across a restart, quarantining a poison
-record without losing the batch, and refusing to report success when the numbers
-do not add up.
+on SIGTERM, retrying a failed publish, quarantining a poison record without
+losing the batch, and refusing to report success when the numbers do not add up.
 """
 
 from __future__ import annotations
@@ -221,6 +220,8 @@ def make_settings(**overrides) -> ConnectorSettings:
         "audit": {"bucket": None},
         "resilience": {"preflight_enabled": False, "max_quarantine_ratio": 1.0},
         "health": {"enabled": False},
+        # TEST is not a real environment; it publishes under the SIT code.
+        "envelope": {"originating_systems": {"TEST": "SNSVC0084378"}},
     }
     for section, values in overrides.items():
         document.setdefault(section, {}).update(values)
@@ -251,6 +252,8 @@ def build_runner(rows, *, producer=None, athena=None, **overrides):
     runner._stack = build_stack(producer, settings, metrics)
     runner._envelopes = EnvelopeBuilder(
         avro_schema=runner._stack.serializer.schema,
+        originating_system=runner._originating_system,
+        declare_encryption_policies=runner._settings.declares_encryption_policies,
         sequence_allocator=runner._sequence,
         business_month="2026-06",
     )
@@ -414,6 +417,76 @@ class TestFailureOutcomes:
 
         assert result.outcome == "ZERO_RECORDS"
         assert result.exit_code == catalog.TED_MISSING_SOURCE_DATA.exit_code
+
+
+class TestPublishRetry:
+    """A retryable publish failure is retried; one that persists fails the
+    reconciliation rather than being quarantined."""
+
+    #: Fast backoff so the retries do not slow the suite.
+    FAST = {"backoff_base_seconds": 0.001, "backoff_max_seconds": 0.001}
+
+    @staticmethod
+    def failing_publisher(runner, failures: int):
+        """Make the next ``failures`` publishes raise a retryable PublishError."""
+        from utility.error_classifier import PublishError
+
+        publisher = runner._stack.publisher
+        original = publisher.publish
+        calls = {"attempts": 0}
+
+        def publish(**kwargs):
+            calls["attempts"] += 1
+            if calls["attempts"] <= failures:
+                raise PublishError("queue full", catalog.HIGH_PUBLISH_LATENCY)
+            return original(**kwargs)
+
+        publisher.publish = publish
+        return calls
+
+    def test_a_transient_failure_is_retried_and_the_record_published(self, runner_factory):
+        runner, producer = runner_factory(
+            [VALID_ROW], resilience={**self.FAST, "max_publish_attempts": 3}
+        )
+        calls = self.failing_publisher(runner, failures=1)
+
+        result = runner.run_batch()
+
+        assert calls["attempts"] == 2
+        assert result.outcome == "SUCCESS"
+        assert result.counters.published == 1
+        assert result.counters.acked == 1
+        assert len(producer.produced) == 1
+
+    def test_a_persistent_failure_fails_the_reconciliation_without_quarantine(self, runner_factory):
+        runner, producer = runner_factory(
+            [VALID_ROW], resilience={**self.FAST, "max_publish_attempts": 3}
+        )
+        calls = self.failing_publisher(runner, failures=99)
+
+        result = runner.run_batch()
+
+        assert calls["attempts"] == 3
+        assert result.counters.published == 0
+        assert result.counters.quarantined == 0
+        assert result.outcome == "RECONCILIATION_FAILED"
+        assert producer.produced == []
+
+    def test_every_failed_attempt_counts_towards_the_circuit_breaker(self, runner_factory):
+        """A total outage must not retry each record in turn: the breaker opens
+        on attempts, so the second record is never tried."""
+        second = row(counterparty_csid_sds=9912345679)
+        runner, _ = runner_factory(
+            [VALID_ROW, second],
+            resilience={**self.FAST, "max_publish_attempts": 5, "circuit_breaker_threshold": 2},
+        )
+        calls = self.failing_publisher(runner, failures=99)
+
+        result = runner.run_batch()
+
+        assert calls["attempts"] == 2
+        assert result.outcome == "ABORTED"
+        assert result.counters.published == 0
 
 
 class TestShutdown:

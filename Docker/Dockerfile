@@ -56,20 +56,17 @@ RUN pip install -r /tmp/requirements.txt \
 COPY --chown=connector:connector utility/ /app/ifc_trigger_connector/utility/
 COPY --chown=connector:connector scripts/ /app/ifc_trigger_connector/scripts/
 
-# The Barclays root CA is mounted or baked in per environment; the app searches
-# the candidate paths in utility/csm_aws_fetch.py and falls back to the system
-# store (/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem). To bake one in, add
-# it to the anchors directory and re-extract, before USER below:
-#
-#   COPY certs/barclays-root-ca.pem /etc/pki/ca-trust/source/anchors/
-#   RUN update-ca-trust extract
+# The Barclays root CA is not in the image: the app reads it from Secrets
+# Manager at start and writes it to /tmp/ifc-certs/CARoot.pem, where the BSP
+# client YAML (ssl.ca.location) and the Schema Registry client look for it. See
+# utility/ca_certificate.py.
 
 USER connector
 
 EXPOSE 8080
 
-# Liveness only. Readiness is probed by the load balancer or the ECS service
-# health check, because a task that is draining is deliberately not ready.
+# Liveness only: a task that is draining is deliberately not ready, but must
+# stay alive until the drain completes.
 # Probed with the interpreter, so the image needs no curl (and no yum step).
 HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
     CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health/live', timeout=3).read()"]

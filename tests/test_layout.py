@@ -15,17 +15,18 @@ import re
 
 import pytest
 
-from tests.conftest import APP_ROOT, DOCKER_DIR, DOCKERFILE, SCRIPTS_DIR, UTILITY_DIR
+from tests.conftest import APP_ROOT, DOCKERFILE, SCRIPTS_DIR, UTILITY_DIR
 
 #: Every module in utility/, i.e. what the flattening produced.
 UTILITY_MODULES = [
     "athena_query",
     "audit_utility",
     "auth_helper",
+    "ca_certificate",
     "connector_config",
     "connector_runner",
     "connector_utility",
-    "csm_aws_fetch",
+    "cyberark_ccp_fetch",
     "error_classifier",
     "failure_catalog",
     "failure_notifier",

@@ -53,14 +53,14 @@ class PreflightError(ConnectorError):
 
 
 class PublishError(ConnectorError):
-    """Publishing a record failed."""
+    """Publishing a record was abandoned."""
 
 
 class RecordRejected(Exception):
     """One record cannot be published and must be quarantined.
 
     Not a ``ConnectorError``: the run continues. It carries the scenario so the
-    The quarantine object records why the record was rejected.
+    quarantine object records why the record was rejected.
     """
 
     def __init__(self, message: str, scenario: Scenario, *, detail: Optional[Dict[str, Any]] = None):
@@ -99,6 +99,9 @@ _PATTERNS: Sequence[Tuple[Scenario, List[str]]] = (
             "SSLHANDSHAKEEXCEPTION", "SSL HANDSHAKE", "CERTIFICATE VERIFY FAILED",
             "AUTHENTICATION FAILED", "INVALID_GRANT", "UNAUTHORIZED", "HTTP 401",
             "STATUS=401", "MALFORMED JWT", "TOKEN EXPIRED", "BAM TOKEN",
+            # librdkafka failing to load the CA file at producer creation. It
+            # carries _INVALID_ARG, which would otherwise read as a schema fault.
+            "SSL.CA.LOCATION FAILED",
         ],
     ),
     (
@@ -110,7 +113,7 @@ _PATTERNS: Sequence[Tuple[Scenario, List[str]]] = (
         [
             "SERIALIZATIONEXCEPTION", "SCHEMA COMPATIBILITY", "INCOMPATIBLE SCHEMA",
             "IS NOT AN EXAMPLE OF THE SCHEMA", "VALIDATIONERROR", "INVALID PAYLOAD",
-            "SCHEMA MISMATCH", "SCHEMA DRIFT", "AVRO", "_INVALID_ARG",
+            "SCHEMA MISMATCH", "SCHEMA DRIFT", "SCHEMAPARSEEXCEPTION", "_INVALID_ARG",
         ],
     ),
     (
@@ -134,6 +137,17 @@ _PATTERNS: Sequence[Tuple[Scenario, List[str]]] = (
             "NETWORKEXCEPTION", "DISCONNECTEXCEPTION", "DISCONNECTED", "_ALL_BROKERS_DOWN",
         ],
     ),
+    # Ahead of publish latency: separators are ignored when matching, so that
+    # row's "_TIMED_OUT" also matches "connection timed out", which is a
+    # network fault, not a slow broker.
+    (
+        catalog.NETWORK_FAILURE,
+        [
+            "NAME OR SERVICE NOT KNOWN", "GETADDRINFO", "TEMPORARY FAILURE IN NAME RESOLUTION",
+            "NO ROUTE TO HOST", "NETWORK IS UNREACHABLE", "CONNECTION REFUSED",
+            "CONNECTION TIMED OUT", "CONNECT TIMEOUT", "CONNECTIONERROR", "DNS",
+        ],
+    ),
     (
         catalog.HIGH_PUBLISH_LATENCY,
         [
@@ -144,14 +158,6 @@ _PATTERNS: Sequence[Tuple[Scenario, List[str]]] = (
     (
         catalog.OUT_OF_MEMORY,
         ["MEMORYERROR", "OUTOFMEMORY", "CANNOT ALLOCATE MEMORY", "EXIT CODE 137", "OOMKILLED"],
-    ),
-    (
-        catalog.NETWORK_FAILURE,
-        [
-            "NAME OR SERVICE NOT KNOWN", "GETADDRINFO", "TEMPORARY FAILURE IN NAME RESOLUTION",
-            "NO ROUTE TO HOST", "NETWORK IS UNREACHABLE", "CONNECTION REFUSED",
-            "CONNECTION TIMED OUT", "CONNECTIONERROR", "DNS",
-        ],
     ),
     (
         catalog.FRED_AUDIT_STORE_FAILURE,
@@ -330,7 +336,3 @@ def classify(
         kafka_error_code=_safe_attr(error, "code"),
         context=context,
     )
-
-
-def is_retryable(classification: Classification) -> bool:
-    return classification.scenario.retryable

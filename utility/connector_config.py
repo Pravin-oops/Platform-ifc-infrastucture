@@ -4,12 +4,14 @@ Config is layered, lowest precedence first:
 
   1. defaults declared on the models below
   2. the YAML document named by ``--config`` / ``APP_CONFIG_PATH`` (local path or s3://)
-  3. ``IFC_`` environment variables (double underscore separates sections,
+  3. the ``CYBERARK_*`` environment variables the ECS product template sets
+     (``CYBERARK_ENV``), for the ``cyberark`` section
+  4. ``IFC_`` environment variables (double underscore separates sections,
      e.g. ``IFC_KAFKA__TOPIC``) so an ECS task definition can override any
      single value without republishing the config object to S3.
 
-Secrets never live here. CSM supplies the BSP system-account credentials at
-runtime; only the *location* of the secret is configuration.
+Secrets never live here. CyberArk CCP supplies the BSP system-account
+credentials at runtime; only the *location* of the secret is configuration.
 """
 
 from __future__ import annotations
@@ -31,10 +33,51 @@ DEFAULT_MAX_MESSAGE_BYTES = 800 * 1024
 
 class AppSettings(BaseModel):
     name: str = "ifc-trigger-connector"
+    #: Selects the envelope's triggerOriginatingSystem and idSystem (see
+    #: EnvelopeSettings). The other envelope constants (triggerType,
+    #: triggerOriginatingBU, idType) are in tb_outcome_schema.
     environment: str = "UAT"
     log_level: str = "INFO"
-    # Envelope identity values (triggerType, triggerOriginatingSystem, idSystem,
-    # ...) are constants in tb_outcome_schema, not configuration.
+
+
+#: triggerOriginatingSystem and idSystem for each app.environment: the
+#: environment's service number.
+DEFAULT_ORIGINATING_SYSTEMS: Dict[str, str] = {
+    "DEV": "SNSVC0084379",
+    "SIT": "SNSVC0084378",
+    "PROD-ANALYTICS": "SNSVC0084375",
+    "PROD-PARALLEL": "SNSVC0084371",
+    "PROD": "SNSVC0084373",
+}
+
+_SYSTEM_CODE = re.compile(r"^[A-Za-z0-9-]+$")
+
+
+class EnvelopeSettings(BaseModel):
+    #: app.environment (any case) -> the value sent as both
+    #: triggerOriginatingSystem and idSystem, and the first part of every
+    #: trigger ID. An environment missing here stops the run at startup.
+    originating_systems: Dict[str, str] = Field(default_factory=lambda: dict(DEFAULT_ORIGINATING_SYSTEMS))
+    #: Environments (any case) whose upstream data is tokenised, so payload
+    #: fields declare the policy applied to them (UK_TOK_AC_L0R0_UNC_DE on
+    #: Client Relationship Owner Name). Everywhere else every
+    #: fieldEncryptionPolicy is empty.
+    tokenised_environments: List[str] = Field(default_factory=lambda: ["PROD"])
+
+    @field_validator("tokenised_environments")
+    @classmethod
+    def _upper(cls, value: List[str]) -> List[str]:
+        return sorted({str(env).strip().upper() for env in value if str(env).strip()})
+
+    @field_validator("originating_systems")
+    @classmethod
+    def _normalise(cls, value: Dict[str, str]) -> Dict[str, str]:
+        systems = {str(env).strip().upper(): str(code).strip() for env, code in value.items()}
+        # The code is the trigger ID's first part, which is '_'-separated.
+        bad = {env: code for env, code in systems.items() if not _SYSTEM_CODE.match(code)}
+        if bad:
+            raise ValueError(f"envelope.originating_systems codes must be letters, digits or '-': {bad}")
+        return systems
 
 
 class RunSettings(BaseModel):
@@ -276,16 +319,68 @@ class KafkaSettings(BaseModel):
     #: local broker, where ``overrides`` supplies bootstrap.servers directly and
     #: the BSP client is not involved at all.
     bsp_config_path: Optional[str] = None
+    #: app.environment (any case) -> that environment's BSP client YAML. The
+    #: matching entry replaces bsp_config_path when the config is loaded,
+    #: unless IFC_KAFKA__BSP_CONFIG_PATH names one for the task.
+    bsp_config_paths: Dict[str, str] = Field(default_factory=dict)
     max_message_bytes: int = Field(default=DEFAULT_MAX_MESSAGE_BYTES, ge=1024)
     flush_timeout_seconds: int = Field(default=120, ge=1)
     local_queue_max_messages: int = Field(default=20000, ge=100)
     #: Extra librdkafka properties merged over whatever the BSP client returns.
     #: Anything security-related is deliberately left to BSP.
     overrides: Dict[str, Any] = Field(default_factory=dict)
+    #: librdkafka debug contexts, e.g. ``security,broker,protocol``. Turns on
+    #: librdkafka's own trace (log level 7) into the connector's JSON logs, and
+    #: logs the lines leading up to a failed metadata request. For diagnosis
+    #: only: it is verbose. Never ``all`` or ``conf``, which print the config.
+    debug: Optional[str] = None
+
+    @field_validator("debug")
+    @classmethod
+    def _no_config_dump(cls, value: Optional[str]) -> Optional[str]:
+        contexts = {part.strip().lower() for part in (value or "").split(",") if part.strip()}
+        if contexts & {"all", "conf"}:
+            raise ValueError("kafka.debug must not include 'all' or 'conf': they print the client config")
+        return ",".join(sorted(contexts)) or None
+
+
+def _join_url_list(value: Any) -> Any:
+    """A YAML list of registry URLs, as the comma-separated string the rest expects."""
+    if isinstance(value, (list, tuple)):
+        return ",".join(str(item) for item in value)
+    return value
+
+
+class SchemaRegistryModeSettings(BaseModel):
+    """Values for one registry mode. Each one set here overrides the shared
+    ``schema_registry`` value while that mode is active; unset ones fall back."""
+
+    url: Optional[str] = None
+    ca_location: Optional[str] = None
+    timeout_seconds: Optional[int] = Field(default=None, ge=1)
+    token_refresh_margin_seconds: Optional[int] = Field(default=None, ge=30)
+    max_attempts: Optional[int] = Field(default=None, ge=1)
+    schema_path: Optional[str] = None
+    schema_id: Optional[int] = Field(default=None, ge=1)
+
+    @field_validator("url", mode="before")
+    @classmethod
+    def _join_a_list(cls, value: Any) -> Any:
+        return _join_url_list(value)
 
 
 class SchemaRegistrySettings(BaseModel):
+    #: SECURE: the 8095 registry with the BAM bearer token. DEV: the 8082
+    #: registry with no token, or a schema_id pinned in config. Set in the
+    #: YAML; IFC_SCHEMA_REGISTRY__MODE on the task overrides it.
     mode: Literal["DEV", "SECURE"] = "SECURE"
+    #: Per-mode values; the block for ``mode`` overrides the shared values
+    #: below, so the rest of the connector reads one set of settings.
+    dev: Optional[SchemaRegistryModeSettings] = None
+    secure: Optional[SchemaRegistryModeSettings] = None
+    #: One registry URL, or several separated by commas (a YAML list is also
+    #: accepted). Every one is checked at preflight; the schema is looked up on
+    #: the first that answers, so one registry node being down is not an outage.
     url: Optional[str] = None
     ca_location: Optional[str] = None
     timeout_seconds: int = Field(default=30, ge=1)
@@ -297,31 +392,124 @@ class SchemaRegistrySettings(BaseModel):
     #: Local .avsc used to serialise. Compared against the registered subject at
     #: preflight so producer/registry drift fails before any publish happens.
     schema_path: str = "utility/schema.json"
-    #: DEV only: the registry id to frame records with, since DEV does not look
-    #: it up. Consumers deserialise with Confluent's KafkaAvroDeserializer, which
-    #: needs the magic byte and id on every record, DEV or not.
+    #: DEV only: a registry id to frame records with instead of looking it up.
+    #: Consumers deserialise with Confluent's KafkaAvroDeserializer, which needs
+    #: the magic byte and id on every record, DEV or not.
     schema_id: Optional[int] = Field(default=None, ge=1)
+
+    @field_validator("mode", mode="before")
+    @classmethod
+    def _mode_any_case(cls, value: Any) -> Any:
+        return value.strip().upper() if isinstance(value, str) else value
+
+    @field_validator("url", mode="before")
+    @classmethod
+    def _join_a_list(cls, value: Any) -> Any:
+        return _join_url_list(value)
+
+    @model_validator(mode="after")
+    def _apply_mode_block(self) -> "SchemaRegistrySettings":
+        block = self.dev if self.mode == "DEV" else self.secure
+        if block is not None:
+            for name, value in block.model_dump(exclude_none=True).items():
+                setattr(self, name, value)
+        return self
+
+    @property
+    def urls(self) -> List[str]:
+        """The registry URLs in configured order, without trailing slashes."""
+        return [part.strip().rstrip("/") for part in (self.url or "").split(",") if part.strip()]
 
     @model_validator(mode="after")
     def _require_url_when_secure(self) -> "SchemaRegistrySettings":
-        if self.mode == "SECURE" and not self.url:
-            raise ValueError("schema_registry.url is required when mode=SECURE")
+        if self.mode == "SECURE" and not self.urls:
+            raise ValueError("schema_registry.url (or schema_registry.secure.url) is required when mode=SECURE")
+        malformed = [u for u in self.urls if not re.match(r"^https?://[^/\s:]+", u)]
+        if malformed:
+            raise ValueError(f"schema_registry.url entries must be http(s) URLs: {malformed}")
         return self
 
 
-class CSMSettings(BaseModel):
-    base_url: str
-    mount_point: str = "CSM"
-    secret_path: str
-    role_name: str
+class CaCertificateSettings(BaseModel):
+    """The Barclays root CA, fetched from Secrets Manager at container start.
+
+    Written to ``path`` before the BSP client is built; ``ssl.ca.location`` in
+    the BSP client YAML and ``schema_registry.ca_location`` point at the same
+    file. No ``secret_id`` means nothing is fetched, for a local run that has
+    the CA on disk already.
+    """
+
+    #: Secrets Manager name or ARN of the CA certificate, a plain PEM.
+    secret_id: Optional[str] = None
+    secret_region: str = "eu-west-1"
+    #: Where the CA is written. /tmp, because the container runs as a
+    #: non-root user that cannot write anywhere else outside its home.
+    path: str = "/tmp/ifc-certs/CARoot.pem"
+
+
+#: Environment variables the ECS product template sets from its CyberArk
+#: parameters, and the ``cyberark`` field each one fills.
+CYBERARK_ENV: Dict[str, str] = {
+    "CYBERARK_ENABLED": "enabled",
+    "CYBERARK_CCP_URL": "base_url",
+    "CYBERARK_APP_ID": "app_id",
+    "CYBERARK_SAFE": "safe",
+    "CYBERARK_ACCOUNT": "object",
+}
+
+
+class CyberArkSettings(BaseModel):
+    """Where the BSP system-account credential lives in CyberArk.
+
+    Locations only. The client certificate and key are read from the Secrets
+    Manager secrets named here; the account itself comes from CCP at runtime.
+
+    In ECS the product template supplies ``enabled``, ``base_url``, ``app_id``,
+    ``safe`` and ``object`` as ``CYBERARK_*`` environment variables (see
+    ``CYBERARK_ENV``), so they are not repeated in the YAML.
+    """
+
+    #: Off for dev runs, which publish without a BSP system account: CCP is not
+    #: called and whatever ``BSP_USERNAME``/``BSP_PASSWORD`` the environment
+    #: holds is used as is.
+    enabled: bool = True
+    #: CCP host, or the full ``.../AIMWebService_certs/api/Accounts`` URL; the
+    #: fetcher appends the endpoint path only when it is not already there.
+    base_url: Optional[str] = None
+    #: Application ID registered with CyberArk (``APP_<name>``).
+    app_id: Optional[str] = None
+    #: Safe that holds the account.
+    safe: Optional[str] = None
+    folder: str = "Root"
+    #: The account's name in the Safe, sent as CCP's ``Object``.
+    object: Optional[str] = None
+    #: Secrets Manager name or ARN of the client certificate, a plain PEM.
+    client_cert_secret_id: str
+    #: Secrets Manager name or ARN of the client private key, a plain
+    #: unencrypted PEM.
+    client_key_secret_id: str
+    secret_region: str = "eu-west-1"
+    #: Trust store for the CCP *server* certificate.
     ca_bundle_path: str = "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"
     ssl_verify: bool = True
-    sts_region: str = "us-east-1"
-    instance_region: str = "eu-west-1"
-    vault_server_id: str = "CSM_PROD"
     request_timeout: int = 30
-    #: Realm appended to the CSM username to form the BSP principal.
+    #: Attempts at the credential when CCP or Secrets Manager is unavailable.
+    #: A rejected certificate or query fails on the first attempt.
+    max_attempts: int = Field(default=3, ge=1)
+    #: Realm appended to the CyberArk username to form the BSP principal.
     principal_realm: str = "@INTRANET.BARCAPINT.COM"
+
+    @model_validator(mode="after")
+    def _query_is_complete(self) -> "CyberArkSettings":
+        if self.enabled:
+            missing = [
+                f"cyberark.{name} ({env})"
+                for env, name in CYBERARK_ENV.items()
+                if name != "enabled" and not getattr(self, name)
+            ]
+            if missing:
+                raise ValueError(f"CyberArk is enabled but these are not set: {', '.join(missing)}")
+        return self
 
 
 class AuditSettings(BaseModel):
@@ -358,6 +546,9 @@ class AuditSettings(BaseModel):
 
 
 class ResilienceSettings(BaseModel):
+    #: Attempts at publishing each record, backing off per ``backoff_*_seconds``;
+    #: every failed attempt counts towards the circuit breaker.
+    max_publish_attempts: int = Field(default=5, ge=1)
     backoff_base_seconds: float = Field(default=1.0, gt=0)
     backoff_max_seconds: float = Field(default=60.0, gt=0)
     circuit_breaker_threshold: int = Field(
@@ -365,7 +556,17 @@ class ResilienceSettings(BaseModel):
     )
     circuit_breaker_reset_seconds: float = Field(default=120.0, gt=0)
     preflight_enabled: bool = True
-    preflight_timeout_seconds: int = Field(default=10, ge=1)
+    #: Per-endpoint DNS/TCP connect timeout at preflight: how long an
+    #: unreachable endpoint takes to report.
+    preflight_timeout_seconds: int = Field(default=30, ge=1)
+    #: Off: the first publish brings the broker connection up, as the Trigger
+    #: Backbone's produce_app does, and topic or ACL problems arrive as
+    #: delivery errors. On: an explicit list_topics() before any record is read,
+    #: which fails fast with the reason - kept for diagnosis.
+    preflight_metadata_enabled: bool = False
+    #: How long the metadata request may take. librdkafka retries the TLS and
+    #: SASL handshakes across the brokers within it, so it is the longer one.
+    preflight_metadata_timeout_seconds: int = Field(default=60, ge=1)
     #: Fail the run if more than this fraction of records is quarantined, so a
     #: run cannot silently publish a fraction of its content and report success.
     max_quarantine_ratio: float = Field(default=0.05, ge=0.0, le=1.0)
@@ -396,13 +597,15 @@ class ConnectorSettings(BaseModel):
     source: SourceSettings
     kafka: KafkaSettings
     schema_registry: SchemaRegistrySettings
-    csm: Optional[CSMSettings] = None
+    ca_certificate: CaCertificateSettings = Field(default_factory=CaCertificateSettings)
+    cyberark: Optional[CyberArkSettings] = None
     run_marker: RunMarkerSettings = Field(default_factory=RunMarkerSettings)
     audit: AuditSettings = Field(default_factory=AuditSettings)
     resilience: ResilienceSettings = Field(default_factory=ResilienceSettings)
     health: HealthSettings = Field(default_factory=HealthSettings)
     notifications: NotificationSettings = Field(default_factory=NotificationSettings)
     recon: ReconSettings = Field(default_factory=ReconSettings)
+    envelope: EnvelopeSettings = Field(default_factory=EnvelopeSettings)
 
     @field_validator("app")
     @classmethod
@@ -440,6 +643,29 @@ class ConnectorSettings(BaseModel):
             return False
         target = self.recon.target_table or self.recon.trigger_targets.get(self.run.trigger or "")
         return bool(self.recon.table and target)
+
+    @property
+    def originating_system(self) -> str:
+        """The environment's service number: triggerOriginatingSystem and idSystem.
+
+        Looked up from ``app.environment`` (any case). Resolved when a run starts,
+        not at load, so tooling can read a config for an environment it does not
+        publish from; a run never falls back to another environment's code.
+        """
+        environment = self.app.environment.strip().upper()
+        try:
+            return self.envelope.originating_systems[environment]
+        except KeyError:
+            raise ValueError(
+                f"app.environment {self.app.environment!r} has no envelope.originating_systems "
+                f"entry, so triggerOriginatingSystem/idSystem cannot be set; known: "
+                f"{sorted(self.envelope.originating_systems)}"
+            ) from None
+
+    @property
+    def declares_encryption_policies(self) -> bool:
+        """Whether payload fields carry their tokenisation policy in this environment."""
+        return self.app.environment.strip().upper() in self.envelope.tokenised_environments
 
     @property
     def gate_active(self) -> bool:
@@ -508,12 +734,20 @@ def _coerce(raw: str) -> Any:
         return raw
 
 
+#: Settings where an empty IFC_ variable means "not set, use the config file".
+#: Elsewhere an empty value is a deliberate null (an empty
+#: IFC_CA_CERTIFICATE__SECRET_ID turns the CA download off).
+_EMPTY_MEANS_UNSET = {("schema_registry", "mode"), ("app", "environment")}
+
+
 def _env_overlay() -> Dict[str, Any]:
     overlay: Dict[str, Any] = {}
     for key, value in os.environ.items():
         if not key.startswith(_ENV_PREFIX):
             continue
         path = key[len(_ENV_PREFIX) :].lower().split(_SECTION_SEP)
+        if not value.strip() and tuple(path) in _EMPTY_MEANS_UNSET:
+            continue
         cursor: Any = overlay
         for part in path[:-1]:
             nxt = cursor.setdefault(part, {})
@@ -526,6 +760,16 @@ def _env_overlay() -> Dict[str, Any]:
     return overlay
 
 
+def _cyberark_env_overlay() -> Dict[str, Any]:
+    """The template's ``CYBERARK_*`` variables, as a ``cyberark`` section."""
+    section = {
+        field: os.environ[env].strip()
+        for env, field in CYBERARK_ENV.items()
+        if os.environ.get(env, "").strip()
+    }
+    return {"cyberark": section} if section else {}
+
+
 def _deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
     merged = dict(base)
     for key, value in overlay.items():
@@ -534,6 +778,25 @@ def _deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]
         else:
             merged[key] = value
     return merged
+
+
+def _select_bsp_config(layered: Dict[str, Any]) -> None:
+    """Put this environment's BSP client YAML into kafka.bsp_config_path.
+
+    An explicit IFC_KAFKA__BSP_CONFIG_PATH on the task wins; otherwise the
+    kafka.bsp_config_paths entry for app.environment does; an environment
+    without one keeps kafka.bsp_config_path.
+    """
+    if os.environ.get(f"{_ENV_PREFIX}KAFKA{_SECTION_SEP}BSP_CONFIG_PATH", "").strip():
+        return
+    kafka = layered.get("kafka")
+    if not isinstance(kafka, dict) or not isinstance(kafka.get("bsp_config_paths"), dict):
+        return
+    environment = str((layered.get("app") or {}).get("environment") or AppSettings().environment)
+    by_environment = {str(env).strip().upper(): path for env, path in kafka["bsp_config_paths"].items()}
+    chosen = by_environment.get(environment.strip().upper())
+    if chosen:
+        kafka["bsp_config_path"] = chosen
 
 
 def load_settings(config_path: str, *, reader=None) -> ConnectorSettings:
@@ -550,7 +813,11 @@ def load_settings(config_path: str, *, reader=None) -> ConnectorSettings:
     if not isinstance(document, dict):
         raise ValueError(f"Config at {config_path} is not a YAML mapping")
 
-    settings = ConnectorSettings.model_validate(_deep_merge(document, _env_overlay()))
+    # IFC_ variables are applied last, so IFC_CYBERARK__* still overrides the
+    # template's CYBERARK_* for a single task.
+    layered = _deep_merge(_deep_merge(document, _cyberark_env_overlay()), _env_overlay())
+    _select_bsp_config(layered)
+    settings = ConnectorSettings.model_validate(layered)
 
     # The month is read deep inside path expansion and the envelope builder,
     # which are not handed the settings, so it is pinned for the process here.

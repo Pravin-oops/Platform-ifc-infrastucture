@@ -118,6 +118,7 @@ class Publisher:
 
         with self._lock:
             if err is not None:
+                self._sent_at.pop(trigger_id, None)
                 self.stats.failure += 1
                 self.stats.failed.append(trigger_id)
 
@@ -255,16 +256,21 @@ class Publisher:
         with self._lock:
             self._sent_at[trigger_id] = time.perf_counter()
 
-        self._produce_with_backpressure(
-            topic=self._topic,
-            key=key,
-            value=value,
-            callback=lambda err, msg: self._on_delivery(err, msg, trigger_id=trigger_id),
-            headers=headers,
-        )
+        try:
+            self._produce_with_backpressure(
+                topic=self._topic,
+                key=key,
+                value=value,
+                callback=lambda err, msg: self._on_delivery(err, msg, trigger_id=trigger_id),
+                headers=headers,
+            )
+        except PublishError:
+            # Never queued, so no delivery report will ever clear the send time.
+            with self._lock:
+                self._sent_at.pop(trigger_id, None)
+            raise
         self._metrics.incr("MessagesProduced")
         logger.debug("Queued message", extra={"trigger_id": trigger_id, "topic": self._topic})
-
 
     def poll(self, timeout: float = 0) -> int:
         return self._producer.poll(timeout)

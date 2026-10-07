@@ -35,7 +35,7 @@ from utility.failure_notifier import Notifier
 from utility.health_utility import HealthState
 from utility.kafka_factory import KafkaStack, KafkaStackFactory
 from utility.observability_utility import Metrics, memory_limit_mb, process_rss_mb, set_log_context
-from utility.resilience_utility import CircuitBreaker, CircuitOpen, ShutdownSignal
+from utility.resilience_utility import BackoffPolicy, CircuitBreaker, CircuitOpen, ShutdownSignal, retry
 from utility.connector_config import ConnectorSettings
 from utility.connector_utility import SourceAccessError
 from utility.trigger_source import make_source
@@ -95,6 +95,9 @@ class ConnectorRunner:
         self._producer_factory = producer_factory
 
         self._run_id = new_run_id()
+        # Resolved here, before any network call, so an environment with no
+        # code configured stops the run instead of publishing under another's.
+        self._originating_system = settings.originating_system
         self._sequence = SequenceAllocator()
         # Fixed once, so the rows queried and the business month stamped on them
         # cannot disagree even if the run crosses midnight at a month end.
@@ -111,6 +114,10 @@ class ConnectorRunner:
         self._breaker = CircuitBreaker(
             threshold=settings.resilience.circuit_breaker_threshold,
             reset_seconds=settings.resilience.circuit_breaker_reset_seconds,
+        )
+        self._backoff = BackoffPolicy(
+            base_seconds=settings.resilience.backoff_base_seconds,
+            max_seconds=settings.resilience.backoff_max_seconds,
         )
 
         self._stack: Optional[KafkaStack] = None
@@ -174,8 +181,17 @@ class ConnectorRunner:
 
         self._envelopes = EnvelopeBuilder(
             avro_schema=self._stack.serializer.schema,
+            originating_system=self._originating_system,
+            declare_encryption_policies=settings.declares_encryption_policies,
             sequence_allocator=self._sequence,
             business_month=self._business_month,
+        )
+        logger.info(
+            "Envelope identity: triggerOriginatingSystem=idSystem=%s, field encryption "
+            "policies %s (environment %s)",
+            self._originating_system,
+            "declared" if settings.declares_encryption_policies else "empty",
+            settings.app.environment,
         )
 
         self._health.update(schema_id=self._stack.schema_id, topic=settings.kafka.topic)
@@ -188,7 +204,7 @@ class ConnectorRunner:
         context = self._stack.schema_context
         mode = settings.schema_registry.mode
 
-        if mode == "DEV":
+        if not context.get("subject"):
             schema_source = "pinned in config (not checked against the registry)"
         else:
             schema_source = (
@@ -277,14 +293,37 @@ class ConnectorRunner:
             event_date=built.business_month.replace("-", ""),
         )
 
-        self._stack.publisher.publish(
-            key=built.kafka_key,
-            value=payload,
-            trigger_id=built.trigger_id,
+        self._publish_with_retry(built, payload)
+        counters.published += 1
+
+    def _publish_with_retry(self, built: BuiltRecord, payload: bytes) -> None:
+        """Publish one record, retrying a retryable failure with backoff.
+
+        Every failed attempt counts towards the circuit breaker, so a total
+        outage abandons the batch after ``circuit_breaker_threshold`` attempts
+        rather than retrying each record in turn. A record that runs out of
+        attempts is not quarantined: it stays unpublished, and the
+        reconciliation fails the run.
+        """
+        assert self._stack is not None
+        publisher = self._stack.publisher
+
+        def worth_retrying(exc: BaseException) -> bool:
+            if not isinstance(exc, PublishError):
+                return False
+            self._breaker.record_failure(exc)
+            return exc.scenario.retryable and not self._breaker.is_open
+
+        retry(
             # No Kafka headers: the Trigger Backbone reads everything from the
             # envelope, and its reference records carry an empty header list.
+            lambda: publisher.publish(key=built.kafka_key, value=payload, trigger_id=built.trigger_id),
+            attempts=self._settings.resilience.max_publish_attempts,
+            policy=self._backoff,
+            retry_on=worth_retrying,
+            shutdown=self._shutdown,
+            description=f"publish of {built.trigger_id}",
         )
-        counters.published += 1
 
     # -- batch -------------------------------------------------------------
 
@@ -485,11 +524,11 @@ class ConnectorRunner:
                 counters=counters,
             )
         except PublishError as exc:
-            self._breaker.record_failure(exc)
+            # The breaker has already counted every failed attempt.
             if not exc.scenario.retryable:
                 raise
             logger.error(
-                "Publish attempt failed",
+                "Record not published after retrying; the reconciliation will fail the run",
                 extra={"trigger_id": built.trigger_id, "scenario": exc.scenario.key},
             )
 

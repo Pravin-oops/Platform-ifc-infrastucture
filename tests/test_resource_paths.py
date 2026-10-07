@@ -124,10 +124,10 @@ class TestBundledConfigs:
         assert settings.schema_registry.mode == "SECURE"
         assert settings.schema_registry.url
         assert settings.kafka.bsp_config_path
-        assert settings.csm is not None
+        assert settings.cyberark is not None
 
     def test_no_config_carries_a_secret(self):
-        """CSM supplies credentials at runtime; only locations are configuration."""
+        """CyberArk supplies credentials at runtime; only locations are configuration."""
         for name in CONFIGS:
             text = open(os.path.join(UTILITY_DIR, name), "r", encoding="utf-8").read().lower()
             for smell in ("password:", "sasl.password", "secret_key", "private_key"):

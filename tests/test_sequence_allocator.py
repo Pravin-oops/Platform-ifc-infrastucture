@@ -76,6 +76,8 @@ def builder(app_root):
     def make():
         return EnvelopeBuilder(
             avro_schema=load_schema_document(os.path.join("utility", "schema.json")),
+            originating_system="SNSVC0084378",
+            declare_encryption_policies=False,
             sequence_allocator=SequenceAllocator(),
             business_month="2026-08",
         )
@@ -178,6 +180,8 @@ class TestTheDefaultAllocator:
 
         b = EnvelopeBuilder(
             avro_schema=load_schema_document(os.path.join("utility", "schema.json")),
+            originating_system="SNSVC0084378",
+            declare_encryption_policies=False,
             business_month="2026-08",
         )
         records = self._records(b, [9912345678, 9912345679, 9912345678])
@@ -192,6 +196,8 @@ class TestTheDefaultAllocator:
         default = self._records(
             EnvelopeBuilder(
                 avro_schema=load_schema_document(os.path.join("utility", "schema.json")),
+                originating_system="SNSVC0084378",
+                declare_encryption_policies=False,
                 business_month="2026-08",
             ),
             csids,

@@ -387,7 +387,7 @@ def ecs_handler(event: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         registry.mode,
         # SECURE resolves the id from the registry at startup; the
         # "Kafka target ready" line reports what it resolved to.
-        registry.schema_id if registry.mode == "DEV" else "from registry",
+        registry.schema_id if registry.mode == "DEV" and registry.schema_id else "from registry",
         "BSP" if settings.kafka.bsp_config_path else "direct",
         settings.app.environment,
         extra={

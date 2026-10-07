@@ -6,9 +6,9 @@ The BSP Python client owns the librdkafka SASL/OAUTHBEARER wiring, including the
 * the token returned by ``get_token`` is normalised (it comes back variously as
   a string, a ``(token, expiry)`` tuple, or a dict) and shape-checked before it
   is handed to the Schema Registry;
-* the token's ``exp`` claim is tracked, so a long-lived service-mode task
-  refreshes ahead of expiry instead of failing a batch mid-flight - the one
-  place where the ECS runtime genuinely differs from a 15-minute Lambda;
+* the token's ``exp`` claim is tracked, so a long run refreshes ahead of
+  expiry instead of failing a batch mid-flight - the one place where the ECS
+  runtime genuinely differs from a 15-minute Lambda;
 * failures classify onto the catalogue.
 """
 

@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
 
 import requests
 
@@ -31,21 +31,36 @@ class RegisteredSchema:
     schema_id: int
     version: int
     schema: Dict[str, Any]
+    #: The registry node that answered.
+    url: str = ""
 
 
 class SchemaRegistryClient:
+    """Reads from one registry node, or fails over across several.
+
+    The nodes of a registry cluster share one schema store, so any of them
+    gives the same answer. A node that is unreachable or answers 5xx is passed
+    over for the next; a 401, 403 or 404 is the cluster's answer and is final.
+    The node that last answered is tried first next time.
+    """
+
     def __init__(
         self,
-        base_url: str,
+        base_url: Union[str, Sequence[str]],
         *,
-        token_provider: Any,
+        token_provider: Any = None,
         ca_location: Optional[str] = None,
         timeout: int = 30,
         backoff: Optional[BackoffPolicy] = None,
         attempts: int = 4,
         shutdown: Optional[ShutdownSignal] = None,
     ):
-        self._base_url = base_url.rstrip("/")
+        urls = [base_url] if isinstance(base_url, str) else list(base_url)
+        self._urls = [url.strip().rstrip("/") for url in urls if url and url.strip()]
+        if not self._urls:
+            raise ValueError("SchemaRegistryClient needs at least one registry URL")
+        self._preferred = self._urls[0]
+        #: None for the DEV registry (8082), which takes no bearer token.
         self._tokens = token_provider
         self._verify: Any = ca_location if ca_location else True
         self._timeout = timeout
@@ -55,23 +70,63 @@ class SchemaRegistryClient:
 
     # -- transport ---------------------------------------------------------
 
-    def _request(self, path: str, *, force_refresh: bool = False) -> Any:
-        url = f"{self._base_url}{path}"
-        token = self._tokens.get(force_refresh=force_refresh)
+    @property
+    def urls(self) -> List[str]:
+        return list(self._urls)
+
+    def _ordered_urls(self) -> List[str]:
+        return [self._preferred] + [url for url in self._urls if url != self._preferred]
+
+    def _request(self, path: str) -> Tuple[Any, str]:
+        """GET ``path`` from the first node that answers; returns (body, node)."""
+        last_error: Optional[ConnectorError] = None
+
+        for base in self._ordered_urls():
+            try:
+                body = self._request_node(base, path)
+            except ConnectorError as exc:
+                if exc.scenario is not catalog.SCHEMA_REGISTRY_UNAVAILABLE:
+                    raise
+                last_error = exc
+                if len(self._urls) > 1:
+                    logger.warning(
+                        "Schema Registry node %s is unavailable (%s); trying the next node",
+                        base,
+                        exc,
+                    )
+                continue
+
+            if base != self._preferred:
+                logger.warning("Schema Registry failed over to %s", base)
+                self._preferred = base
+            return body, base
+
+        assert last_error is not None
+        if len(self._urls) > 1:
+            raise ConnectorError(
+                f"No Schema Registry node answered ({', '.join(self._urls)}): {last_error}",
+                catalog.SCHEMA_REGISTRY_UNAVAILABLE,
+                context={"urls": self._urls},
+                cause=last_error,
+            ) from last_error
+        raise last_error
+
+    def _request_node(self, base: str, path: str, *, force_refresh: bool = False) -> Any:
+        url = f"{base}{path}"
+        headers = {"Content-Type": "application/vnd.schemaregistry.v1+json"}
+        if self._tokens is not None:
+            headers["Authorization"] = f"Bearer {self._tokens.get(force_refresh=force_refresh)}"
 
         try:
             response = requests.get(
                 url,
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Content-Type": "application/vnd.schemaregistry.v1+json",
-                },
+                headers=headers,
                 verify=self._verify,
                 timeout=self._timeout,
             )
         except requests.RequestException as exc:
             raise ConnectorError(
-                f"Schema Registry request to {path} failed: {exc}",
+                f"Schema Registry request to {url} failed: {exc}",
                 catalog.SCHEMA_REGISTRY_UNAVAILABLE,
                 context={"url": url},
                 cause=exc,
@@ -80,14 +135,14 @@ class SchemaRegistryClient:
         if response.status_code == 200:
             return response.json()
 
-        if response.status_code in (401, 403) and not force_refresh:
+        if response.status_code in (401, 403) and not force_refresh and self._tokens is not None:
             # The cached token may have been revoked or rotated early; one
             # forced refresh distinguishes an expiry from a real ACL problem.
             logger.warning(
                 "Schema Registry returned %s; refreshing the BAM token and retrying once",
                 response.status_code,
             )
-            return self._request(path, force_refresh=True)
+            return self._request_node(base, path, force_refresh=True)
 
         scenario = {
             401: catalog.AUTHENTICATION_FAILURE,
@@ -96,7 +151,7 @@ class SchemaRegistryClient:
         }.get(response.status_code, catalog.SCHEMA_REGISTRY_UNAVAILABLE)
 
         raise ConnectorError(
-            f"Schema Registry returned HTTP {response.status_code} for {path}",
+            f"Schema Registry returned HTTP {response.status_code} for {url}",
             scenario,
             context={"url": url, "status": response.status_code, "body": response.text[:500]},
         )
@@ -117,7 +172,7 @@ class SchemaRegistryClient:
     # -- API ---------------------------------------------------------------
 
     def latest_schema(self, subject: str) -> RegisteredSchema:
-        document = self._get_with_retry(
+        document, node = self._get_with_retry(
             f"/subjects/{subject}/versions/latest", f"schema registry lookup for {subject}"
         )
 
@@ -136,6 +191,7 @@ class SchemaRegistryClient:
             schema_id=int(document["id"]),
             version=int(document.get("version", 0)),
             schema=schema,
+            url=node,
         )
         logger.info(
             "Resolved registry subject",
@@ -143,12 +199,14 @@ class SchemaRegistryClient:
                 "subject": subject,
                 "schema_id": registered.schema_id,
                 "schema_version": registered.version,
+                "registry_url": node,
             },
         )
         return registered
 
     def subjects(self) -> List[str]:
-        return list(self._get_with_retry("/subjects", "schema registry subject list"))
+        subjects, _node = self._get_with_retry("/subjects", "schema registry subject list")
+        return list(subjects)
 
 
 def value_subject(topic: str) -> str:

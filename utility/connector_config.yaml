@@ -1,4 +1,4 @@
-# IFC trigger connector - UAT.
+# IFC trigger connector - SIT.
 #
 # Placeholders marked CONFIRM are open items tracked in the README; they are the
 # environment-readiness values the POC assessment lists as still outstanding.
@@ -9,8 +9,25 @@
 
 app:
   name: ifc-trigger-connector
-  environment: UAT
+  # Selects envelope.originating_systems below. Set per task with
+  # IFC_APP__ENVIRONMENT (DEV | SIT | PROD-ANALYTICS | PROD-PARALLEL | PROD).
+  environment: SIT
   log_level: INFO
+
+envelope:
+  # Each environment's service number, sent as both triggerOriginatingSystem
+  # and idSystem, and the first part of every trigger ID. A run whose
+  # app.environment is not listed here stops at startup.
+  originating_systems:
+    DEV: SNSVC0084379
+    SIT: SNSVC0084378
+    PROD-ANALYTICS: SNSVC0084375
+    PROD-PARALLEL: SNSVC0084371
+    PROD: SNSVC0084373
+  # Environments whose upstream data is tokenised. Only there does a payload
+  # field declare its fieldEncryptionPolicy (UK_TOK_AC_L0R0_UNC_DE on Client
+  # Relationship Owner Name); in every other environment all policies are "".
+  tokenised_environments: [PROD]
 
 run:
   # One ECS RunTask per trigger invocation: publish the month, then exit.
@@ -79,37 +96,98 @@ kafka:
   # CONFIRM: the CDD trigger topic. The BSP topic table lists
   # tc01_fncmtrgrbb_ifc_tbb_kyc_refresh for CDD (DEV).
   topic: tc01_fncmtrgrbb_ifc_tbb_kyc_refresh
-  # The BSP client YAML (librdkafka properties), not this file.
-  bsp_config_path: s3://devaprocessedlayer-691850678096-emea/triggerbackbone/producer_app/config/bsp_uat_config.yaml
+  # The BSP client YAML (librdkafka properties), not this file: the default
+  # for any environment not listed in bsp_config_paths.
+  bsp_config_path: utility/bsp_sit_config.yaml
+  # Per app.environment. IFC_KAFKA__BSP_CONFIG_PATH on a task overrides both.
+  #   DEV  PLAINTEXT on 9092, the unsecured DEV-only listener: no TLS, no token
+  #   SIT  SASL_SSL on 9095 with the BAM token
+  bsp_config_paths:
+    DEV: utility/bsp_dev_config.yaml
+    SIT: utility/bsp_sit_config.yaml
   # Broker limit is 800 KB; the guard sits just under it.
   max_message_bytes: 819200
   flush_timeout_seconds: 120
   local_queue_max_messages: 20000
-  overrides: {}
+  # librdkafka properties applied over the BSP client config. These match the
+  # Trigger Backbone team's Java producer. Their session.timeout.ms (30000) is
+  # left out: it is a consumer property, and librdkafka ignores it on a
+  # producer with a CONFWARN.
+  overrides:
+    request.timeout.ms: 60000
+    connections.max.idle.ms: 300000
+    metadata.max.age.ms: 300000
+  # librdkafka debug trace, for diagnosis only (verbose). Set per task with
+  # IFC_KAFKA__DEBUG=security,broker,protocol rather than here; 'all' and
+  # 'conf' are refused because they print the client config.
+  # debug: security,broker,protocol
 
 schema_registry:
+  # DEV | SECURE. IFC_SCHEMA_REGISTRY__MODE on the task overrides this.
   mode: SECURE
-  url: https://ldndsr000010177.intranet.barcapint.com:8095
-  ca_location: /apps/external/5/deva/bsp/bsp-installer/bsp/etc/CARoot.pem
+
+  # Shared by both modes. A mode block below may set any of these too; the
+  # active mode's value wins.
+  # The Barclays root CA, written at container start (ca_certificate below).
+  ca_location: /tmp/ifc-certs/CARoot.pem
   timeout_seconds: 30
-  token_refresh_margin_seconds: 300
   # Attempts at each registry request before preflight fails.
   max_attempts: 5
   schema_path: utility/schema.json
 
-csm:
-  base_url: https://csm-uk1-stg.barcapint.com:8200
-  mount_point: CSM
-  # CONFIRM: the actual system account. The POC readiness assessment lists this
-  # as known-as-placeholder only.
-  secret_path: intranet/static-cred/snsvc0035333_sysdevaemeammtdevops
-  role_name: snsvc0035333_aws_ecs-csm-fetcher
+  # DEV: no BAM token or BSP username/password for the registry (the DEV
+  # registry is not password protected), and the schema id is the constant
+  # 1299, so the registry is not contacted at all. Remove schema_id to look the
+  # id up on the url nodes instead (port 8082, no token).
+  dev:
+    schema_id: 1299
+    url: https://ldndsr000010177.intranet.barcapint.com:8082, https://gbrdsr000014551.intranet.barcapint.com:8082
+
+  # Secure registry: port 8095, the BAM bearer token.
+  # Comma-separated nodes. Each is checked at preflight; the schema is read
+  # from the first that answers, so one node down does not fail the run.
+  secure:
+    url: https://ldndsr000010177.intranet.barcapint.com:8095, https://gbrdsr000014551.intranet.barcapint.com:8095
+    token_refresh_margin_seconds: 300
+
+# Barclays root CA (CARoot.pem). Never committed or baked into the image: one
+# Secrets Manager secret holding the plain PEM, read with the ECS task role and
+# written to `path` before anything connects. ssl.ca.location in
+# utility/bsp_sit_config.yaml and schema_registry.ca_location above both point
+# at that path. Without a secret_id nothing is fetched (local runs).
+ca_certificate:
+  # KafkaCABundleSecret in the infrastructure template. Created empty: the PEM
+  # is stored in it by hand, and until then the run fails at this read.
+  secret_id: /ifc/bsp-event-processor/kafka/ca-bundle
+  secret_region: eu-west-1
+  path: /tmp/ifc-certs/CARoot.pem
+
+# CyberArk Central Credential Provider (CCP), client-certificate authentication.
+# Locations only: the client certificate and key are read from the Secrets
+# Manager secret below, and the account itself from CCP at runtime.
+cyberark:
+  # In ECS the product template (products/ecs/product.template.yaml) sets these
+  # from its CyberArk parameters, so they are not repeated here:
+  #   CYBERARK_ENABLED  -> enabled
+  #   CYBERARK_CCP_URL  -> base_url (the full .../AIMWebService_certs/api/Accounts URL)
+  #   CYBERARK_APP_ID   -> app_id
+  #   CYBERARK_SAFE     -> safe
+  #   CYBERARK_ACCOUNT  -> object
+  # Off by default, as in the template: dev runs publish without a BSP system
+  # account and take BSP_USERNAME/BSP_PASSWORD from the environment.
+  enabled: false
+  folder: Root
+  # Secrets Manager secrets created by DevOps, each holding one plain PEM: the
+  # certificate, and its unencrypted private key. Both are empty until the
+  # certificate is issued.
+  client_cert_secret_id: /ifc/bsp-event-processor/cyberark/client-cert
+  client_key_secret_id: /ifc/bsp-event-processor/cyberark/private-key
+  secret_region: eu-west-1
   ca_bundle_path: /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
   ssl_verify: true
-  sts_region: us-east-1
-  instance_region: eu-west-1
-  vault_server_id: CSM_PROD
   request_timeout: 30
+  # Retries a CCP 5xx/429 or a connection failure; a rejection fails at once.
+  max_attempts: 3
   principal_realm: "@INTRANET.BARCAPINT.COM"
 
 # Every invocation's outcome, appended as one JSON line to this file. The gate
@@ -132,12 +210,23 @@ audit:
   write_payloads: true
 
 resilience:
+  max_publish_attempts: 5
   backoff_base_seconds: 1.0
   backoff_max_seconds: 60.0
   circuit_breaker_threshold: 20
   circuit_breaker_reset_seconds: 120
   preflight_enabled: true
-  preflight_timeout_seconds: 10
+  # Per-endpoint DNS/TCP connect timeout at preflight: an unreachable endpoint
+  # takes this long to report.
+  preflight_timeout_seconds: 30
+  # Off: no explicit list_topics() at preflight. The first publish brings up the
+  # broker connection (TLS, SASL with the BAM token, metadata), as produce_app
+  # does; a missing topic or ACL comes back as a delivery error. Turn on with
+  # IFC_RESILIENCE__PREFLIGHT_METADATA_ENABLED=true to fail fast with the reason.
+  preflight_metadata_enabled: false
+  # The metadata request, when on: librdkafka retries the TLS/SASL handshakes
+  # across the brokers within this window.
+  preflight_metadata_timeout_seconds: 60
   max_quarantine_ratio: 0.05
 
 health:
