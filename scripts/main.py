@@ -1,6 +1,6 @@
 """ECS / CLI entry point for the IFC trigger connector.
 
-    python scripts/main.py --config s3://.../connector_config.yaml
+    python scripts/main.py --config s3://.../connector_config_sit.yaml
 
 IFC_RUN__TRIGGER picks the trigger, and with it the Athena table to read. The
 failure catalogue is available without a BSP connection:

@@ -806,7 +806,7 @@ class TestGateActivation:
         from utility.connector_config import load_settings
 
         for trigger, suffix in (("TRIGGER_8", "8"), ("TRIGGER_9", "9"), ("TRIGGER_21", "21")):
-            settings = load_settings("utility/connector_config.yaml")
+            settings = load_settings("utility/connector_config_sit.yaml")
             settings.select_trigger(trigger)
             assert settings.recon_active
             assert settings.recon.table == "bdb_ifc_synthetic_data_test.batch_recon"

@@ -1,16 +1,21 @@
 # IFC trigger connector - SIT.
 #
+# One file per environment: the container selects this one with
+# APP_CONFIG_PATH=utility/connector_config_sit.yaml. Everything SIT-specific -
+# the environment, its BSP client YAML and the SECURE registry - is fixed here
+# rather than set per task.
+#
 # Placeholders marked CONFIRM are open items tracked in the README; they are the
 # environment-readiness values the POC assessment lists as still outstanding.
 #
-# Any value here can be overridden per task without republishing this file, by
-# setting an IFC_ environment variable in the ECS task definition. Sections are
-# separated by a double underscore, e.g. IFC_KAFKA__TOPIC, IFC_RUN__TRIGGER.
+# Any value here can still be overridden per task without republishing this
+# file, by setting an IFC_ environment variable in the ECS task definition.
+# Sections are separated by a double underscore, e.g. IFC_KAFKA__TOPIC,
+# IFC_RUN__TRIGGER.
 
 app:
   name: ifc-trigger-connector
-  # Selects envelope.originating_systems below. Set per task with
-  # IFC_APP__ENVIRONMENT (DEV | SIT | PROD-ANALYTICS | PROD-PARALLEL | PROD).
+  # Selects envelope.originating_systems below.
   environment: SIT
   log_level: INFO
 
@@ -96,15 +101,9 @@ kafka:
   # CONFIRM: the CDD trigger topic. The BSP topic table lists
   # tc01_fncmtrgrbb_ifc_tbb_kyc_refresh for CDD (DEV).
   topic: tc01_fncmtrgrbb_ifc_tbb_kyc_refresh
-  # The BSP client YAML (librdkafka properties), not this file: the default
-  # for any environment not listed in bsp_config_paths.
+  # The SIT BSP client YAML (librdkafka properties): SASL_SSL on 9095 with the
+  # BAM token.
   bsp_config_path: utility/bsp_sit_config.yaml
-  # Per app.environment. IFC_KAFKA__BSP_CONFIG_PATH on a task overrides both.
-  #   DEV  PLAINTEXT on 9092, the unsecured DEV-only listener: no TLS, no token
-  #   SIT  SASL_SSL on 9095 with the BAM token
-  bsp_config_paths:
-    DEV: utility/bsp_dev_config.yaml
-    SIT: utility/bsp_sit_config.yaml
   # Broker limit is 800 KB; the guard sits just under it.
   max_message_bytes: 819200
   flush_timeout_seconds: 120
@@ -123,25 +122,15 @@ kafka:
   # debug: security,broker,protocol
 
 schema_registry:
-  # DEV | SECURE. IFC_SCHEMA_REGISTRY__MODE on the task overrides this.
+  # SIT always uses the secure registry.
   mode: SECURE
 
-  # Shared by both modes. A mode block below may set any of these too; the
-  # active mode's value wins.
   # The Barclays root CA, written at container start (ca_certificate below).
   ca_location: /tmp/ifc-certs/CARoot.pem
   timeout_seconds: 30
   # Attempts at each registry request before preflight fails.
   max_attempts: 5
   schema_path: utility/schema.json
-
-  # DEV: no BAM token or BSP username/password for the registry (the DEV
-  # registry is not password protected), and the schema id is the constant
-  # 1299, so the registry is not contacted at all. Remove schema_id to look the
-  # id up on the url nodes instead (port 8082, no token).
-  dev:
-    schema_id: 1299
-    url: https://ldndsr000010177.intranet.barcapint.com:8082, https://gbrdsr000014551.intranet.barcapint.com:8082
 
   # Secure registry: port 8095, the BAM bearer token.
   # Comma-separated nodes. Each is checked at preflight; the schema is read

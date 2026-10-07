@@ -11,7 +11,7 @@ from utility.connector_utility import load_schema_document
 from tests.test_envelope import trigger_8_event
 from utility.tb_outcome_schema import EnvelopeBuilder
 
-CONFIG = os.path.join(os.path.dirname(__file__), "..", "utility", "connector_config.yaml")
+CONFIG = os.path.join(os.path.dirname(__file__), "..", "utility", "connector_config_sit.yaml")
 
 #: The service number agreed for each environment.
 EXPECTED = {

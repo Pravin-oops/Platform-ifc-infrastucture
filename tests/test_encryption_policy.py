@@ -12,7 +12,7 @@ from utility.connector_config import load_settings
 from utility.connector_utility import load_schema_document
 from utility.tb_outcome_schema import EnvelopeBuilder
 
-CONFIG = os.path.join(os.path.dirname(__file__), "..", "utility", "connector_config.yaml")
+CONFIG = os.path.join(os.path.dirname(__file__), "..", "utility", "connector_config_sit.yaml")
 OWNER = "Client Relationship Owner Name"
 
 

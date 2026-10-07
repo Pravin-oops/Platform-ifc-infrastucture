@@ -375,7 +375,7 @@ class TestEndToEnd:
     ):
         """The path main_ecs.py takes: IFC_RUN__TRIGGER -> table -> envelope."""
         monkeypatch.setenv("IFC_RUN__TRIGGER", run_trigger)
-        settings = load_settings("utility/connector_config.yaml")
+        settings = load_settings("utility/connector_config_sit.yaml")
         settings.select_trigger(None)
 
         client = FakeAthena()

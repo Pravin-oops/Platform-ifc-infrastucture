@@ -144,7 +144,8 @@ Platform-ifc-infrastructure/      # the app root; imports are utility.*
 │   ├── trigger_batch_notifier.py # TBB batch-completion SNS event
 │   |
 │   ├── schema.json               # TriggerBackboneTopicSchema (Avro)
-│   ├── connector_config.yaml     # deployed app config (ECS, CyberArk-backed)
+│   ├── connector_config_sit.yaml # SIT app config (ECS, CyberArk-backed)
+│   ├── connector_config_dev.yaml # DEV app config
 │   └── requirements.txt
 |
 └── tests/                        # pytest suite; run_tests.sh / run_tests.ps1 run it
@@ -515,8 +516,11 @@ and report success.
 ### A trigger's monthly run
 
 ```bash
-APP_CONFIG_PATH=utility/connector_config.yaml IFC_RUN__TRIGGER=TRIGGER_8 python scripts/main_ecs.py
+APP_CONFIG_PATH=utility/connector_config_sit.yaml IFC_RUN__TRIGGER=TRIGGER_8 python scripts/main_ecs.py
 ```
+
+`APP_CONFIG_PATH` picks the environment: `utility/connector_config_sit.yaml` or
+`utility/connector_config_dev.yaml` (see [Configuration per environment](#configuration-per-environment)).
 
 `IFC_RUN__TRIGGER` is required: it picks the Athena table and the published sub-type. The run
 needs AWS credentials that can query that table (see [Deployment](#deployment)).
@@ -524,7 +528,7 @@ needs AWS credentials that can query that table (see [Deployment](#deployment)).
 ### Reprocessing a past month
 
 ```bash
-APP_CONFIG_PATH=utility/connector_config.yaml IFC_RUN__TRIGGER=TRIGGER_8 IFC_RUN__MONTH=2026-08 IFC_RUN__FORCE=true python scripts/main_ecs.py
+APP_CONFIG_PATH=utility/connector_config_sit.yaml IFC_RUN__TRIGGER=TRIGGER_8 IFC_RUN__MONTH=2026-08 IFC_RUN__FORCE=true python scripts/main_ecs.py
 ```
 
 Runs as the August run did: queries `business_date = 2026-07-31` and records the outcome against
@@ -540,7 +544,7 @@ python scripts/main.py catalogue
 
 ### Schema Registry modes — SECURE and DEV
 
-`schema_registry.mode` in `connector_config.yaml` picks one; `IFC_SCHEMA_REGISTRY__MODE` on the
+`schema_registry.mode` in the config file picks one (SECURE in the SIT file, DEV in the DEV file); `IFC_SCHEMA_REGISTRY__MODE` on the
 task overrides it (any case; an empty value leaves it to the file). Each mode has its own block,
 `schema_registry.secure` and `schema_registry.dev`, whose values override the shared ones under
 `schema_registry` while that mode is active.
@@ -557,18 +561,21 @@ must belong to a schema that matches the bundled `.avsc`. DEV with neither a URL
 refuses to start. Records are always written in Confluent wire format, because the consumer's
 `KafkaAvroDeserializer` rejects anything else.
 
-### BSP client config per environment
+### Configuration per environment
 
-`kafka.bsp_config_paths` picks the BSP client YAML by `app.environment`; an environment not listed
-uses `kafka.bsp_config_path`, and `IFC_KAFKA__BSP_CONFIG_PATH` on a task overrides both.
+Each environment has its own connector config, chosen with `APP_CONFIG_PATH` when the container
+runs. Each file fixes its `app.environment`, its BSP client YAML (`kafka.bsp_config_path`) and its
+Schema Registry mode.
 
-| Environment | File | Connection |
-|---|---|---|
-| `DEV` | `utility/bsp_dev_config.yaml` | `PLAINTEXT` on 9092, the DEV-only unsecured listener: no TLS, no SASL, no token |
-| `SIT` (and, until they have their own, the others) | `utility/bsp_sit_config.yaml` | `SASL_SSL` on 9095, BAM token via the BSP `oauth_cb` |
+| `APP_CONFIG_PATH` | Environment | BSP client YAML | Connection | Registry |
+|---|---|---|---|---|
+| `utility/connector_config_sit.yaml` | `SIT` | `utility/bsp_sit_config.yaml` | `SASL_SSL` on 9095, BAM token via the BSP `oauth_cb` | SECURE |
+| `utility/connector_config_dev.yaml` | `DEV` | `utility/bsp_dev_config.yaml` | `PLAINTEXT` on 9092, the DEV-only unsecured listener: no TLS, no SASL, no token | DEV, schema id 1299 |
 
-A DEV run is `IFC_APP__ENVIRONMENT=DEV` with `IFC_SCHEMA_REGISTRY__MODE=DEV`: the DEV brokers,
-service number `SNSVC0084379`, schema id 1299, and no BAM token for the registry or the brokers.
+A DEV run gets the DEV brokers, service number `SNSVC0084379`, schema id 1299, and no BAM token
+for the registry or the brokers. `IFC_KAFKA__BSP_CONFIG_PATH` on a task still overrides the BSP
+file. The DEV file's AWS locations (Athena, recon, run marker, audit) are SIT's until DEV has its
+own.
 
 ### Without BSP
 
@@ -668,8 +675,9 @@ sets these from its CyberArk parameters. They sit between the YAML and the `IFC_
 | `CYBERARK_SAFE` | `cyberark.safe` |
 | `CYBERARK_ACCOUNT` | `cyberark.object`, sent to CCP as `Object` |
 
-Supplied config: [`utility/connector_config.yaml`](utility/connector_config.yaml) (SIT; values
-needing confirmation are marked `CONFIRM`, including the Athena workgroup).
+Supplied configs: [`utility/connector_config_sit.yaml`](utility/connector_config_sit.yaml) and
+[`utility/connector_config_dev.yaml`](utility/connector_config_dev.yaml); values needing
+confirmation are marked `CONFIRM`, including the Athena workgroup.
 
 ---
 

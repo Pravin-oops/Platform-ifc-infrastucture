@@ -18,7 +18,7 @@ from utility.error_classifier import ConnectorError
 from utility.kafka_factory import KafkaStackFactory
 from utility.resilience_utility import BackoffPolicy, ShutdownSignal
 
-CONFIG = os.path.join(os.path.dirname(__file__), "..", "utility", "connector_config.yaml")
+CONFIG = os.path.join(os.path.dirname(__file__), "..", "utility", "connector_config_sit.yaml")
 
 A = "https://registry-a.example:8095"
 B = "https://registry-b.example:8095"

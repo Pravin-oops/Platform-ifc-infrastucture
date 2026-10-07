@@ -3,8 +3,7 @@
 # https://docs.confluent.io/legacy/platform/5.1.4/clients/librdkafka/CONFIGURATION.md.html or
 # https://github.com/confluentinc/librdkafka/blob/master/CONFIGURATION.md
 #
-# DEV BSP client config. Selected when app.environment is DEV (IFC_APP__ENVIRONMENT=DEV):
-# kafka.bsp_config_paths in connector_config.yaml.
+# DEV BSP client config: kafka.bsp_config_path in connector_config_dev.yaml.
 
 ---
 # Provide comma seperated list of host/port pairs to use for establishing the initial connection to the Kafka cluster(DEV).
