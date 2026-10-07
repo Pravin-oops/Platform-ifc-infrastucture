@@ -99,7 +99,7 @@ class TestEnvelope:
     def test_only_client_relationship_owner_name_carries_an_encryption_policy(self, builder):
         fields = builder.build(trigger_8_event()).payload_fields
         policies = {f["fieldName"]: f["fieldEncryptionPolicy"] for f in fields}
-        assert policies.pop("Client Relationship Owner Name") == "DPASS_POLICY_NAME"
+        assert policies.pop("Client Relationship Owner Name") == "UK_TOK_AC_L0R0_UNC_DE"
         assert set(policies.values()) == {""}
 
     def test_the_payload_is_the_eight_contract_fields_in_order(self, builder):

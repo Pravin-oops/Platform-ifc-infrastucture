@@ -288,10 +288,10 @@ class TestTriggerDefinitions:
         "sub_type", [definitions.TRIGGER_8, definitions.TRIGGER_9, definitions.TRIGGER_21]
     )
     def test_only_client_relationship_owner_name_is_encrypted(self, sub_type):
-        """DPASS_POLICY_NAME goes on the owner name field and nowhere else."""
+        """UK_TOK_AC_L0R0_UNC_DE goes on the owner name field and nowhere else."""
         for spec in definitions.DEFINITIONS[sub_type].fields:
             expected = (
-                "DPASS_POLICY_NAME" if spec.name == "Client Relationship Owner Name" else ""
+                "UK_TOK_AC_L0R0_UNC_DE" if spec.name == "Client Relationship Owner Name" else ""
             )
             assert spec.encryption_policy == expected, spec.name
 

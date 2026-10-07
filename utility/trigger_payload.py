@@ -54,8 +54,7 @@ class DataType(str, Enum):
 # PII arrives already tokenised, so the connector never de-tokenises: it declares
 # the policy applied upstream so the consumer knows how to read the value.
 POLICY_NONE = ""
-POLICY_NAME = "DPASS_POLICY_NAME"
-POLICY_ACCOUNT = "UK_TOK_AC_L0R0_UNC_DE"  # placeholder - confirm
+POLICY_NAME = "UK_TOK_AC_L0R0_UNC_DE"
 
 
 class PayloadBuildError(ValueError):
