@@ -358,8 +358,8 @@ class TestEndToEnd:
         assert built.record["triggerSubType"] == "NewHRCRelationship"
         assert built.record["idValue"] == "9912345678"
         assert built.record["upstreamTriggerID"] is None
-        # date_of_request is a string column; the payload publishes its date part.
-        assert fields["Date of Request"] == "2026-08-10"
+        # date_of_request is a string column; the payload publishes its date part, YY-MM-DD.
+        assert fields["Date of Request"] == "26-08-10"
         assert fields["Counterparty ID"] == "9912345678"
 
     @pytest.mark.parametrize(

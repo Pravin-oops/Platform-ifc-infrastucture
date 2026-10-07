@@ -119,7 +119,7 @@ class TestEnvelope:
 
     def test_date_of_request_is_published_as_a_date_not_a_timestamp(self, builder):
         fields = {f["fieldName"]: f for f in builder.build(trigger_8_event()).payload_fields}
-        assert fields["Date of Request"]["fieldValue"] == "2026-06-10"
+        assert fields["Date of Request"]["fieldValue"] == "26-06-10"
         assert fields["Date of Request"]["fieldDataType"] == "DATE"
 
     def test_id_type_is_customer_and_id_value_is_the_csid(self, builder):

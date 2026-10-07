@@ -262,7 +262,9 @@ Every trigger publishes the **same eight fields**, in this order:
 | 8 | `Region` | `STRING` | `region` | — |
 
 `Date of Request` is the date the trigger file was generated. Source rows carry a full timestamp;
-`DataType.DATE` renders the date part only (`2026-06-10T02:15:04.221Z` → `2026-06-10`). Every other
+`DataType.DATE` renders the date part only, as `YY-MM-DD` per the payload specification
+(`2026-06-10T02:15:04.221Z` → `26-06-10`); a value whose first ten characters are not an ISO date
+is quarantined. Every other
 field is a string taken from the source row unchanged.
 
 `Counterparty ID` is the counterparty's CSID SDS value. It also travels as the envelope's
@@ -300,12 +302,12 @@ The defaults live in `utility/trigger_definitions.py` (`DEFAULT_BUSINESS_UNIT`,
 
 **Field lengths.** Each field carries the consumer's column width, from the data-length column of
 the SIEBEL consumption table. The length is measured on the *rendered* value — what actually goes
-on the wire — so a `date_of_request` arriving as a full timestamp is measured as the ten
+on the wire — so a `date_of_request` arriving as a full timestamp is measured as the eight
 characters it renders to, not as the source string:
 
 | Field | Source column | Type | Max length |
 | --- | --- | --- | --- |
-| Date of Request | `date_of_request` | Date (`YYYY-MM-DD`) | 10 |
+| Date of Request | `date_of_request` | Date (`YY-MM-DD`, 8 characters) | 10 |
 | Counterparty Full Legal Entity Name | `counterparty_full_legal_entity_name` | String | 100 |
 | Counterparty ID | `counterparty_csid_sds` | String | 11 |
 | Client Relationship Owner Name | `client_relationship_owner_name` | String | 50 |
@@ -1049,7 +1051,7 @@ problem.
 | **Tokenisation policy name** | `UK_TOK_AC_L0R0_UNC_DE` on Client Relationship Owner Name (`POLICY_NAME` in `utility/trigger_payload.py`), replacing the earlier `DPASS_POLICY_NAME`, declared only in PROD; the consumer should confirm they de-tokenise with it, and whether PROD-ANALYTICS and PROD-PARALLEL data is tokenised too |
 | Timestamp format agreement with TBB | See drift item 4 |
 | Athena workgroup, and the task role's Athena / Glue / S3 / Lake Formation permissions | `workgroup: primary` is a placeholder; the role needs `athena:StartQueryExecution`, `GetQueryExecution`, `GetQueryResults`, `StopQueryExecution`, `GetTableMetadata`, Glue `GetTable`/`GetPartitions`, read on the table data, read/write on `s3://sit1-logs-corpdeng-509153454187-eu-west-1/athena_output/`, and `SELECT` if Lake Formation governs the tables |
-| `date_of_request` text format | A `string` column; the payload publishes its first ten characters, which is the date for ISO text (`2026-08-10 02:15:04`). Confirm upstream writes ISO |
+| `date_of_request` text format | A `string` column; the payload reads its first ten characters as an ISO date and publishes it as `YY-MM-DD` (`2026-08-10 02:15:04` → `26-08-10`); anything else is quarantined. Confirm upstream writes ISO |
 | Internal package index reachable from the image build, for `bsp_python_client` | Required; it is an ordinary pip requirement |
 | SNS topic for RTB alerting | `notifications.sns_topic_arn` is null; alerts currently log only |
 | SNS topic for the TBB batch-completion event | `notifications.batch_sns_topic_arn` is null; the event currently logs only. Confirm the topic and the `Trigger_Originating_BU` value with TBB |

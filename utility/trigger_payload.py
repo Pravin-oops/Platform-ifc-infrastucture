@@ -47,6 +47,11 @@ class DataType(str, Enum):
     BOOLEAN = "BOOLEAN"
 
 
+#: How a DATE field's value is written: YY-MM-DD, as the payload specification
+#: gives for Date of Request (2026-06-10 goes out as 26-06-10).
+DATE_FORMAT = "%y-%m-%d"
+
+
 # Tokenisation policies. NAME applies only to the Relationship Owner Name field.
 #
 # PII arrives already tokenised, so the connector never de-tokenises: it declares
@@ -128,10 +133,12 @@ def _stringify(value: Any, data_type: DataType, spec: FieldSpec) -> str:
 
         if data_type is DataType.DATE:
             if isinstance(value, datetime):
-                return value.date().isoformat()
-            if isinstance(value, date):
-                return value.isoformat()
-            return str(value).strip()[:10]
+                value = value.date()
+            elif not isinstance(value, date):
+                # An ISO date or timestamp string: its date part is read as a
+                # date, so anything that is not one fails rather than shipping.
+                value = date.fromisoformat(str(value).strip()[:10])
+            return value.strftime(DATE_FORMAT)
 
         if data_type is DataType.DATETIME:
             if isinstance(value, datetime):

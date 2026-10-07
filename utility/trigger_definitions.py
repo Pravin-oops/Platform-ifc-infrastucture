@@ -61,7 +61,7 @@ DEFAULT_LOCATION = "UK"
 #: CSID or BRID is a different identifier, not a cosmetic difference. Changing
 #: one of these is a consumer-visible change, like changing a FieldSpec.name.
 MAX_LENGTHS = {
-    "date_of_request": 10,                       # rendered YYYY-MM-DD
+    "date_of_request": 10,                       # rendered YY-MM-DD (8)
     "counterparty_full_legal_entity_name": 100,
     "counterparty_csid_sds": 11,
     "client_relationship_owner_name": 50,
@@ -120,7 +120,7 @@ def _payload_fields() -> List[FieldSpec]:
     """
     return [
         # The date the trigger file was generated. Source values arrive as a full
-        # timestamp; DataType.DATE renders the date part only.
+        # timestamp; DataType.DATE renders the date part only, as YY-MM-DD.
         FieldSpec(
             "Date of Request",
             "date_of_request",

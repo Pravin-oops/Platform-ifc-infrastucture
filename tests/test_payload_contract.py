@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date, datetime
 
 import pytest
 
@@ -107,12 +108,36 @@ class TestFieldLength:
             build_fields(specs, {"kept": "yes", "long": "abcd"})
 
     def test_the_length_is_measured_on_the_rendered_value(self):
-        """A date arrives as a full timestamp and renders to ten characters, so
+        """A date arrives as a full timestamp and renders to eight characters, so
         the limit applies to what goes on the wire, not to the source string."""
         spec = FieldSpec(
             name="Date of Request", source="d", data_type=DataType.DATE, max_length=10
         )
-        assert build_fields([spec], {"d": "2026-06-10T02:15:04.221Z"})[0]["fieldValue"] == "2026-06-10"
+        assert build_fields([spec], {"d": "2026-06-10T02:15:04.221Z"})[0]["fieldValue"] == "26-06-10"
+
+
+class TestDateFormat:
+    """DATE fields go out as YY-MM-DD, per the payload specification."""
+
+    SPEC = FieldSpec(name="Date of Request", source="d", data_type=DataType.DATE, max_length=10)
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "2026-06-10",
+            "2026-06-10 00:00:00.000",
+            "2026-06-10T02:15:04.221Z",
+            date(2026, 6, 10),
+            datetime(2026, 6, 10, 2, 15, 4),
+        ],
+    )
+    def test_every_source_shape_renders_yy_mm_dd(self, value):
+        assert build_fields([self.SPEC], {"d": value})[0]["fieldValue"] == "26-06-10"
+
+    @pytest.mark.parametrize("value", ["10/06/2026", "not a date", "2026-13-01"])
+    def test_a_value_that_is_not_a_date_is_rejected(self, value):
+        with pytest.raises(PayloadBuildError, match="not a valid DATE"):
+            build_fields([self.SPEC], {"d": value})
 
     def test_a_defaulted_value_is_measured_too(self):
         spec = FieldSpec(name="Location", source="loc", default="United Kingdom", max_length=5)
