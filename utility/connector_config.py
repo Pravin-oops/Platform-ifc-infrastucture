@@ -471,6 +471,11 @@ class ResilienceSettings(BaseModel):
     #: Per-endpoint DNS/TCP connect timeout at preflight; short, so a dead
     #: endpoint is reported quickly.
     preflight_timeout_seconds: int = Field(default=10, ge=1)
+    #: Off: the first publish brings the broker connection up, as the Trigger
+    #: Backbone's produce_app does, and topic or ACL problems arrive as
+    #: delivery errors. On: an explicit list_topics() before any record is read,
+    #: which fails fast with the reason - kept for diagnosis.
+    preflight_metadata_enabled: bool = False
     #: How long the metadata request may take. librdkafka retries the TLS and
     #: SASL handshakes across the brokers within it, so it is the longer one.
     preflight_metadata_timeout_seconds: int = Field(default=60, ge=1)

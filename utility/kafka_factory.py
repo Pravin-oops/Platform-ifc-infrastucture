@@ -582,9 +582,16 @@ class KafkaStackFactory:
         # Before anything asks the brokers: SASL cannot start without it.
         self._await_oauth_token(producer, config)
 
-        if settings.resilience.preflight_enabled:
+        if settings.resilience.preflight_enabled and settings.resilience.preflight_metadata_enabled:
             self._metadata_checks(producer)
             self._report.raise_if_failed()
+        else:
+            # As produce_app does: librdkafka fetches the topic's metadata
+            # itself when the first record is produced, and a missing topic or
+            # ACL comes back as that record's delivery error.
+            logger.info(
+                "Topic metadata preflight is off; the first publish brings up the broker connection"
+            )
 
         publisher = Publisher(
             producer,

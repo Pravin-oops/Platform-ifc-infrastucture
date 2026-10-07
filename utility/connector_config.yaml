@@ -181,8 +181,13 @@ resilience:
   # connection is being brought up; an unreachable endpoint takes this long to
   # report, so bring it back down once the path is proven.
   preflight_timeout_seconds: 60
-  # The metadata request: librdkafka retries the TLS/SASL handshakes across the
-  # brokers within this window.
+  # Off: no explicit list_topics() at preflight. The first publish brings up the
+  # broker connection (TLS, SASL with the BAM token, metadata), as produce_app
+  # does; a missing topic or ACL comes back as a delivery error. Turn on with
+  # IFC_RESILIENCE__PREFLIGHT_METADATA_ENABLED=true to fail fast with the reason.
+  preflight_metadata_enabled: false
+  # The metadata request, when on: librdkafka retries the TLS/SASL handshakes
+  # across the brokers within this window.
   preflight_metadata_timeout_seconds: 60
   max_quarantine_ratio: 0.05
 

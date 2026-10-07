@@ -414,3 +414,30 @@ class TestAwaitOauthToken:
         KafkaStackFactory._await_oauth_token(producer, {}, timeout=5)
 
         assert producer.polls == 0
+
+
+class TestMetadataPreflightSwitch:
+    """Off by default: no list_topics(), the first publish brings the connection up."""
+
+    def build(self, monkeypatch, **resilience):
+        from tests.test_runner_pipeline import FakeProducer, make_settings
+
+        settings = make_settings(
+            schema_registry={"mode": "DEV", "schema_id": 1299},
+            kafka={"bsp_config_path": None, "overrides": {"bootstrap.servers": "localhost:9092"}},
+            resilience={"preflight_enabled": True, **resilience},
+        )
+        calls = []
+        monkeypatch.setattr(KafkaStackFactory, "_network_checks", lambda self, config: None)
+        monkeypatch.setattr(KafkaStackFactory, "_metadata_checks", lambda self, producer: calls.append("list_topics"))
+        factory = KafkaStackFactory(
+            settings, metrics=None, shutdown=ShutdownSignal(), producer_factory=lambda _config: FakeProducer()
+        )
+        factory.build()
+        return calls
+
+    def test_the_default_build_asks_the_brokers_nothing(self, monkeypatch):
+        assert self.build(monkeypatch) == []
+
+    def test_it_can_be_turned_back_on_for_diagnosis(self, monkeypatch):
+        assert self.build(monkeypatch, preflight_metadata_enabled=True) == ["list_topics"]
