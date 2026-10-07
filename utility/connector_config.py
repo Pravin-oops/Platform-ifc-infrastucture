@@ -722,7 +722,7 @@ def _coerce(raw: str) -> Any:
 #: Settings where an empty IFC_ variable means "not set, use the config file".
 #: Elsewhere an empty value is a deliberate null (an empty
 #: IFC_CA_CERTIFICATE__SECRET_ID turns the CA download off).
-_EMPTY_MEANS_UNSET = {("schema_registry", "mode")}
+_EMPTY_MEANS_UNSET = {("schema_registry", "mode"), ("app", "environment")}
 
 
 def _env_overlay() -> Dict[str, Any]:

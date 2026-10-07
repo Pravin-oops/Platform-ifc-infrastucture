@@ -66,3 +66,10 @@ def test_the_record_carries_the_code_as_both_fields_and_starts_its_trigger_id(en
 def test_a_builder_without_a_code_is_refused():
     with pytest.raises(ValueError, match="originating system"):
         EnvelopeBuilder(avro_schema=load_schema_document("utility/schema.json"), originating_system=" ")
+
+@pytest.mark.parametrize("value", ["", "  "])
+def test_an_empty_environment_variable_leaves_it_to_the_config_file(settings_for, value):
+    settings = settings_for(value)
+
+    assert settings.app.environment == "SIT"
+    assert settings.originating_system == "SNSVC0084378"
