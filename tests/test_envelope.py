@@ -157,6 +157,12 @@ class TestEnvelope:
         assert RFC3339_NANOS.match(record["triggerPostingTimestamp"])
         assert record["triggerPostingTimestamp"] != record["timestamp"]
 
+    def test_the_posting_timestamp_is_the_fixed_value(self, builder):
+        from utility.tb_outcome_schema import FIXED_TIMESTAMP
+
+        assert FIXED_TIMESTAMP == "2026-10-08T00:46:44.734166000Z"
+        assert builder.build(trigger_8_event()).record["triggerPostingTimestamp"] == FIXED_TIMESTAMP
+
     def test_payload_is_a_json_string_not_an_object(self, builder):
         record = builder.build(trigger_8_event()).record
         assert isinstance(record["payload"], str)

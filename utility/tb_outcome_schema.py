@@ -51,6 +51,11 @@ def now_timestamp() -> str:
     return rfc3339(datetime.now(timezone.utc))
 
 
+#: Fixed on this branch: every triggerPostingTimestamp, and the SNS batch window and
+#: Event_Timestamp that follow from it, carry this value instead of the current time.
+FIXED_TIMESTAMP = "2026-10-08T00:46:44.734166000Z"
+
+
 def previous_month(run_date: date) -> str:
     """The business month a run on ``run_date`` delivers: the month before it."""
     if run_date.month == 1:
@@ -273,7 +278,7 @@ class EnvelopeBuilder:
             # triggerSubType is an Avro enum, so it must be the definition's published symbol.
             "triggerSubType": definition.published_sub_type,
             "timestamp": self._event_timestamp,
-            "triggerPostingTimestamp": now_timestamp(),
+            "triggerPostingTimestamp": FIXED_TIMESTAMP,
             "sequenceNumber": int(sequence),
             "triggerOriginatingSystem": self._system,
             "triggerOriginatingBU": ORIGINATING_BU,

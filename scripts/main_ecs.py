@@ -32,7 +32,7 @@ from utility.failure_notifier import Notifier
 from utility.health_utility import HealthServer, HealthState
 from utility.observability_utility import Metrics, configure_logging
 from utility.resilience_utility import ShutdownSignal
-from utility.tb_outcome_schema import now_timestamp
+from utility.tb_outcome_schema import FIXED_TIMESTAMP
 from utility.trigger_definitions import resolve as resolve_trigger
 from utility import recon_gate
 from utility import run_gate
@@ -489,7 +489,7 @@ def _publish_batch_notification(
             result.batch_end_timestamp,
 
         Event_Timestamp=
-            now_timestamp(),
+            FIXED_TIMESTAMP,
 
         Correlation_Id=
             runner.run_id,
@@ -526,7 +526,7 @@ def _publish_zero_batch_notification(settings, run_id: str) -> Dict[str, Any]:
         _log_batch_skip(settings, skip_reason, run_id)
         return {"status": "SKIPPED", "reason": skip_reason}
 
-    now = now_timestamp()
+    now = FIXED_TIMESTAMP
     notification = TriggerBatchNotification(
         Trigger_Originating_BU=settings.notifications.trigger_originating_bu,
         No_Of_Messages_Produced=0,
@@ -534,7 +534,7 @@ def _publish_zero_batch_notification(settings, run_id: str) -> Dict[str, Any]:
         Topic_Name=settings.kafka.topic,
         Trigger_Batch_Start_Timestamp=now,
         Trigger_Batch_End_Timestamp=now,
-        Event_Timestamp=now_timestamp(),
+        Event_Timestamp=FIXED_TIMESTAMP,
         Correlation_Id=run_id,
     )
     response = TriggerBatchNotifier(

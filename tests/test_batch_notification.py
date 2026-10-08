@@ -211,6 +211,12 @@ class TestPublishBatchNotification:
         ):
             assert re.fullmatch(rfc3339_nanos, value), value
 
+    def test_the_event_timestamp_is_the_fixed_value(self, main_ecs_script, sent):
+        runner = types.SimpleNamespace(last_result=a_result(), run_id="run-abc")
+        main_ecs_script._publish_batch_notification(a_settings(), runner)
+
+        assert sent[0].Event_Timestamp == "2026-10-08T00:46:44.734166000Z"
+
     @pytest.mark.parametrize(
         "reason, result",
         [

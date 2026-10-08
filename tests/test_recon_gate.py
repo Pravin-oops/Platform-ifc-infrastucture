@@ -626,12 +626,10 @@ class TestThroughTheEntryPoint:
     ):
         """Same body as a publishing run: zero messages, and the current time
         as both ends of the batch window."""
-        from utility.tb_outcome_schema import now_timestamp
+        from utility.tb_outcome_schema import FIXED_TIMESTAMP
 
         ecs.write(a_row(source_count=0, target_count=0))
-        before = now_timestamp()
         summary = ecs.run(batch_topic="arn:aws:sns:eu-west-1:1:tbb")
-        after = now_timestamp()
 
         (event,) = batch_sent
         body = event.to_dict()
@@ -645,10 +643,8 @@ class TestThroughTheEntryPoint:
         assert body["Topic_Name"] == "t"
         assert body["Trigger_Originating_BU"] == "UK-C"
         assert body["Trigger_Batch_Start_Timestamp"] == body["Trigger_Batch_End_Timestamp"]
-        assert before <= body["Trigger_Batch_Start_Timestamp"] <= after
-        # Same RFC 3339 nanosecond format as the batch window.
-        assert before <= body["Event_Timestamp"] <= after
-        assert len(body["Event_Timestamp"]) == len(body["Trigger_Batch_End_Timestamp"])
+        assert body["Trigger_Batch_Start_Timestamp"] == FIXED_TIMESTAMP
+        assert body["Event_Timestamp"] == FIXED_TIMESTAMP
         # Joins the RECON_GATE manifest this invocation wrote.
         assert body["Correlation_Id"] == summary["run_id"]
 
