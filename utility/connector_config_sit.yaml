@@ -7,7 +7,7 @@ app:
   log_level: INFO
 
 envelope:
-  # Service number per environment: triggerOriginatingSystem, idSystem and the trigger ID prefix.
+  # Service number per environment: triggerOriginatingSystem and the trigger ID prefix.
   originating_systems:
     DEV: SNSVC0084379
     SIT: SNSVC0084378

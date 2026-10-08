@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 TRIGGER_TYPE = "KYCRefresh"
 ORIGINATING_BU = "UK-C"
 ID_TYPE = "Customer"
+ID_SYSTEM = "UK-C CRIME"
 
 #: BDP column holding the counterparty CSID: the envelope's idValue.
 CSID_SOURCE = "counterparty_csid_sds"
@@ -134,7 +135,7 @@ class EnvelopeBuilder:
     ):
         if not originating_system or not str(originating_system).strip():
             raise ValueError("EnvelopeBuilder needs the environment's originating system code")
-        #: triggerOriginatingSystem and idSystem, and the trigger ID's first part.
+        #: triggerOriginatingSystem, and the trigger ID's first part.
         self._system = str(originating_system).strip()
         #: Only where the upstream data is tokenised (PROD) do fields name their
         #: policy; required, so no caller can leave it to a default.
@@ -279,7 +280,7 @@ class EnvelopeBuilder:
             "triggerOriginatingBU": ORIGINATING_BU,
             "idType": ID_TYPE,
             "idValue": csid,
-            "idSystem": self._system,
+            "idSystem": ID_SYSTEM,
             # Nullable in the schema, and the trigger tables carry no upstream
             # trigger id: an IFC trigger is the origin, not a derived event.
             "upstreamTriggerID": None,

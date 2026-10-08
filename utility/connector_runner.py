@@ -28,7 +28,13 @@ from utility.connector_utility import SourceAccessError
 from utility.trigger_source import make_source
 from utility.run_gate import execution_date
 from utility.sequence_allocator import SequenceAllocator
-from utility.tb_outcome_schema import BuiltRecord, EnvelopeBuilder, TriggerEvent, previous_month
+from utility.tb_outcome_schema import (
+    ID_SYSTEM,
+    BuiltRecord,
+    EnvelopeBuilder,
+    TriggerEvent,
+    previous_month,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -167,9 +173,10 @@ class ConnectorRunner:
             business_month=self._business_month,
         )
         logger.info(
-            "Envelope identity: triggerOriginatingSystem=idSystem=%s, field encryption "
+            "Envelope identity: triggerOriginatingSystem=%s, idSystem=%s, field encryption "
             "policies %s (environment %s)",
             self._originating_system,
+            ID_SYSTEM,
             "declared" if settings.declares_encryption_policies else "empty",
             settings.app.environment,
         )

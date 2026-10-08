@@ -95,7 +95,7 @@ class TestEnvelope:
         assert record["triggerOriginatingSystem"] == "SNSVC0084378"
         assert record["triggerOriginatingBU"] == "UK-C"
         assert record["idType"] == "Customer"
-        assert record["idSystem"] == "SNSVC0084378"
+        assert record["idSystem"] == "UK-C CRIME"
         assert built.trigger_id.startswith("SNSVC0084378_KYCRefresh_NewHRCRelationship_")
 
     def test_only_client_relationship_owner_name_carries_an_encryption_policy(self, builder):

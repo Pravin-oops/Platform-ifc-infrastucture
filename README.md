@@ -421,15 +421,15 @@ Upstream supplies no customer id, business unit or timestamp — the connector d
 | `sequenceNumber` | the record's position in the batch — 1, 2, 3… across all customers |
 | `triggerOriginatingSystem` | the environment's service number, from `envelope.originating_systems` by `app.environment` (table below) |
 | `triggerOriginatingBU` | fixed: `UK-C` |
-| `idSystem` | the same service number as `triggerOriginatingSystem` |
+| `idSystem` | fixed: `UK-C CRIME` in every environment |
 | `idType` | fixed: `Customer` |
 | `idValue` | `counterparty_csid_sds`, as a string; a row without one is quarantined |
 | `upstreamTriggerID` | always null: the trigger tables carry no upstream trigger id |
 | `payload` | the eight contract fields above |
 
 The service number depends on the environment the task runs in, set by `app.environment`
-(`IFC_APP__ENVIRONMENT` on the task). It is sent as both `triggerOriginatingSystem` and
-`idSystem`, and starts every trigger ID. A run whose environment is not listed stops at startup
+(`IFC_APP__ENVIRONMENT` on the task). It is sent as `triggerOriginatingSystem` and starts every
+trigger ID; `idSystem` does not change with it. A run whose environment is not listed stops at startup
 rather than publish under another environment's number.
 
 | `app.environment` | Service number |

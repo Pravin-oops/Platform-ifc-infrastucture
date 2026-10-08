@@ -19,13 +19,13 @@ DEFAULT_MAX_MESSAGE_BYTES = 800 * 1024
 
 class AppSettings(BaseModel):
     name: str = "ifc-trigger-connector"
-    #: Selects the envelope's triggerOriginatingSystem and idSystem.
+    #: Selects the envelope's triggerOriginatingSystem.
     environment: str = "UAT"
     log_level: str = "INFO"
 
 
-#: triggerOriginatingSystem and idSystem for each app.environment: the
-#: environment's service number.
+#: triggerOriginatingSystem for each app.environment: the environment's
+#: service number.
 DEFAULT_ORIGINATING_SYSTEMS: Dict[str, str] = {
     "DEV": "SNSVC0084379",
     "SIT": "SNSVC0084378",
@@ -38,7 +38,7 @@ _SYSTEM_CODE = re.compile(r"^[A-Za-z0-9-]+$")
 
 
 class EnvelopeSettings(BaseModel):
-    #: app.environment -> service number sent as triggerOriginatingSystem and idSystem.
+    #: app.environment -> service number sent as triggerOriginatingSystem.
     originating_systems: Dict[str, str] = Field(default_factory=lambda: dict(DEFAULT_ORIGINATING_SYSTEMS))
     #: Environments whose data is tokenised; only there do payload fields declare a policy.
     tokenised_environments: List[str] = Field(default_factory=lambda: ["PROD"])
@@ -537,14 +537,14 @@ class ConnectorSettings(BaseModel):
 
     @property
     def originating_system(self) -> str:
-        """The environment's service number: triggerOriginatingSystem and idSystem."""
+        """The environment's service number: triggerOriginatingSystem."""
         environment = self.app.environment.strip().upper()
         try:
             return self.envelope.originating_systems[environment]
         except KeyError:
             raise ValueError(
                 f"app.environment {self.app.environment!r} has no envelope.originating_systems "
-                f"entry, so triggerOriginatingSystem/idSystem cannot be set; known: "
+                f"entry, so triggerOriginatingSystem cannot be set; known: "
                 f"{sorted(self.envelope.originating_systems)}"
             ) from None
 
