@@ -32,12 +32,13 @@ POLICY_NAME = "UK_TOK_AC_L0R0_UNC_DE"
 
 
 class PayloadBuildError(ValueError):
-    """A required field was missing, empty or unconvertible."""
+    """A required field was missing, empty or unconvertible; ``check`` names the rule it broke."""
 
-    def __init__(self, message: str, *, field_name: str, source_key: str):
+    def __init__(self, message: str, *, field_name: str, source_key: str, check: str):
         super().__init__(message)
         self.field_name = field_name
         self.source_key = source_key
+        self.check = check
 
 
 @dataclass(frozen=True)
@@ -106,6 +107,7 @@ def _stringify(value: Any, data_type: DataType, spec: FieldSpec) -> str:
             f"Field '{spec.name}' value {value!r} is not a valid {data_type.value}: {exc}",
             field_name=spec.name,
             source_key=spec.source,
+            check=f"not a valid {data_type.value}",
         ) from exc
 
 
@@ -135,6 +137,7 @@ def build_fields(
                     f"(source attribute '{spec.source}')",
                     field_name=spec.name,
                     source_key=spec.source,
+                    check="missing",
                 )
             continue
 
@@ -146,6 +149,7 @@ def build_fields(
                 f"accepts at most {spec.max_length}",
                 field_name=spec.name,
                 source_key=spec.source,
+                check=f"longer than {spec.max_length} characters",
             )
 
         if not rendered:
@@ -154,6 +158,7 @@ def build_fields(
                     f"Required payload field '{spec.name}' rendered empty",
                     field_name=spec.name,
                     source_key=spec.source,
+                    check="empty",
                 )
             continue
 
@@ -171,6 +176,7 @@ def build_fields(
             "Payload would be empty; the BSP contract requires at least one field",
             field_name="<payload>",
             source_key="<none>",
+            check="no fields",
         )
 
     return fields

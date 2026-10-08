@@ -55,7 +55,7 @@ class AvroSerializer:
             raise RecordRejected(
                 f"Avro serialisation failed for the {self._name} schema: {exc}",
                 catalog.SCHEMA_VALIDATION_FAILURE,
-                detail={"triggerID": record.get("triggerID"), "error": str(exc)},
+                detail={"triggerID": record.get("triggerID"), "error": str(exc), "check": "Avro serialisation"},
             ) from exc
 
         return buffer.getvalue()
@@ -83,6 +83,7 @@ class SizeGuard:
             catalog.MESSAGE_TOO_LARGE,
             detail={
                 "triggerID": trigger_id,
+                "check": "message too large",
                 "serialised_bytes": total,
                 "limit_bytes": self._max_bytes,
                 # The business payload is almost always the culprit; report its

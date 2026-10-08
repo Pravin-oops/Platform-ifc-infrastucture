@@ -168,7 +168,7 @@ class AuditWriter:
             return None
 
         self._quarantine_keys.append(key)
-        logger.warning(
+        logger.debug(
             "Record quarantined",
             extra={"trigger_id": trigger_id, "scenario": scenario_key, "quarantine_key": key},
         )

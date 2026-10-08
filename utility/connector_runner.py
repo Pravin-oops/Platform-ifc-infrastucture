@@ -6,7 +6,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from utility.audit_utility import AuditWriter, RunCounters, build_manifest, new_run_id, reconcile
 from utility import failure_catalog as catalog
@@ -112,6 +112,8 @@ class ConnectorRunner:
         self._batch_start_timestamp: Optional[str] = None
         self._batch_end_timestamp: Optional[str] = None
         self._published_trigger_subtype: Optional[str] = None
+        #: (column, check) -> count and first reason, for this batch's rejections.
+        self._rejections: Dict[Tuple[str, str], Dict[str, Any]] = {}
 
         set_log_context(run_id=self._run_id, environment=settings.app.environment)
 
@@ -215,6 +217,7 @@ class ConnectorRunner:
         *,
         trigger_id: Optional[str],
         rejection: RecordRejected,
+        row: Optional[int] = None,
         record: Optional[Dict[str, Any]] = None,
         raw: Optional[str] = None,
         counters: RunCounters,
@@ -222,6 +225,7 @@ class ConnectorRunner:
         """Quarantine the rejected record to S3."""
         counters.quarantined += 1
         self._metrics.incr("RecordsQuarantined")
+        self._note_rejection(trigger_id, rejection, row)
 
         self._audit.quarantine(
             trigger_id=trigger_id,
@@ -231,6 +235,40 @@ class ConnectorRunner:
             record=record,
             raw=raw,
         )
+
+    def _note_rejection(self, trigger_id: Optional[str], rejection: RecordRejected, row: Optional[int]) -> None:
+        """Count the rejection by column and check; the first of each kind is logged at WARNING."""
+        detail = rejection.detail
+        field_name, source_key = detail.get("field_name"), detail.get("source_key")
+        column = f"{field_name} ({source_key})" if field_name and source_key else field_name or "-"
+        check = detail.get("check") or rejection.scenario.key
+
+        entry = self._rejections.get((column, check))
+        first = entry is None
+        if first:
+            entry = self._rejections[(column, check)] = {
+                "column": column, "check": check, "count": 0, "example": str(rejection),
+            }
+        entry["count"] += 1
+
+        logger.log(
+            logging.WARNING if first else logging.DEBUG,
+            "Record rejected: column=%s check=%s row=%s trigger_id=%s reason=%s%s",
+            column,
+            check,
+            row,
+            trigger_id,
+            rejection,
+            "; further rows with this problem are counted in the quarantine summary" if first else "",
+            extra={"column": column, "check": check, "scenario": rejection.scenario.key},
+        )
+
+    def _rejection_summary(self) -> List[Dict[str, Any]]:
+        return sorted(self._rejections.values(), key=lambda entry: -entry["count"])
+
+    @staticmethod
+    def _describe(rejections: List[Dict[str, Any]]) -> str:
+        return "; ".join(f"{r['column']} {r['check']} x{r['count']}" for r in rejections)
 
     def _publish_record(self, built: BuiltRecord, counters: RunCounters) -> None:
         assert self._stack is not None
@@ -343,9 +381,10 @@ class ConnectorRunner:
                 classify(
                     ConnectorError(
                         f"{ratio:.1%} of records were rejected, over the "
-                        f"{settings.resilience.max_quarantine_ratio:.1%} tolerance",
+                        f"{settings.resilience.max_quarantine_ratio:.1%} tolerance: "
+                        f"{self._describe(self._rejection_summary())}",
                         catalog.SCHEMA_VALIDATION_FAILURE,
-                        context={"quarantine_ratio": round(ratio, 4)},
+                        context={"quarantine_ratio": round(ratio, 4), "rejections": self._rejection_summary()},
                     ),
                     operation="quality_gate",
                     topic=settings.kafka.topic,
@@ -359,6 +398,7 @@ class ConnectorRunner:
 
         settings = self._settings
         counters = RunCounters()
+        self._rejections = {}
         classification: Optional[Classification] = None
         outcome = "SUCCESS"
         exit_code = catalog.EXIT_OK
@@ -432,6 +472,15 @@ class ConnectorRunner:
             counters.quarantined,
             extra={"topic": settings.kafka.topic, "schema_id": self._stack.schema_id, **counters.to_dict()},
         )
+        if counters.quarantined:
+            rejections = self._rejection_summary()
+            logger.warning(
+                "Quarantine summary: %d of %d records rejected: %s",
+                counters.quarantined,
+                counters.records_parsed,
+                self._describe(rejections),
+                extra={"rejections": rejections},
+            )
 
         outcome, exit_code, classification = self._classify_outcome(
             outcome,
@@ -464,6 +513,7 @@ class ConnectorRunner:
             self._handle_rejection(
                 trigger_id=None,
                 rejection=rejection,
+                row=event.source_index + 1,
                 raw=str(event.attributes)[:2000],
                 counters=counters,
             )
@@ -476,6 +526,7 @@ class ConnectorRunner:
             self._handle_rejection(
                 trigger_id=built.trigger_id,
                 rejection=rejection,
+                row=event.source_index + 1,
                 record=built.record,
                 counters=counters,
             )
@@ -570,11 +621,12 @@ class ConnectorRunner:
         self._metrics.emit({"run_id": self._run_id, "outcome": outcome})
 
         logger.info(
-            "Run finished: outcome=%s exit_code=%s acked=%d quarantined=%d",
+            "Run finished: outcome=%s exit_code=%s acked=%d quarantined=%d%s",
             outcome,
             exit_code,
             counters.acked,
             counters.quarantined,
+            f" reason={classification.raw_error}" if classification is not None else "",
             extra={"outcome": outcome, "exit_code": exit_code, **counters.to_dict()},
         )
 

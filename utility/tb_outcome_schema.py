@@ -238,6 +238,7 @@ class EnvelopeBuilder:
                     "triggerSubType": definition.sub_type,
                     "field_name": "idValue",
                     "source_key": CSID_SOURCE,
+                    "check": "missing",
                     "source_object": event.source_object,
                 },
             )
@@ -254,6 +255,7 @@ class EnvelopeBuilder:
                     "triggerSubType": definition.sub_type,
                     "field_name": exc.field_name,
                     "source_key": exc.source_key,
+                    "check": exc.check,
                     "source_object": event.source_object,
                 },
             ) from exc
@@ -305,7 +307,7 @@ class EnvelopeBuilder:
             raise RecordRejected(
                 f"Avro validation error: {exc}",
                 catalog.SCHEMA_VALIDATION_FAILURE,
-                detail={"triggerID": record.get("triggerID")},
+                detail={"triggerID": record.get("triggerID"), "check": "Avro validation"},
             ) from exc
 
         problems = []
@@ -326,6 +328,8 @@ class EnvelopeBuilder:
                 "triggerID": record.get("triggerID"),
                 "triggerSubType": definition.published_sub_type if definition else None,
                 "problems": problems,
+                "field_name": ", ".join(p.split(":", 1)[0] for p in problems) or None,
+                "check": "Avro validation",
             },
         )
 
