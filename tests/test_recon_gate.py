@@ -646,6 +646,9 @@ class TestThroughTheEntryPoint:
         assert body["Trigger_Originating_BU"] == "UK-C"
         assert body["Trigger_Batch_Start_Timestamp"] == body["Trigger_Batch_End_Timestamp"]
         assert before <= body["Trigger_Batch_Start_Timestamp"] <= after
+        # Same RFC 3339 nanosecond format as the batch window.
+        assert before <= body["Event_Timestamp"] <= after
+        assert len(body["Event_Timestamp"]) == len(body["Trigger_Batch_End_Timestamp"])
         # Joins the RECON_GATE manifest this invocation wrote.
         assert body["Correlation_Id"] == summary["run_id"]
 

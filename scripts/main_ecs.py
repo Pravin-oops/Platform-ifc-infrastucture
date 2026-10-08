@@ -489,9 +489,7 @@ def _publish_batch_notification(
             result.batch_end_timestamp,
 
         Event_Timestamp=
-            datetime.now(timezone.utc).isoformat(
-                timespec="milliseconds"
-            ),
+            now_timestamp(),
 
         Correlation_Id=
             runner.run_id,
@@ -536,7 +534,7 @@ def _publish_zero_batch_notification(settings, run_id: str) -> Dict[str, Any]:
         Topic_Name=settings.kafka.topic,
         Trigger_Batch_Start_Timestamp=now,
         Trigger_Batch_End_Timestamp=now,
-        Event_Timestamp=datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+        Event_Timestamp=now_timestamp(),
         Correlation_Id=run_id,
     )
     response = TriggerBatchNotifier(

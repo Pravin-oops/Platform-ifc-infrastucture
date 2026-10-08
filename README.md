@@ -982,7 +982,7 @@ send it.
 | `Trigger_Sub_Type` | the published sub-type the batch carried |
 | `Topic_Name` | `kafka.topic` |
 | `Trigger_Batch_Start_Timestamp` / `..._End_Timestamp` | earliest and latest `triggerPostingTimestamp` in the batch |
-| `Event_Timestamp` | when the notification itself was raised (UTC, milliseconds) |
+| `Event_Timestamp` | when the notification itself was raised, in the same format as the batch window (`2026-07-01T02:00:10.123456000Z`) |
 | `Correlation_Id` | the run id, so the event joins the run manifest and the logs |
 
 **A genuine empty month** (`NO_DATA_THIS_MONTH`) sends the same body, with no batch to draw on:
