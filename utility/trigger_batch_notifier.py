@@ -1,5 +1,3 @@
-"""The Trigger Backbone batch-completion SNS event."""
-
 from __future__ import annotations
 
 import json
@@ -13,6 +11,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from utility.failure_notifier import describe_aws_error
 
 logger = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class TriggerBatchNotification:
@@ -28,9 +27,8 @@ class TriggerBatchNotification:
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
-class TriggerBatchNotifier:
-    """Sends the Trigger Backbone batch-completion SNS event."""
 
+class TriggerBatchNotifier:
     def __init__(
         self,
         *,
@@ -49,7 +47,6 @@ class TriggerBatchNotifier:
         self,
         notification: TriggerBatchNotification,
     ) -> Dict[str, Any]:
-
         payload = notification.to_dict()
         subject = f"TBB Batch Complete - {notification.Trigger_Sub_Type}"
         message = json.dumps(payload)
@@ -59,7 +56,6 @@ class TriggerBatchNotifier:
             "correlation_id": notification.Correlation_Id,
         }
 
-        # The full message goes in the log line, so the console shows exactly what TBB got.
         sns_fields = {
             "sns_kind": "batch_complete",
             "sns_topic_arn": self._sns_topic_arn,
@@ -68,7 +64,6 @@ class TriggerBatchNotifier:
             "sns_message_attributes": attributes,
         }
 
-        # Local DEV mode
         if not self._sns_topic_arn:
             logger.info(
                 "SNS batch notification NOT sent (no topic configured); "

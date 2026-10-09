@@ -1,5 +1,3 @@
-"""CyberArk Central Credential Provider (CCP) credential retrieval."""
-
 from __future__ import annotations
 
 import logging
@@ -22,10 +20,8 @@ from utility.resilience_utility import BackoffPolicy, retry
 
 logger = logging.getLogger(__name__)
 
-#: Client-certificate CCP endpoint, relative to ``base_url``.
 ACCOUNTS_PATH = "/AIMWebService_certs/api/Accounts"
 
-#: Searched in order. The first that exists wins.
 CA_BUNDLE_CANDIDATES: List[str] = [
     "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
     "/etc/ssl/certs/ca-certificates.crt",
@@ -33,13 +29,10 @@ CA_BUNDLE_CANDIDATES: List[str] = [
 ]
 
 
-#: Between attempts at the credential. Short: this runs in preflight, before
-#: anything has been read, and a CCP that stays down fails the run.
 _BACKOFF = BackoffPolicy(base_seconds=2.0, max_seconds=15.0)
 
 
 def _transient(exc: BaseException) -> bool:
-    """A CCP or Secrets Manager outage is worth retrying; a rejection is not."""
     return isinstance(exc, ConnectorError) and exc.scenario.retryable
 
 
@@ -49,10 +42,9 @@ class Credentials:
     password: str
 
     def principal(self, realm: str) -> str:
-        """Fully qualified BSP principal, e.g. ``svcaccount@INTRANET.BARCAPINT.COM``."""
         return self.username if "@" in self.username else f"{self.username}{realm}"
 
-    def __repr__(self) -> str:  # keep the password out of tracebacks and logs
+    def __repr__(self) -> str:
         return f"Credentials(username={self.username!r}, password=***)"
 
 
@@ -61,12 +53,11 @@ class _ClientCertificate:
     cert_pem: str
     key_pem: str
 
-    def __repr__(self) -> str:  # keep the key out of tracebacks and logs
+    def __repr__(self) -> str:
         return "_ClientCertificate(cert_pem=..., key_pem=***)"
 
 
 def resolve_ca_bundle(configured: Optional[str], *, ssl_verify: bool = True) -> Any:
-    """Return a ``requests`` ``verify`` value: a bundle path, or True/False."""
     if not ssl_verify:
         logger.warning("TLS verification is disabled; acceptable for local development only")
         return False
@@ -76,8 +67,6 @@ def resolve_ca_bundle(configured: Optional[str], *, ssl_verify: bool = True) -> 
         if candidate and os.path.exists(candidate):
             return candidate
 
-    # Fall back to certifi rather than failing: the image may carry the Barclays
-    # root in the system store already.
     logger.warning(
         "No CA bundle found at any candidate path; falling back to the system trust store",
         extra={"candidates": [c for c in candidates if c]},
@@ -87,8 +76,7 @@ def resolve_ca_bundle(configured: Optional[str], *, ssl_verify: bool = True) -> 
 
 @contextmanager
 def _materialised(certificate: _ClientCertificate) -> Iterator[Tuple[str, str]]:
-    """Write the certificate and key to owner-only files; remove them on exit."""
-    directory = tempfile.mkdtemp(prefix="cyberark-ccp-")  # created 0700
+    directory = tempfile.mkdtemp(prefix="cyberark-ccp-")
     try:
         paths = []
         for name, content in (("client_cert.pem", certificate.cert_pem), ("client_key.pem", certificate.key_pem)):
@@ -112,12 +100,10 @@ class CyberArkAuthenticator:
     @property
     def accounts_url(self) -> str:
         base = self._settings.base_url.rstrip("/")
-        # DevOps supply the full endpoint URL; a bare host gets the path added.
         return base if base.lower().endswith(ACCOUNTS_PATH.lower()) else f"{base}{ACCOUNTS_PATH}"
 
     @property
     def _query(self) -> Dict[str, str]:
-        # Passed as params so requests URL-encodes object names with spaces.
         return {
             "AppID": self._settings.app_id,
             "Safe": self._settings.safe,
@@ -127,7 +113,6 @@ class CyberArkAuthenticator:
 
     @property
     def _context(self) -> Dict[str, Any]:
-        """Identifies the request in errors and logs. Carries no secret."""
         return {"accounts_url": self.accounts_url, **self._query}
 
     @property
@@ -135,7 +120,6 @@ class CyberArkAuthenticator:
         return resolve_ca_bundle(self._settings.ca_bundle_path, ssl_verify=self._settings.ssl_verify)
 
     def _read_pem(self, secret_id: str, what: str, marker: str) -> str:
-        """One PEM from its own secret: the SecretString is the PEM text itself."""
         context = {"secret_id": secret_id, "region": self._settings.secret_region}
         logger.debug(f"Reading CyberArk {what} from Secrets Manager", extra=context)
 
@@ -143,7 +127,6 @@ class CyberArkAuthenticator:
             client = self._session.client("secretsmanager", region_name=self._settings.secret_region)
             response = client.get_secret_value(SecretId=secret_id)
         except ClientError as exc:
-            # Access denied, missing (or still empty) secret or KMS failure: not worth a retry.
             raise PreflightError(
                 f"Could not read the CyberArk {what} secret: "
                 f"{exc.response.get('Error', {}).get('Code', 'ClientError')}",
@@ -167,7 +150,6 @@ class CyberArkAuthenticator:
                 context=context,
             )
         if marker not in pem:
-            # Never log the value: for the key secret it is the key.
             raise PreflightError(
                 f"CyberArk {what} secret is not a PEM (no '{marker}' block)",
                 catalog.AUTHENTICATION_FAILURE,
@@ -201,8 +183,6 @@ class CyberArkAuthenticator:
                     timeout=self._settings.request_timeout,
                 )
         except requests.exceptions.SSLError as exc:
-            # A handshake failure here is almost always the certificate: an
-            # untrusted CCP server chain, or a client certificate CCP rejects.
             raise PreflightError(
                 f"TLS handshake with CyberArk CCP failed: {exc}",
                 catalog.AUTHENTICATION_FAILURE,
@@ -222,12 +202,9 @@ class CyberArkAuthenticator:
             try:
                 body = response.json()
                 if isinstance(body, dict):
-                    # CCP errors name the failing AppID/Safe/restriction and carry
-                    # no secret material, so they are safe and useful to keep.
                     error = {"error_code": body.get("ErrorCode"), "error_msg": body.get("ErrorMsg")}
             except ValueError:
                 error = {"response": response.text[:500]}
-            # 5xx and throttling are retried; any other status is CCP rejecting the request.
             unavailable = response.status_code >= 500 or response.status_code == 429
             raise PreflightError(
                 f"CyberArk CCP returned HTTP {response.status_code}"
@@ -273,7 +250,6 @@ class CyberArkAuthenticator:
             return self._cached
 
     def export_to_environment(self, realm: str) -> Credentials:
-        """Publish the credential where the BSP client expects to find it."""
         credentials = self.get_credentials()
         os.environ["BSP_USERNAME"] = credentials.principal(realm)
         os.environ["BSP_PASSWORD"] = credentials.password

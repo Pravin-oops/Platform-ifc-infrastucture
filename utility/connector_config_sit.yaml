@@ -1,72 +1,52 @@
-# IFC trigger connector - SIT. Selected with APP_CONFIG_PATH=utility/connector_config_sit.yaml.
-# Any value can be overridden per task with IFC_<SECTION>__<KEY>; CONFIRM marks open items.
-
 app:
   name: ifc-trigger-connector
   environment: SIT
   log_level: INFO
 
 envelope:
-  # Service number per environment: triggerOriginatingSystem and the trigger ID prefix.
   originating_systems:
     DEV: SNSVC0084379
     SIT: SNSVC0084378
     PROD-ANALYTICS: SNSVC0084375
     PROD-PARALLEL: SNSVC0084371
     PROD: SNSVC0084373
-  # Only these environments declare UK_TOK_AC_L0R0_UNC_DE on Client Relationship Owner Name.
   tokenised_environments: [PROD]
 
 run:
-  # Must be <= the task definition's stopTimeout (120).
   shutdown_grace_seconds: 90
 
 source:
-  # Athena table per trigger; IFC_RUN__TRIGGER picks one, and an unmapped trigger fails.
   trigger_tables:
     TRIGGER_8: bdb_ifc_synthetic_data_test.bdp_corp_ifc_trigger_8
     TRIGGER_9: bdb_ifc_synthetic_data_test.bdp_corp_ifc_trigger_9
     TRIGGER_21: bdb_ifc_synthetic_data_test.bdp_corp_ifc_trigger_21
   athena:
-    # CONFIRM: the workgroup the task role may use.
     workgroup: primary
     catalog: AwsDataCatalog
-    # A workgroup that enforces its own result location overrides this.
     output_location: s3://sit1-logs-corpdeng-509153454187-eu-west-1/athena_output/
-    # A run reads the rows dated the last day of the previous month.
     business_date_column: business_date
-    # Fixes row order, so a re-run allocates the same sequence numbers.
     order_by: [date_of_request, counterparty_csid_sds]
     poll_interval_seconds: 1.0
     query_timeout_seconds: 300
 
-# Upstream gate: the trigger's newest recon row must be this month's SUCCESS with matching counts.
-# SUCCESS with zero counts is an empty month: exit 0, no alert.
 recon:
   enabled: true
   table: bdb_ifc_synthetic_data_test.batch_recon
-  # The target_table_name each trigger's recon rows carry.
   trigger_targets:
     TRIGGER_8: "`sit_cds_snsvc0080860_prepared_db`.bdb_ifc_synthetic_data_test.BDP_Corp_IFC_Trigger_8"
     TRIGGER_9: "`sit_cds_snsvc0080860_prepared_db`.bdb_ifc_synthetic_data_test.BDP_Corp_IFC_Trigger_9"
     TRIGGER_21: "`sit_cds_snsvc0080860_prepared_db`.bdb_ifc_synthetic_data_test.BDP_Corp_IFC_Trigger_21"
 
 kafka:
-  # CONFIRM: the CDD trigger topic.
   topic: tc01_fncmtrgrbb_ifc_tbb_kyc_refresh
-  # SASL_SSL on 9095 with the BAM token.
   bsp_config_path: utility/bsp_sit_config.yaml
-  # Just under the broker's 800 KB limit.
   max_message_bytes: 819200
   flush_timeout_seconds: 120
   local_queue_max_messages: 20000
-  # Applied over the BSP client config; these match the Trigger Backbone Java producer.
   overrides:
     request.timeout.ms: 60000
     connections.max.idle.ms: 300000
     metadata.max.age.ms: 300000
-  # Diagnosis only; prefer IFC_KAFKA__DEBUG on the task. 'all' and 'conf' are refused.
-  # debug: security,broker,protocol
 
 schema_registry:
   mode: SECURE
@@ -74,20 +54,15 @@ schema_registry:
   timeout_seconds: 30
   max_attempts: 5
   schema_path: utility/schema.json
-  # Port 8095 with the BAM token; the first node that answers is used.
   secure:
     url: https://ldndsr000010177.intranet.barcapint.com:8095, https://gbrdsr000014551.intranet.barcapint.com:8095
     token_refresh_margin_seconds: 300
 
-# Barclays root CA, read from Secrets Manager and written to `path` at start.
-# The PEM is stored in the secret by hand; until then the run fails at this read.
 ca_certificate:
   secret_id: /ifc/bsp-event-processor/kafka/ca-bundle
   secret_region: eu-west-1
   path: /tmp/ifc-certs/CARoot.pem
 
-# CyberArk CCP. In ECS, enabled, base_url, app_id, safe and object come from the
-# product template's CYBERARK_* variables; off, BSP_USERNAME/BSP_PASSWORD are used.
 cyberark:
   enabled: false
   folder: Root
@@ -100,18 +75,14 @@ cyberark:
   max_attempts: 3
   principal_realm: "@INTRANET.BARCAPINT.COM"
 
-# One JSON line per invocation; decides whether the month is already delivered.
-# Keep the folder to this one file (Athena reads it as a table). Unset to turn the gate off.
 run_marker:
   path: s3://sit1-pre-cds01-509153454187-eu-west-1/dbx-sit-cds-snsvc0080860-prepared-db/ifc-bdp-audit-recon-json/run-markers/run_markers.json
 
 audit:
-  # Bucket name or s3://bucket/folder; the prefixes are appended to it.
   bucket: s3://sit1-pre-cds01-509153454187-eu-west-1/dbx-sit-cds-snsvc0080860-prepared-db/ifc-bdp-audit-recon-json/audit-bucket
   manifest_prefix: manifests/
   quarantine_prefix: quarantine/
   payload_prefix: payloads/
-  # One S3 PUT per message; review before production volumes.
   write_payloads: true
 
 resilience:
@@ -122,7 +93,6 @@ resilience:
   circuit_breaker_reset_seconds: 120
   preflight_enabled: true
   preflight_timeout_seconds: 30
-  # Off: the first publish connects. On: list_topics() at preflight, to fail fast with the reason.
   preflight_metadata_enabled: false
   preflight_metadata_timeout_seconds: 60
   max_quarantine_ratio: 0.05
@@ -133,10 +103,8 @@ health:
   bind_host: 0.0.0.0
 
 notifications:
-  # CONFIRM: the RTB alerting topic.
   sns_topic_arn: null
   application_label: IFC Trigger Connector
-  # CONFIRM: the Trigger Backbone batch-completion topic.
   batch_sns_topic_arn: null
   trigger_originating_bu: UK-C
   batch_notifications_enabled: true

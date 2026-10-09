@@ -1,16 +1,10 @@
-# SIT BSP client config (librdkafka properties); '@' marks a callback function.
-# Reference: https://github.com/confluentinc/librdkafka/blob/master/CONFIGURATION.md
-
 ---
 servers:
-  # 9095: the SASL_SSL listener. Official list per environment: BSP toolkit env.cmd -v icp\emea\uat
   bootstrap.servers: ldndsr000009480.intranet.barcapint.com:9095,ldndsr000009481.intranet.barcapint.com:9095,gbrdsr000011990.intranet.barcapint.com:9095,gbrdsr000011993.intranet.barcapint.com:9095,gbrdsr000013930.intranet.barcapint.com:9095
 
 security:
-  # The only protocol the brokers accept; anything else fails as _TRANSPORT.
   security.protocol: SASL_SSL
   sasl.mechanism: OAUTHBEARER
-  # Written from Secrets Manager at start (ca_certificate.path).
   ssl.ca.location: /tmp/ifc-certs/CARoot.pem
 
 credentials:
@@ -27,15 +21,13 @@ producer:
   properties:
     acks: all
     compression.type: gzip
-    # request.timeout.ms comes from kafka.overrides in the connector config.
-    enable.idempotence: True             # MUST
-    retries: 2147483647                  # MUST
+    enable.idempotence: True
+    retries: 2147483647
     max.in.flight.requests.per.connection: 5
-
 
 consumer:
   properties:
     error_cb: "@error"
-    group.id: GROUP_ID_HERE # Must follow the BSP naming convention
+    group.id: GROUP_ID_HERE
     auto.offset.reset: earliest
     enable.auto.commit: !!bool false

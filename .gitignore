@@ -6,18 +6,9 @@ __pycache__/
 htmlcov/
 .venv/
 venv/
-
-# Output of local runs (manifests, payloads, captured messages). Generated, never source.
 local_out/
-
-# .env is tracked, exactly as produce_app tracks its own: it holds locations and
-# switches, never a credential. Real values go in .env.local, which is not
-# tracked - and secrets go in CyberArk, which is neither.
 .env.local
 *.env.secret
-
-# Certificates are never committed: the Barclays root CA comes from Secrets
-# Manager at container start (utility/ca_certificate.py).
 *.pem
 *.crt
 *.cer

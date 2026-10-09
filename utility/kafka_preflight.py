@@ -1,5 +1,3 @@
-"""Readiness checks run before a single record is read or published."""
-
 from __future__ import annotations
 
 import logging
@@ -44,8 +42,6 @@ class PreflightReport:
 
     def add(self, result: CheckResult) -> CheckResult:
         self.results.append(result)
-        # One line per check, endpoint by endpoint: DEBUG while it passes. At
-        # INFO the run gets log_summary()'s single line instead.
         logger.log(
             logging.DEBUG if result.passed else logging.ERROR,
             "Preflight %s: %s",
@@ -70,7 +66,6 @@ class PreflightReport:
         }
 
     def summary(self) -> str:
-        """Each check group's outcome, e.g. ``dns:kafka 3/3, tcp:kafka 3/3, auth:bam_token ok``."""
         groups: Dict[str, List[CheckResult]] = {}
         for result in self.results:
             parts = result.name.split(":")
@@ -91,7 +86,6 @@ class PreflightReport:
         return ", ".join(described)
 
     def log_summary(self) -> None:
-        """The preflight's one INFO line (ERROR when it failed)."""
         if not self.results:
             return
         duration_ms = sum(r.duration_ms for r in self.results)
@@ -124,17 +118,15 @@ class PreflightReport:
 def _timed(
     fn: Callable[[], Tuple[bool, str, Dict[str, Any]]],
 ) -> Tuple[bool, str, Dict[str, Any], float, Optional[Scenario]]:
-    """Run a check, returning its outcome, timing and the scenario its error carried."""
     start = time.perf_counter()
     scenario: Optional[Scenario] = None
     try:
         ok, detail, context = fn()
-    except Exception as exc:  # a check must never crash the run itself
+    except Exception as exc:
         ok, detail, context = False, f"{type(exc).__name__}: {exc}", {}
         if isinstance(exc, ConnectorError):
             scenario = exc.scenario
     return ok, detail, context, (time.perf_counter() - start) * 1000.0, scenario
-
 
 
 def parse_bootstrap_servers(bootstrap: str) -> List[Tuple[str, int]]:
@@ -161,7 +153,6 @@ def check_dns(
     label: str,
     blocking: bool = True,
 ) -> None:
-    """Resolve each endpoint's host."""
     for host, _port in endpoints:
         def resolve(host: str = host) -> Tuple[bool, str, Dict[str, Any]]:
             addresses = sorted({info[4][0] for info in socket.getaddrinfo(host, None)})
@@ -189,7 +180,6 @@ def check_tcp(
     timeout: int,
     require_all: bool = False,
 ) -> None:
-    """Open a socket to each endpoint."""
     reachable = 0
 
     for host, port in endpoints:
@@ -225,8 +215,6 @@ def check_tcp(
 
 
 def check_source(report: PreflightReport, *, table: str, probe: Callable[[], Any]) -> None:
-    """Confirm the trigger table is visible to this role before authenticating to BSP."""
-
     def run() -> Tuple[bool, str, Dict[str, Any]]:
         probe()
         return True, "", {"source_table": table}
@@ -267,7 +255,6 @@ def check_schema_registry(report: PreflightReport, *, resolve: Callable[[], Dict
 
     ok, detail, context, ms, raised = _timed(run)
 
-    # The raised error already names its scenario, so keep it.
     report.add(
         CheckResult(
             name="schema_registry:subject",
@@ -280,7 +267,6 @@ def check_schema_registry(report: PreflightReport, *, resolve: Callable[[], Dict
     )
 
 
-#: What a failed metadata fetch can be reported as, besides the broker itself.
 _METADATA_SCENARIOS = (
     catalog.AUTHORISATION_FAILURE,
     catalog.AUTHENTICATION_FAILURE,
@@ -294,7 +280,6 @@ def check_topic_metadata(
     fetch: Callable[[str], Dict[str, Any]],
     topics: List[str],
 ) -> None:
-    """Fetch metadata with the real producer principal."""
     for topic in topics:
         def run(topic: str = topic) -> Tuple[bool, str, Dict[str, Any]]:
             return True, "", fetch(topic)
@@ -303,7 +288,6 @@ def check_topic_metadata(
 
         scenario = raised
         if not ok and scenario is None:
-            # Classify from the message: ACL, login or missing topic; anything else is the broker.
             classified = classify(detail).scenario
             scenario = classified if classified in _METADATA_SCENARIOS else catalog.BROKER_UNAVAILABLE
 

@@ -1,5 +1,3 @@
-"""Turn a classification into an RTB-ready alert."""
-
 from __future__ import annotations
 
 import logging
@@ -12,7 +10,7 @@ from utility.error_classifier import Classification
 
 logger = logging.getLogger(__name__)
 
-_MAX_SUBJECT = 100  # SNS subject limit.
+_MAX_SUBJECT = 100
 
 
 def build_subject(
@@ -85,7 +83,6 @@ def build_body(
 
 
 def describe_aws_error(exc: Exception) -> str:
-    """``AuthorizationError: User ... is not authorized`` rather than a bare class name."""
     if isinstance(exc, ClientError):
         error = exc.response.get("Error", {})
         return f"{error.get('Code', 'ClientError')}: {error.get('Message', exc)}"
@@ -93,8 +90,6 @@ def describe_aws_error(exc: Exception) -> str:
 
 
 class Notifier:
-    """Publishes alerts to SNS when configured; always logs them."""
-
     def __init__(
         self,
         *,

@@ -1,13 +1,8 @@
-# DEV BSP client config (librdkafka properties); '@' marks a callback function.
-# Reference: https://github.com/confluentinc/librdkafka/blob/master/CONFIGURATION.md
-
 ---
 servers:
-  # 9092: the unsecured listener, enabled only in EMEA DEV.
   bootstrap.servers: ldndsr000009490.intranet.barcapint.com:9092,ldndsr000009491.intranet.barcapint.com:9092,gbrdsr000012098.intranet.barcapint.com:9092
 
 security:
-  # No TLS or SASL, so sasl.mechanism and ssl.ca.location are unused and no token is requested.
   security.protocol: PLAINTEXT
   sasl.mechanism: OAUTHBEARER
   ssl.ca.location: /tmp/ifc-certs/CARoot.pem
@@ -27,14 +22,13 @@ producer:
     acks: all
     compression.type: gzip
     request.timeout.ms: 40000
-    enable.idempotence: True             # MUST
-    retries: 2147483647                  # MUST
+    enable.idempotence: True
+    retries: 2147483647
     max.in.flight.requests.per.connection: 5
-
 
 consumer:
   properties:
     error_cb: "@error"
-    group.id: GROUP_ID_HERE # Must follow the BSP naming convention
+    group.id: GROUP_ID_HERE
     auto.offset.reset: earliest
     enable.auto.commit: !!bool false

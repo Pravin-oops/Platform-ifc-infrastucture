@@ -1,5 +1,3 @@
-"""Running one Athena query and reading its rows back."""
-
 from __future__ import annotations
 
 import json
@@ -13,7 +11,6 @@ from utility.connector_utility import SourceAccessError
 
 logger = logging.getLogger(__name__)
 
-#: Athena types read back as their Python type; everything else stays text.
 _INTEGER_TYPES = {"tinyint", "smallint", "integer", "int", "bigint"}
 _FLOAT_TYPES = {"double", "float", "real"}
 _NESTED_TYPES = ("array", "map", "row", "struct", "json")
@@ -22,7 +19,6 @@ _TERMINAL_STATES = {"SUCCEEDED", "FAILED", "CANCELLED"}
 
 
 def parse_timestamp(text: str) -> Optional[datetime]:
-    """Timestamp text as a naive UTC datetime, or ``None`` if it is not one."""
     if not isinstance(text, str) or not text.strip():
         return None
     value = text.strip()
@@ -30,8 +26,6 @@ def parse_timestamp(text: str) -> Optional[datetime]:
     zone = None
     head, sep, tail = value.rpartition(" ")
     if sep and tail[:1].isalpha():
-        # A trailing zone name: Athena renders timestamp with time zone as
-        # '<timestamp> UTC'. fromisoformat does not read names.
         try:
             from zoneinfo import ZoneInfo
 
@@ -53,7 +47,6 @@ def parse_timestamp(text: str) -> Optional[datetime]:
 
 
 def coerce(value: Optional[str], athena_type: str) -> Any:
-    """One ``VarCharValue`` as the Python value its Athena column type implies."""
     if value is None:
         return None
     kind = athena_type.lower().split("(", 1)[0].strip()
@@ -69,13 +62,9 @@ def coerce(value: Optional[str], athena_type: str) -> Any:
         if kind == "date":
             return date.fromisoformat(value)
         if kind.startswith("timestamp"):
-            # timestamp, timestamp(3), timestamp with time zone - the last
-            # renders with a zone name ('... UTC') that fromisoformat cannot read.
             parsed = parse_timestamp(value)
             return value if parsed is None else parsed
         if kind.startswith(_NESTED_TYPES):
-            # Only JSON-typed or json_format()'d columns come back as JSON; a
-            # raw struct renders as {a=1, b=2}, which stays a string.
             return json.loads(value)
     except (ValueError, ArithmeticError):
         return value
@@ -83,8 +72,6 @@ def coerce(value: Optional[str], athena_type: str) -> Any:
 
 
 def athena_client() -> Any:
-    """A boto3 Athena client. Standard retry mode backs off on
-    TooManyRequestsException, which is what a busy shared workgroup returns."""
     import boto3
     from botocore.config import Config
 
@@ -92,12 +79,10 @@ def athena_client() -> Any:
 
 
 def string_literal(value: str) -> str:
-    """``value`` as an Athena string literal for ``ExecutionParameters``."""
     return "'" + str(value).replace("'", "''") + "'"
 
 
 def start(client: Any, athena: Any, sql: str, parameters: List[str], *, label: str) -> str:
-    """Start ``sql`` in the configured workgroup; returns the query execution id."""
     request: Dict[str, Any] = {
         "QueryString": sql,
         "ExecutionParameters": parameters,
@@ -123,7 +108,6 @@ def wait(
     label: str,
     sleep: Callable[[float], None] = time.sleep,
 ) -> None:
-    """Poll until the query finishes; raise ``SourceAccessError`` unless it succeeded."""
     deadline = time.monotonic() + athena.query_timeout_seconds
     while True:
         execution = client.get_query_execution(QueryExecutionId=query_id)["QueryExecution"]
@@ -157,7 +141,6 @@ def wait(
 
 
 def rows(client: Any, query_id: str) -> Iterator[Dict[str, Any]]:
-    """Every result row as ``{column: typed value}``, paged 1000 rows at a time."""
     paginator = client.get_paginator("get_query_results")
     columns: Optional[List[Tuple[str, str]]] = None
     for page in paginator.paginate(QueryExecutionId=query_id):
@@ -168,7 +151,6 @@ def rows(client: Any, query_id: str) -> Iterator[Dict[str, Any]]:
                 (info["Name"], info.get("Type", "varchar"))
                 for info in result_set["ResultSetMetadata"]["ColumnInfo"]
             ]
-            # A SELECT's first row is the header row.
             page_rows = page_rows[1:]
         for row in page_rows:
             cells = row.get("Data", [])

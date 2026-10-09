@@ -1,5 +1,3 @@
-"""The BSP trigger payload contract."""
-
 from __future__ import annotations
 
 import json
@@ -11,8 +9,6 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 
 
 class DataType(str, Enum):
-    """Values permitted in ``fieldDataType``, upper case as the Trigger Backbone expects."""
-
     STRING = "STRING"
     INTEGER = "INTEGER"
     DECIMAL = "DECIMAL"
@@ -21,19 +17,14 @@ class DataType(str, Enum):
     BOOLEAN = "BOOLEAN"
 
 
-#: How a DATE field's value is written: YY-MM-DD, as the payload specification
-#: gives for Date of Request (2026-06-10 goes out as 26-06-10).
 DATE_FORMAT = "%y-%m-%d"
 
 
-# Tokenisation policies. PII arrives tokenised; NAME only declares the upstream policy.
 POLICY_NONE = ""
 POLICY_NAME = "UK_TOK_AC_L0R0_UNC_DE"
 
 
 class PayloadBuildError(ValueError):
-    """A required field was missing, empty or unconvertible; ``check`` names the rule it broke."""
-
     def __init__(self, message: str, *, field_name: str, source_key: str, check: str):
         super().__init__(message)
         self.field_name = field_name
@@ -43,30 +34,23 @@ class PayloadBuildError(ValueError):
 
 @dataclass(frozen=True)
 class FieldSpec:
-    """One field in a trigger's payload contract."""
-
     name: str
     source: str
     data_type: DataType = DataType.STRING
     required: bool = True
     encryption_policy: str = POLICY_NONE
-    #: Applied before string conversion; used to flatten lists.
     transform: Optional[Callable[[Any], Any]] = None
-    #: Used when the source value is absent or blank.
     default: Any = None
-    #: Maximum length of the rendered value; longer values are rejected, not truncated.
     max_length: Optional[int] = None
 
 
 def normalise_identifier(value: Any) -> Any:
-    """Render an identifier that a reader widened to float as the integer it holds."""
     if isinstance(value, float) and value.is_integer():
         return int(value)
     return value
 
 
 def _stringify(value: Any, data_type: DataType, spec: FieldSpec) -> str:
-    """Render ``value`` as the string BSP expects for ``data_type``."""
     try:
         if data_type is DataType.BOOLEAN:
             if isinstance(value, str):
@@ -77,21 +61,17 @@ def _stringify(value: Any, data_type: DataType, spec: FieldSpec) -> str:
             return "true" if bool(value) else "false"
 
         if data_type is DataType.INTEGER:
-            # int(float) would silently truncate 10.7 to 10 on a count field.
             if isinstance(value, float) and not value.is_integer():
                 raise ValueError(f"not an integer: {value!r}")
             return str(int(value))
 
         if data_type is DataType.DECIMAL:
-            # Decimal(str(...)) avoids binary-float artefacts on money amounts.
             return f"{Decimal(str(value)):.2f}"
 
         if data_type is DataType.DATE:
             if isinstance(value, datetime):
                 value = value.date()
             elif not isinstance(value, date):
-                # An ISO date or timestamp string: its date part is read as a
-                # date, so anything that is not one fails rather than shipping.
                 value = date.fromisoformat(str(value).strip()[:10])
             return value.strftime(DATE_FORMAT)
 
@@ -117,13 +97,10 @@ def build_fields(
     *,
     declare_policies: bool = True,
 ) -> List[Dict[str, str]]:
-    """Project ``attributes`` through ``specs`` into BSP payload field objects."""
     fields: List[Dict[str, str]] = []
 
     for spec in specs:
         value = attributes.get(spec.source)
-        # A blank cell in the extract means the same thing as an absent column,
-        # so both fall back to the default before the required check below.
         if value is None or (isinstance(value, str) and not value.strip()):
             value = spec.default
 
@@ -183,5 +160,4 @@ def build_fields(
 
 
 def serialise(fields: List[Dict[str, str]]) -> str:
-    """The JSON string that goes into the envelope's ``payload`` field."""
     return json.dumps(fields, separators=(",", ":"), ensure_ascii=False)

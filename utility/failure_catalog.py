@@ -1,5 +1,3 @@
-"""The TBB/BSP failure catalogue, encoded."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -23,21 +21,12 @@ class Severity(str, Enum):
 
 
 class Handling(str, Enum):
-    """What the connector does on its own before escalating."""
-
-    #: Detected before any publish; the run refuses to start.
     PREFLIGHT_ABORT = "preflight_abort"
-    #: Retried in-process with exponential backoff and jitter.
     RETRY_BACKOFF = "retry_backoff"
-    #: The offending record is diverted to S3 quarantine; the run continues.
     QUARANTINE = "quarantine"
-    #: SIGTERM-driven drain: stop intake, flush, exit cleanly.
     GRACEFUL_DRAIN = "graceful_drain"
-    #: Bounded memory: streaming reads and a capped producer queue.
     BACKPRESSURE = "backpressure"
-    #: Counted and reported in the run manifest; no automatic remediation.
     RECONCILE_REPORT = "reconcile_report"
-    #: Outside the connector boundary - classify and notify only.
     NONE = "none"
 
 
@@ -90,10 +79,8 @@ class Scenario:
         }
 
 
-# Sentinel exit codes
-
 EXIT_OK = 0
-EXIT_WORK_REMAINING = 75  # EX_TEMPFAIL: drained on SIGTERM, more work pending.
+EXIT_WORK_REMAINING = 75
 
 
 SCENARIOS: Dict[str, Scenario] = {}
@@ -105,8 +92,6 @@ def _register(scenario: Scenario) -> Scenario:
     SCENARIOS[scenario.key] = scenario
     return scenario
 
-
-# AWS infrastructure
 
 CONTAINER_FAILURE = _register(
     Scenario(
@@ -329,7 +314,6 @@ FRED_AUDIT_STORE_FAILURE = _register(
     )
 )
 
-# Databricks / TED layer
 
 TED_JOB_FAILURE = _register(
     Scenario(
@@ -408,7 +392,6 @@ RECONCILIATION_FAILURE = _register(
     )
 )
 
-# Kafka / BSP platform
 
 HIGH_PUBLISH_LATENCY = _register(
     Scenario(
@@ -574,7 +557,6 @@ SCHEMA_REGISTRY_UNAVAILABLE = _register(
     )
 )
 
-# Security
 
 AUTHENTICATION_FAILURE = _register(
     Scenario(

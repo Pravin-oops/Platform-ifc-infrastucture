@@ -1,5 +1,3 @@
-"""The upstream reconciliation gate."""
-
 from __future__ import annotations
 
 import logging
@@ -18,20 +16,14 @@ from utility.connector_utility import SourceAccessError
 
 logger = logging.getLogger(__name__)
 
-#: The one status that lets a run proceed.
 STATUS_SUCCESS = "SUCCESS"
-#: The model ran, but upstream's reconciliation did not balance.
 STATUS_RECON_FAILED = "RECON_FAILED"
-#: The dbt model itself did not run.
 STATUS_FAILED = "FAILED"
 
-#: Upstream reconciled SUCCESS with zero records: nothing to publish, and that
-#: is a delivered month, not a failure.
 OUTCOME_NO_DATA = "NO_DATA_THIS_MONTH"
 
 REQUIRED_FIELDS = ("last_modified_ts", "status")
 
-#: The row details quoted in every reason, in this order, when present.
 _DETAIL_FIELDS = (
     "status",
     "source_count",
@@ -58,12 +50,10 @@ class ReconDecision:
 
     @property
     def no_data(self) -> bool:
-        """A genuine empty month: the run stops, but successfully."""
         return self.outcome == OUTCOME_NO_DATA
 
     @property
     def blocking_scenario(self) -> catalog.Scenario:
-        """The catalogue scenario behind a block."""
         if not self.scenario_key:
             return catalog.UNKNOWN
         return catalog.get(self.scenario_key)
@@ -94,7 +84,6 @@ def _blocked(outcome: str, scenario, reason: str, **extra) -> ReconDecision:
 
 
 def parse_last_modified(value: Any) -> Optional[datetime]:
-    """The row's ``last_modified_ts`` as a naive UTC datetime, or ``None``."""
     if isinstance(value, datetime):
         if value.tzinfo is not None:
             return value.astimezone(timezone.utc).replace(tzinfo=None)
@@ -105,7 +94,6 @@ def parse_last_modified(value: Any) -> Optional[datetime]:
 
 
 def _as_int(value: Any) -> Optional[int]:
-    """Counts arrive as numbers (bigint columns) or, defensively, as strings."""
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
@@ -121,12 +109,10 @@ def _as_int(value: Any) -> Optional[int]:
 
 
 def normalise_target(name: str) -> str:
-    """``target_table_name`` compared without backticks or case."""
     return str(name).replace("`", "").strip().lower()
 
 
 def recon_query(table: str, target: str) -> Tuple[str, List[str]]:
-    """The SQL for the newest row naming ``target``, and its parameters."""
     sql = (
         f"SELECT * FROM {athena_table(table)} "
         "WHERE lower(replace(target_table_name, '`', '')) = ? "
@@ -137,7 +123,6 @@ def recon_query(table: str, target: str) -> Tuple[str, List[str]]:
 
 
 def _json_safe(row: Dict[str, Any]) -> Dict[str, Any]:
-    """The row as it goes into the summary, manifest and alert: JSON values only."""
     return {
         key: value.isoformat() if isinstance(value, (date, datetime)) else value
         for key, value in row.items()
@@ -157,7 +142,6 @@ def evaluate(
     client: Any = None,
     sleep: Callable[[float], None] = time.sleep,
 ) -> ReconDecision:
-    """Decide from the recon table whether upstream has produced this month's data."""
     table, target = settings.table, settings.target_table
     if not table or not target:
         raise ValueError("recon.table and the run's recon target must be resolved before evaluating")
@@ -202,7 +186,6 @@ def evaluate(
             **common,
         )
 
-    # 1. Is it this month's?
     last_modified = parse_last_modified(raw.get("last_modified_ts"))
     if last_modified is None:
         return _blocked(
@@ -223,7 +206,6 @@ def evaluate(
             **common,
         )
 
-    # 2. Did the model run, and did upstream's own reconciliation pass?
     status = str(raw.get("status", "")).strip().upper()
 
     if status == STATUS_FAILED:
@@ -245,7 +227,6 @@ def evaluate(
         )
 
     if status != STATUS_SUCCESS:
-        # Only the three contract statuses are trusted; anything else blocks the run.
         return _blocked(
             "UPSTREAM_RECON_UNREADABLE",
             catalog.SCHEMA_VALIDATION_FAILURE,
@@ -254,7 +235,6 @@ def evaluate(
             **common,
         )
 
-    # 3. It succeeded - but did it produce anything?
     source_count = _as_int(raw.get("source_count"))
     target_count = _as_int(raw.get("target_count"))
     if source_count is None or target_count is None:
@@ -266,8 +246,6 @@ def evaluate(
         )
 
     if source_count == 0 and target_count == 0:
-        # Stops the run - there is nothing to publish - but it is not a
-        # failure: no catalogue scenario, exit 0.
         return ReconDecision(
             proceed=False,
             outcome=OUTCOME_NO_DATA,
@@ -279,7 +257,6 @@ def evaluate(
             **common,
         )
 
-    # SUCCESS with mismatched counts contradicts itself: stop rather than publish.
     if source_count != target_count:
         return _blocked(
             "UPSTREAM_COUNT_MISMATCH",

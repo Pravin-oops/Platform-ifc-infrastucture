@@ -1,5 +1,3 @@
-"""HTTP health endpoints for the ECS container health check."""
-
 from __future__ import annotations
 
 import json
@@ -11,14 +9,10 @@ from typing import Any, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-#: If the run loop has not checked in for this long, report not-live so ECS
-#: restarts the task rather than leaving it wedged on a stuck socket.
 DEFAULT_LIVENESS_TIMEOUT_SECONDS = 300.0
 
 
 class HealthState:
-    """Shared, thread-safe view of the connector's condition."""
-
     def __init__(self, *, liveness_timeout: float = DEFAULT_LIVENESS_TIMEOUT_SECONDS):
         self._lock = threading.Lock()
         self._started_at = time.time()
@@ -32,7 +26,6 @@ class HealthState:
             self._last_heartbeat = time.time()
 
     def mark_draining(self) -> None:
-        # Stays live, so the drain completes rather than being killed halfway.
         with self._lock:
             self._draining = True
 
@@ -64,7 +57,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
-    def do_GET(self) -> None:  # noqa: N802 - required by BaseHTTPRequestHandler
+    def do_GET(self) -> None:  # noqa: N802
         snapshot = self.state.snapshot()
         path = self.path.split("?", 1)[0].rstrip("/") or "/"
 
@@ -75,8 +68,7 @@ class _Handler(BaseHTTPRequestHandler):
         else:
             self._respond(404, {"error": "not found", "path": path})
 
-    def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - base class name
-        # Probes log at DEBUG; the parameter keeps the base class's name for keyword calls.
+    def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
         logger.debug("health probe: " + format, *args)
 
 
@@ -92,7 +84,6 @@ class HealthServer:
         self._state = state
         self._host = host
         self._port = port
-        # A lambda, not ``dict``, so the attribute's type stays wrappable in staticmethod().
         self._metrics_provider: Callable[[], Dict[str, Any]] = (
             metrics_provider if metrics_provider is not None else lambda: {}
         )
@@ -109,8 +100,6 @@ class HealthServer:
         try:
             self._server = ThreadingHTTPServer((self._host, self._port), handler)
         except OSError as exc:
-            # A health endpoint that cannot bind must not stop the connector
-            # from doing its job; ECS falls back to process liveness.
             logger.error(
                 "Health server could not bind; continuing without health endpoints",
                 extra={"host": self._host, "port": self._port, "error": str(exc)},

@@ -1,5 +1,3 @@
-"""The Kafka publishing surface."""
-
 from __future__ import annotations
 
 import logging
@@ -17,17 +15,13 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class DeliveryStats:
-    """Aggregated delivery outcomes. Mutated from the librdkafka poll thread."""
-
     success: int = 0
     failure: int = 0
     by_scenario: Dict[str, int] = field(default_factory=dict)
-    #: topic -> partition -> (min offset, max offset)
     offsets: Dict[str, Dict[int, Tuple[int, int]]] = field(default_factory=dict)
     latency_ms_total: float = 0.0
     latency_ms_max: float = 0.0
     first_failure: Optional[Classification] = None
-    #: Trigger IDs the broker acknowledged, with partition and offset.
     acked: Dict[str, Tuple[Optional[int], Optional[int]]] = field(default_factory=dict)
     failed: List[str] = field(default_factory=list)
 
@@ -44,8 +38,6 @@ class DeliveryStats:
             "ack_latency_ms_avg": round(self.latency_ms_total / acked, 1) if self.success else 0.0,
             "ack_latency_ms_max": round(self.latency_ms_max, 1),
             "first_failure": self.first_failure.to_dict() if self.first_failure else None,
-            # The full acked map can hold tens of thousands of ids; the manifest
-            # carries the offset ranges instead, and a sample for spot checks.
             "failed_trigger_ids": self.failed[:50],
             "acked_trigger_id_sample": list(self.acked)[:10],
         }
@@ -71,7 +63,6 @@ class Publisher:
 
         self._lock = threading.Lock()
         self.stats = DeliveryStats()
-        #: Send times, so ack latency is measured rather than guessed.
         self._sent_at: Dict[str, float] = {}
 
     def _record_offset(self, topic: str, partition: int, offset: int) -> None:
@@ -83,13 +74,12 @@ class Publisher:
         )
 
     def _on_delivery(self, err: Any, msg: Any, *, trigger_id: str) -> None:
-        # librdkafka may pass no message on some errors, and the C object can raise after free.
         kafka_key = None
         if msg is not None:
             try:
                 key = msg.key()
                 kafka_key = key.decode("utf-8") if isinstance(key, bytes) else key
-            except Exception:  # pragma: no cover - defensive around the C object
+            except Exception:  # pragma: no cover
                 pass
 
         with self._lock:
@@ -144,8 +134,6 @@ class Publisher:
                 self.stats.latency_ms_total += latency
                 self.stats.latency_ms_max = max(self.stats.latency_ms_max, latency)
 
-        # Logged on the broker's acknowledgement, not on produce(): only an ack
-        # means the record is on the topic.
         logger.debug(
             "Message published: topic=%s partition=%s offset=%s trigger_id=%s",
             self._topic,
@@ -171,7 +159,6 @@ class Publisher:
         callback: Callable[[Any, Any], None],
         headers: Optional[List[Tuple[str, bytes]]] = None,
     ) -> None:
-        """Enqueue, waiting for the local queue to drain rather than growing it."""
         deadline = time.monotonic() + self._max_backpressure
         waits = 0
 
@@ -184,7 +171,6 @@ class Publisher:
                     headers=headers,
                     on_delivery=callback,
                 )
-                # Serve delivery callbacks without blocking the produce loop.
                 self._producer.poll(0)
                 if waits:
                     self._metrics.incr("BackpressureWaits", waits)
@@ -207,7 +193,6 @@ class Publisher:
                         context={"topic": topic},
                     )
 
-                # poll() both drains the queue and serves callbacks.
                 self._producer.poll(self._poll_timeout)
 
             except Exception as exc:
@@ -239,7 +224,6 @@ class Publisher:
                 headers=headers,
             )
         except PublishError:
-            # Never queued, so no delivery report will ever clear the send time.
             with self._lock:
                 self._sent_at.pop(trigger_id, None)
             raise
@@ -253,11 +237,10 @@ class Publisher:
     def queue_depth(self) -> int:
         try:
             return len(self._producer)
-        except TypeError:  # pragma: no cover - not all stubs implement __len__
+        except TypeError:  # pragma: no cover
             return 0
 
     def flush(self, timeout_seconds: float) -> int:
-        """Block until the queue drains or ``timeout_seconds`` elapses."""
         logger.debug(
             "Flushing producer", extra={"queue_depth": self.queue_depth, "timeout_seconds": timeout_seconds}
         )

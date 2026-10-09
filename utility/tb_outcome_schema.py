@@ -1,5 +1,3 @@
-"""Build and validate the TriggerBackboneTopicSchema envelope."""
-
 from __future__ import annotations
 
 import calendar
@@ -27,23 +25,19 @@ from utility.trigger_payload import (
 
 logger = logging.getLogger(__name__)
 
-# Envelope constants; the input event's own triggerType is ignored.
 TRIGGER_TYPE = "KYCRefresh"
 ORIGINATING_BU = "UK-C"
 ID_TYPE = "Customer"
 ID_SYSTEM = "UK-C CRIME"
 
-#: BDP column holding the counterparty CSID: the envelope's idValue.
 CSID_SOURCE = "counterparty_csid_sds"
 
-#: Avro int is signed 32-bit; sequence numbers must stay inside it.
 MAX_SEQUENCE = 2**31 - 1
 
 _BUSINESS_MONTH = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 
 
 def rfc3339(moment: datetime) -> str:
-    """UTC RFC 3339 with nanosecond precision, e.g. ``2026-07-15T09:30:01.123456000Z``."""
     utc = moment.astimezone(timezone.utc)
     return f"{utc:%Y-%m-%dT%H:%M:%S}.{utc.microsecond:06d}000Z"
 
@@ -53,14 +47,12 @@ def now_timestamp() -> str:
 
 
 def previous_month(run_date: date) -> str:
-    """The business month a run on ``run_date`` delivers: the month before it."""
     if run_date.month == 1:
         return f"{run_date.year - 1:04d}-12"
     return f"{run_date.year:04d}-{run_date.month - 1:02d}"
 
 
 def month_end_timestamp(business_month: str) -> str:
-    """Last instant of ``YYYY-MM``, e.g. ``2026-06-30T23:59:59.999999999Z``."""
     if not _BUSINESS_MONTH.match(business_month or ""):
         raise ValueError(f"business month must be YYYY-MM, got {business_month!r}")
     year, month = int(business_month[:4]), int(business_month[5:])
@@ -69,7 +61,6 @@ def month_end_timestamp(business_month: str) -> str:
 
 
 def normalise_csid(value: Any) -> Optional[str]:
-    """The CSID as a string, or None when it is absent or unusable."""
     if value is None or isinstance(value, bool):
         return None
     if isinstance(value, float):
@@ -81,8 +72,6 @@ def normalise_csid(value: Any) -> Optional[str]:
 
 
 class SequenceAllocator(Protocol):
-    """Numbers the batch and counts each customer's occurrences."""
-
     def allocate(self, csid: str) -> int: ...
 
     def occurrences(self, csid: str) -> int: ...
@@ -90,8 +79,6 @@ class SequenceAllocator(Protocol):
 
 @dataclass
 class TriggerEvent:
-    """One row of a trigger's Athena table."""
-
     trigger_sub_type: str
     attributes: Dict[str, Any]
     trigger_type: Optional[str] = None
@@ -105,8 +92,6 @@ class TriggerEvent:
 
 @dataclass
 class BuiltRecord:
-    """An envelope ready to serialise, plus everything the audit trail needs."""
-
     trigger_id: str
     record: Dict[str, Any]
     payload_fields: List[Dict[str, str]]
@@ -117,13 +102,10 @@ class BuiltRecord:
 
     @property
     def kafka_key(self) -> str:
-        """Message key: the trigger ID, as in the Trigger Backbone's reference records."""
         return self.trigger_id
 
 
 class EnvelopeBuilder:
-    """Turns ``TriggerEvent`` objects into validated Avro-ready envelopes."""
-
     def __init__(
         self,
         *,
@@ -135,23 +117,17 @@ class EnvelopeBuilder:
     ):
         if not originating_system or not str(originating_system).strip():
             raise ValueError("EnvelopeBuilder needs the environment's originating system code")
-        #: triggerOriginatingSystem, and the trigger ID's first part.
         self._system = str(originating_system).strip()
-        #: Only where the upstream data is tokenised (PROD) do fields name their
-        #: policy; required, so no caller can leave it to a default.
         self._declare_policies = bool(declare_encryption_policies)
         self._schema = avro_schema
         self._parsed_schema = parse_schema(avro_schema)
         if sequence_allocator is None:
-            # Imported here to avoid a cycle: the allocator needs MAX_SEQUENCE from this module.
             from utility.sequence_allocator import (
                 SequenceAllocator as _DefaultAllocator,
             )
 
             sequence_allocator = _DefaultAllocator()
         self._sequence = sequence_allocator
-        # Fixed for the life of the builder, so every record of a run carries
-        # the same business month even if the run crosses midnight.
         self._business_month = business_month or previous_month(execution_date())
         self._event_timestamp = month_end_timestamp(self._business_month)
         self._assert_subtypes_encodable()
@@ -169,14 +145,13 @@ class EnvelopeBuilder:
         return self._event_timestamp
 
     def _assert_subtypes_encodable(self) -> None:
-        """Fail at construction if a definition cannot be written to the wire."""
         spec = next(
             (f for f in self._schema.get("fields", []) if f.get("name") == "triggerSubType"),
             None,
         )
         type_ = spec.get("type") if spec else None
         if not isinstance(type_, dict) or type_.get("type") != "enum":
-            return  # plain string schema: any spelling encodes
+            return
 
         symbols = set(type_.get("symbols", []))
         missing = sorted(definitions.PUBLISHED_SUB_TYPES - symbols)
@@ -194,7 +169,6 @@ class EnvelopeBuilder:
         definition: TriggerDefinition,
         occurrence: int = 1,
     ) -> str:
-        """Canonical, stable identity of the business event."""
         discriminator = (
             event.attributes.get(definition.event_key_source) if definition.event_key_source else None
         )
@@ -202,8 +176,6 @@ class EnvelopeBuilder:
         parts = {
             "system": self._system,
             "triggerType": TRIGGER_TYPE,
-            # The published symbol, so the identity a consumer can reconstruct
-            # from the message matches the one the connector hashed.
             "triggerSubType": definition.published_sub_type,
             "businessMonth": self._business_month,
             "idType": ID_TYPE,
@@ -215,7 +187,6 @@ class EnvelopeBuilder:
         return json.dumps(parts, sort_keys=True, separators=(",", ":"))
 
     def trigger_id(self, definition: TriggerDefinition, sequence: int) -> str:
-        """``{system}_{triggerType}_{triggerSubType}_{timestamp}_{sequenceNumber}``."""
         return (
             f"{self._system}_"
             f"{TRIGGER_TYPE}_"
@@ -225,8 +196,6 @@ class EnvelopeBuilder:
         )
 
     def build(self, event: TriggerEvent) -> BuiltRecord:
-        """Build one envelope, or raise ``RecordRejected`` for quarantine."""
-        # The run's trigger, already validated when the config was loaded.
         definition = definitions.resolve(event.trigger_sub_type)
 
         csid = event.csid
@@ -261,8 +230,6 @@ class EnvelopeBuilder:
                 },
             ) from exc
 
-        # The batch position is the sequenceNumber and ends the trigger ID; the
-        # customer's occurrence count separates repeats in the business key.
         sequence = self._sequence.allocate(csid)
         occurrence = self._sequence.occurrences(csid)
         business_key = self.business_key(event, definition, occurrence=occurrence)
@@ -271,7 +238,6 @@ class EnvelopeBuilder:
         record = {
             "triggerID": trigger_id,
             "triggerType": TRIGGER_TYPE,
-            # triggerSubType is an Avro enum, so it must be the definition's published symbol.
             "triggerSubType": definition.published_sub_type,
             "timestamp": self._event_timestamp,
             "triggerPostingTimestamp": now_timestamp(),
@@ -281,8 +247,6 @@ class EnvelopeBuilder:
             "idType": ID_TYPE,
             "idValue": csid,
             "idSystem": ID_SYSTEM,
-            # Nullable in the schema, and the trigger tables carry no upstream
-            # trigger id: an IFC trigger is the origin, not a derived event.
             "upstreamTriggerID": None,
             "payload": serialise(payload_fields),
         }
@@ -300,11 +264,10 @@ class EnvelopeBuilder:
         )
 
     def validate(self, record: Dict[str, Any], definition: Optional[TriggerDefinition] = None) -> None:
-        """Validate against the local .avsc before the record reaches Kafka."""
         try:
             if avro_validate(record, self._parsed_schema, raise_errors=False):
                 return
-        except Exception as exc:  # fastavro raises on structurally odd input
+        except Exception as exc:
             raise RecordRejected(
                 f"Avro validation error: {exc}",
                 catalog.SCHEMA_VALIDATION_FAILURE,
@@ -333,5 +296,3 @@ class EnvelopeBuilder:
                 "check": "Avro validation",
             },
         )
-
-

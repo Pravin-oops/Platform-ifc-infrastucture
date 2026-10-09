@@ -1,5 +1,3 @@
-"""The connector run loop."""
-
 from __future__ import annotations
 
 import logging
@@ -38,7 +36,6 @@ from utility.tb_outcome_schema import (
 
 logger = logging.getLogger(__name__)
 
-#: How often the produce loop reports progress and refreshes health/metrics.
 PROGRESS_INTERVAL = 500
 
 
@@ -54,9 +51,7 @@ class BatchResult:
     outcome: str
     exit_code: int
     classification: Optional[Classification] = None
-    #: The table, business date and Athena query execution id this run read.
     source: Dict[str, Any] = field(default_factory=dict)
-    #: Earliest and latest triggerPostingTimestamp published, and their sub-type.
     batch_start_timestamp: Optional[str] = None
     batch_end_timestamp: Optional[str] = None
     published_trigger_subtype: Optional[str] = None
@@ -85,12 +80,8 @@ class ConnectorRunner:
         self._producer_factory = producer_factory
 
         self._run_id = new_run_id()
-        # Resolved here, before any network call, so an environment with no
-        # code configured stops the run instead of publishing under another's.
         self._originating_system = settings.originating_system
         self._sequence = SequenceAllocator()
-        # Fixed once, so the rows queried and the business month stamped on them
-        # cannot disagree even if the run crosses midnight at a month end.
         self._business_month = previous_month(execution_date())
         self._source = make_source(
             settings.source, trigger=settings.trigger, business_month=self._business_month
@@ -118,7 +109,6 @@ class ConnectorRunner:
         self._batch_start_timestamp: Optional[str] = None
         self._batch_end_timestamp: Optional[str] = None
         self._published_trigger_subtype: Optional[str] = None
-        #: (column, check) -> count and first reason, for this batch's rejections.
         self._rejections: Dict[Tuple[str, str], Dict[str, Any]] = {}
 
         set_log_context(run_id=self._run_id, environment=settings.app.environment)
@@ -129,7 +119,6 @@ class ConnectorRunner:
 
     @property
     def schema_id(self) -> Optional[int]:
-        """The id records were framed with; None if the run stopped before startup finished."""
         return self._stack.schema_id if self._stack else None
 
     @property
@@ -142,11 +131,9 @@ class ConnectorRunner:
 
     @property
     def last_result(self) -> Optional[BatchResult]:
-        """The finished batch, for a caller that needs more than the exit code."""
         return self._last_result
 
     def start(self) -> None:
-        """Preflight, then build the publishing stack. Raises on any blocker."""
         settings = self._settings
         factory = KafkaStackFactory(
             settings,
@@ -185,7 +172,6 @@ class ConnectorRunner:
         self._log_kafka_target()
 
     def _log_kafka_target(self) -> None:
-        """One line that says where this run publishes and how records are framed."""
         assert self._stack is not None
         settings = self._settings
         context = self._stack.schema_context
@@ -229,7 +215,6 @@ class ConnectorRunner:
         raw: Optional[str] = None,
         counters: RunCounters,
     ) -> None:
-        """Quarantine the rejected record to S3."""
         counters.quarantined += 1
         self._metrics.incr("RecordsQuarantined")
         self._note_rejection(trigger_id, rejection, row)
@@ -244,7 +229,6 @@ class ConnectorRunner:
         )
 
     def _note_rejection(self, trigger_id: Optional[str], rejection: RecordRejected, row: Optional[int]) -> None:
-        """Count the rejection by column and check; the first of each kind is logged at WARNING."""
         detail = rejection.detail
         field_name, source_key = detail.get("field_name"), detail.get("source_key")
         column = f"{field_name} ({source_key})" if field_name and source_key else field_name or "-"
@@ -313,7 +297,6 @@ class ConnectorRunner:
         counters.published += 1
 
     def _publish_with_retry(self, built: BuiltRecord, payload: bytes) -> None:
-        """Publish one record, retrying a retryable failure with backoff."""
         assert self._stack is not None
         publisher = self._stack.publisher
 
@@ -324,8 +307,6 @@ class ConnectorRunner:
             return exc.scenario.retryable and not self._breaker.is_open
 
         retry(
-            # No Kafka headers: the Trigger Backbone reads everything from the
-            # envelope, and its reference records carry an empty header list.
             lambda: publisher.publish(key=built.kafka_key, value=payload, trigger_id=built.trigger_id),
             attempts=self._settings.resilience.max_publish_attempts,
             policy=self._backoff,
@@ -343,15 +324,12 @@ class ConnectorRunner:
         reconciliation,
         stream_exhausted: bool,
     ):
-        """Decide the final outcome of a run that did not fail outright."""
         settings = self._settings
 
         if outcome != "SUCCESS":
             return outcome, exit_code, classification
 
         if stream_exhausted and not counters.records_parsed:
-            # No rows for the month on a scheduled run means upstream produced
-            # nothing. That is a reportable condition, not a clean run.
             return (
                 "ZERO_RECORDS",
                 catalog.TED_MISSING_SOURCE_DATA.exit_code,
@@ -431,8 +409,6 @@ class ConnectorRunner:
                 stream_exhausted = True
 
         except SourceAccessError as exc:
-            # The Athena query could not be run: nothing was read, so nothing
-            # can be published. A HIGH-severity Trigger BDP read failure.
             classification = classify(exc, operation="run_batch", topic=settings.kafka.topic)
             outcome = "SOURCE_UNREADABLE"
             exit_code = classification.exit_code
@@ -457,8 +433,6 @@ class ConnectorRunner:
             exit_code = classification.exit_code
             logger.exception("Batch failed", extra=classification.to_dict())
 
-        # Flush regardless of how the loop ended: messages already queued must
-        # be given their chance to land before anything is reported.
         counters.unflushed = self._drain()
 
         stats = self._stack.publisher.stats
@@ -538,7 +512,6 @@ class ConnectorRunner:
                 counters=counters,
             )
         except PublishError as exc:
-            # The breaker has already counted every failed attempt.
             if not exc.scenario.retryable:
                 raise
             logger.error(
@@ -551,7 +524,6 @@ class ConnectorRunner:
         timeout = float(self._settings.kafka.flush_timeout_seconds)
 
         if self._shutdown.is_set:
-            # Never flush for longer than the container has left to live.
             timeout = min(timeout, float(self._settings.run.shutdown_grace_seconds))
 
         return self._stack.publisher.flush(timeout)
@@ -586,7 +558,6 @@ class ConnectorRunner:
         started_at: str,
         duration_seconds: float,
     ) -> None:
-        """Write the manifest, alert, and emit metrics for a finished run."""
         counters = result.counters if result else RunCounters()
         reconciliation = result.reconciliation if result else reconcile(counters)
 

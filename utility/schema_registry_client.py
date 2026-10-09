@@ -1,5 +1,3 @@
-"""BSP Schema Registry REST client."""
-
 from __future__ import annotations
 
 import json
@@ -22,13 +20,10 @@ class RegisteredSchema:
     schema_id: int
     version: int
     schema: Dict[str, Any]
-    #: The registry node that answered.
     url: str = ""
 
 
 class SchemaRegistryClient:
-    """Reads from one registry node, or fails over across several."""
-
     def __init__(
         self,
         base_url: Union[str, Sequence[str]],
@@ -45,7 +40,6 @@ class SchemaRegistryClient:
         if not self._urls:
             raise ValueError("SchemaRegistryClient needs at least one registry URL")
         self._preferred = self._urls[0]
-        #: None for the DEV registry (8082), which takes no bearer token.
         self._tokens = token_provider
         self._verify: Any = ca_location if ca_location else True
         self._timeout = timeout
@@ -61,7 +55,6 @@ class SchemaRegistryClient:
         return [self._preferred] + [url for url in self._urls if url != self._preferred]
 
     def _request(self, path: str) -> Tuple[Any, str]:
-        """GET ``path`` from the first node that answers; returns (body, node)."""
         last_error: Optional[ConnectorError] = None
 
         for base in self._ordered_urls():
@@ -119,8 +112,6 @@ class SchemaRegistryClient:
             return response.json()
 
         if response.status_code in (401, 403) and not force_refresh and self._tokens is not None:
-            # The cached token may have been revoked or rotated early; one
-            # forced refresh distinguishes an expiry from a real ACL problem.
             logger.warning(
                 "Schema Registry returned %s; refreshing the BAM token and retrying once",
                 response.status_code,
@@ -191,9 +182,7 @@ class SchemaRegistryClient:
 
 
 def value_subject(topic: str) -> str:
-    """TopicNameStrategy, which is what BSP registers subjects under."""
     return f"{topic}-value"
-
 
 
 def _field_types(schema: Dict[str, Any]) -> Dict[str, Any]:
@@ -201,7 +190,6 @@ def _field_types(schema: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _optional_fields(schema: Dict[str, Any]) -> Set[str]:
-    """Fields that a consumer can do without: nullable, or carrying a default."""
     optional: Set[str] = set()
     for field in schema.get("fields", []):
         type_ = field.get("type")
@@ -212,7 +200,6 @@ def _optional_fields(schema: Dict[str, Any]) -> Set[str]:
 
 
 def _enum_of(type_: Any) -> Optional[Dict[str, Any]]:
-    """The enum definition inside a field type, unwrapping a nullable union."""
     candidates = type_ if isinstance(type_, list) else [type_]
     for candidate in candidates:
         if isinstance(candidate, dict) and candidate.get("type") == "enum":
@@ -221,7 +208,6 @@ def _enum_of(type_: Any) -> Optional[Dict[str, Any]]:
 
 
 def _compare_enum(name: str, local: Dict[str, Any], registered: Dict[str, Any]) -> List[str]:
-    """Compare two enum field types symbol by symbol."""
     findings: List[str] = []
     local_symbols = list(local.get("symbols", []))
     registered_symbols = set(registered.get("symbols", []))
@@ -249,7 +235,6 @@ def _compare_enum(name: str, local: Dict[str, Any], registered: Dict[str, Any]) 
 
 
 def compare_schemas(local: Dict[str, Any], registered: Dict[str, Any]) -> Tuple[bool, List[str]]:
-    """Compare the bundled schema with the registered one."""
     findings: List[str] = []
 
     local_types = _field_types(local)
@@ -294,8 +279,6 @@ def compare_schemas(local: Dict[str, Any], registered: Dict[str, Any]) -> Tuple[
     local_name = f"{local.get('namespace', '')}.{local.get('name', '')}"
     registered_name = f"{registered.get('namespace', '')}.{registered.get('name', '')}"
     if local_name != registered_name:
-        # Not blocking: Avro resolves records by field, not by full name, and
-        # the topic document itself uses different namespaces across schemas.
         findings.append(
             f"INFO: record name differs - local {local_name!r} vs registered {registered_name!r}"
         )

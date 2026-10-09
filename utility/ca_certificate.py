@@ -1,5 +1,3 @@
-"""Barclays root CA, fetched from Secrets Manager at container start."""
-
 from __future__ import annotations
 
 import logging
@@ -18,7 +16,6 @@ logger = logging.getLogger(__name__)
 
 
 def install(settings: CaCertificateSettings, *, session: Optional[Any] = None) -> Optional[str]:
-    """Write the CA from its secret to ``settings.path`` and return that path."""
     if not settings.secret_id:
         logger.warning(
             "ca_certificate.secret_id is not set; expecting the CA files at the configured "
@@ -44,11 +41,8 @@ def _read_secret(settings: CaCertificateSettings, session: Any) -> str:
         client = session.client("secretsmanager", region_name=settings.secret_region)
         response = client.get_secret_value(SecretId=settings.secret_id)
     except ClientError as exc:
-        # Access denied, missing secret or KMS failure: misconfiguration, not worth a retry.
         code = exc.response.get("Error", {}).get("Code", "ClientError")
         hint = (
-            # The template creates the secret empty; it has no value, and so
-            # reads as not found, until the PEM is stored by hand.
             " - the secret may exist but still be empty: store the CA PEM as its value"
             if code == "ResourceNotFoundException"
             else ""
@@ -79,7 +73,6 @@ def _read_secret(settings: CaCertificateSettings, session: Any) -> str:
             context=context,
         )
     if "PRIVATE KEY-----" in pem:
-        # Never write a key to a world-readable trust file; never log its value.
         raise PreflightError(
             "CA certificate secret contains a private key; store only the CA certificate",
             catalog.AUTHENTICATION_FAILURE,
@@ -92,7 +85,6 @@ def _write(path: str, pem: str) -> None:
     directory = os.path.dirname(path) or "."
     try:
         os.makedirs(directory, exist_ok=True)
-        # Written beside the target and renamed, so a reader never sees half a file.
         fd, staging = tempfile.mkstemp(dir=directory, prefix=".ca-", suffix=".pem")
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(pem)

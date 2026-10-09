@@ -1,5 +1,3 @@
-"""BSP client configuration and BAM token lifecycle."""
-
 from __future__ import annotations
 
 import base64
@@ -15,13 +13,10 @@ from utility.error_classifier import PreflightError
 
 logger = logging.getLogger(__name__)
 
-#: Used when the JWT carries no usable exp claim. BAM tokens are short-lived;
-#: an hour is conservative and still avoids re-authenticating per message.
 DEFAULT_TOKEN_LIFETIME_SECONDS = 3600
 
 
 def normalize_token(raw: Any) -> str:
-    """Coerce whatever ``get_token`` returned into a bare JWT string."""
     if isinstance(raw, tuple):
         token = raw[0] if raw else None
     elif isinstance(raw, dict):
@@ -44,7 +39,6 @@ def normalize_token(raw: Any) -> str:
         raise PreflightError(
             f"Malformed JWT from BAM: expected 3 segments, got {token.count('.') + 1}",
             catalog.AUTHENTICATION_FAILURE,
-            # Prefix only - never log a whole bearer token.
             context={"token_prefix": token[:24]},
         )
 
@@ -52,10 +46,9 @@ def normalize_token(raw: Any) -> str:
 
 
 def token_expiry(token: str) -> Optional[float]:
-    """Read the ``exp`` claim without verifying the signature."""
     try:
         payload = token.split(".")[1]
-        payload += "=" * (-len(payload) % 4)  # restore base64url padding
+        payload += "=" * (-len(payload) % 4)
         claims = json.loads(base64.urlsafe_b64decode(payload))
     except (IndexError, ValueError, binascii.Error, UnicodeDecodeError):
         logger.debug("Could not decode JWT claims; falling back to a fixed lifetime")
@@ -67,8 +60,6 @@ def token_expiry(token: str) -> Optional[float]:
 
 @runtime_checkable
 class TokenProvider(Protocol):
-    """What a consumer of a bearer token actually needs."""
-
     @property
     def seconds_remaining(self) -> float: ...
 
@@ -76,8 +67,6 @@ class TokenProvider(Protocol):
 
 
 class BSPTokenProvider:
-    """Caches and refreshes the BAM token used for the Schema Registry."""
-
     def __init__(
         self,
         token_factory: Callable[[], Any],
@@ -125,8 +114,6 @@ class BSPTokenProvider:
 
 
 class BSPClient:
-    """Thin wrapper over ``bsp_python_client.auth.bsp_authenticator``."""
-
     def __init__(self, config_path: str, *, authenticator: Any = None):
         self._config_path = config_path
         self._authenticator = authenticator
@@ -148,7 +135,6 @@ class BSPClient:
         return self._authenticator
 
     def producer_config(self, overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """librdkafka producer properties, with the OAUTHBEARER callback wired in."""
         cached = self._kafka_config
         if cached is None:
             try:
@@ -162,8 +148,6 @@ class BSPClient:
                 ) from exc
             self._kafka_config = cached
 
-        # Copied, never handed out: the caller may add overrides, and the cached
-        # BSP config has to stay the same for the next call.
         config = dict(cached)
         if overrides:
             config.update(overrides)

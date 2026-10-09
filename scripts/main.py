@@ -1,5 +1,3 @@
-"""ECS / CLI entry point for the IFC trigger connector."""
-
 from __future__ import annotations
 
 import argparse
@@ -12,14 +10,10 @@ from typing import List, Optional
 
 from dotenv import load_dotenv
 
-# Runnable directly (`python .../scripts/main.py`) from any working directory:
-# put the app root - the directory that holds utility/ and scripts/ - on sys.path.
 APP_ROOT = Path(__file__).resolve().parent.parent
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
-# Pick up the IFC_ overlay from <app root>/.env when one is present.
-# Variables already set (e.g. by the ECS task definition) always win.
 load_dotenv(APP_ROOT / ".env", override=False)
 
 from utility import failure_catalog as catalog
@@ -30,6 +24,7 @@ from utility.resilience_utility import ShutdownSignal
 from utility.connector_config import ENVIRONMENT_VARIABLE, config_path_for, load_settings
 
 logger = logging.getLogger("ifc_trigger_connector")
+
 
 def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="ifc-connector", description="IFC trigger connector")
@@ -65,15 +60,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         configure_logging("WARNING")
         return _command_catalogue()
 
-    # Logging is configured twice on purpose: once to capture config-loading
-    # failures, then again at the level the config asks for.
     configure_logging(args.log_level or "INFO")
 
     config_path = None
     try:
         config_path = config_path_for(os.getenv(ENVIRONMENT_VARIABLE))
         settings = load_settings(config_path)
-        # IFC_RUN__TRIGGER decides which Athena table this run reads.
         settings.select_trigger(None)
     except Exception as exc:
         classification = classify(exc, operation="load_settings")

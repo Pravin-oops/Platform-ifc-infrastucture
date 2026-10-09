@@ -1,5 +1,3 @@
-"""The trigger event source: one Athena (Iceberg) table per trigger."""
-
 from __future__ import annotations
 
 import calendar
@@ -20,8 +18,6 @@ logger = logging.getLogger(__name__)
 
 
 class AthenaTriggerSource:
-    """Reads one trigger's latest month straight from its Iceberg table."""
-
     def __init__(
         self,
         settings: SourceSettings,
@@ -45,12 +41,10 @@ class AthenaTriggerSource:
 
     @property
     def business_date(self) -> date:
-        """The ``business_date`` this run reads: the last day of the business month."""
         year, month = (int(part) for part in self._business_month.split("-"))
         return date(year, month, calendar.monthrange(year, month)[1])
 
     def describe(self) -> Dict[str, Any]:
-        """What this run read: the table, the business date and the query."""
         return {
             "table": self.table,
             "business_date": self.business_date.isoformat(),
@@ -63,7 +57,6 @@ class AthenaTriggerSource:
         return self._client
 
     def query(self) -> Tuple[str, List[str]]:
-        """The SQL and its execution parameters."""
         column = sql_identifier(self._athena.business_date_column, what="business_date_column")
         sql = f"SELECT * FROM {athena_table(self.table)} WHERE CAST({column} AS DATE) = CAST(? AS DATE)"
         if self._athena.order_by:
@@ -72,7 +65,6 @@ class AthenaTriggerSource:
         return sql, [athena_query.string_literal(self.business_date.isoformat())]
 
     def check_access(self) -> str:
-        """Preflight probe: confirm the table exists and is visible to this role."""
         database, table = self.table.split(".")
         self._athena_client().get_table_metadata(
             CatalogName=self._athena.catalog, DatabaseName=database, TableName=table
@@ -80,8 +72,6 @@ class AthenaTriggerSource:
         return self.table
 
     def stream(self) -> Iterator[TriggerEvent]:
-        """Yield the month's rows as events. Raises ``SourceAccessError`` when the
-        query cannot be run."""
         client = self._athena_client()
         try:
             sql, parameters = self.query()
@@ -107,7 +97,6 @@ class AthenaTriggerSource:
             ) from exc
 
     def _to_event(self, row: Dict[str, Any], index: int) -> TriggerEvent:
-        # The table holds only the attribute columns; the trigger is the run's own.
         return TriggerEvent(
             trigger_sub_type=self._trigger,
             attributes=row,
@@ -120,6 +109,4 @@ class AthenaTriggerSource:
 def make_source(
     settings: SourceSettings, *, trigger: str, business_month: Optional[str] = None
 ) -> AthenaTriggerSource:
-    """The reader for this run's trigger table and business month."""
     return AthenaTriggerSource(settings, trigger=trigger, business_month=business_month)
-
