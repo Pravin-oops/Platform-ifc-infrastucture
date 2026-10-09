@@ -1,11 +1,5 @@
-# The connector is not pip-installed - it is run from a checkout or copied into
-# the image, exactly like produce_app. Runtime dependencies live in
-# utility/requirements.txt; this file exists only to configure the test tools.
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# Tests import utility.*, so the repository root (which holds utility/) is
-# what has to be importable.
 pythonpath = ["."]
 filterwarnings = ["error::DeprecationWarning:utility.*"]
 

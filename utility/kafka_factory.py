@@ -1,11 +1,3 @@
-"""Assembles the Kafka publishing stack and runs the readiness checks.
-
-Everything that can fail before a record is read fails here, in the order the
-POC execution plan prescribes: source readable, state store reachable, DNS, TCP,
-BAM token, Schema Registry, cluster metadata. By the time ``build`` returns, the
-only failures left are genuine runtime ones.
-"""
-
 from __future__ import annotations
 
 import base64
@@ -42,28 +34,17 @@ from utility.connector_config import ConnectorSettings
 
 logger = logging.getLogger(__name__)
 
-#: librdkafka properties the connector insists on. The BSP client owns security;
-#: these are the delivery-guarantee and memory-bound properties the failure
-#: catalogue depends on, so they are applied over whatever BSP returns.
 REQUIRED_PRODUCER_PROPERTIES: Dict[str, Any] = {
-    # Exactly-once-per-partition on retry. Without it, the automatic retries
-    # that make 'partition leader failure' self-healing create duplicates.
     "enable.idempotence": True,
     "acks": "all",
-    # Bound the local queue: this is the OOM guard that turns a slow broker into
-    # back-pressure instead of unbounded heap growth.
     "queue.buffering.max.messages": 20000,
     "queue.buffering.max.kbytes": 262144,
-    # Fail a message rather than retry it forever, so a stuck partition surfaces.
     "message.timeout.ms": 300000,
     "compression.type": "gzip",
 }
 
 
 class _NoTokenProvider:
-    """Stand-in where the registry needs no bearer token: the DEV registry, or
-    the local, non-BSP path."""
-
     seconds_remaining = 0.0
 
     def get(self, *, force_refresh: bool = False) -> str:
@@ -75,14 +56,6 @@ class _NoTokenProvider:
 
 
 class _BrokerErrors:
-    """``error_cb`` that keeps librdkafka's recent per-broker errors.
-
-    A failed metadata request only says ``_TRANSPORT``; the reason each
-    connection was dropped - a TLS handshake failure, a SASL rejection - comes
-    through ``error_cb``, so it is kept to explain the failure. Any callback
-    the BSP config set is still called.
-    """
-
     def __init__(self, chained: Any = None, *, keep: int = 10):
         self._chained = chained if callable(chained) else None
         self._messages: Deque[str] = deque(maxlen=keep)
@@ -101,13 +74,6 @@ class _BrokerErrors:
 
 
 class _LibrdkafkaTrace(logging.Handler):
-    """Keeps librdkafka's most recent log lines, to show what led to a failure.
-
-    confluent-kafka queues librdkafka's lines for the Python ``logger`` until
-    ``poll()``; the failed metadata request polls, so the lines arrive then.
-    """
-
-    #: The lines that say why a connection did not get through.
     KEY_LINE = re.compile(
         r"SSL|SASL|OAUTH|AUTH|FAIL|ERROR|certificate|handshake|disconnect|closed|refused|denied|token|expired",
         re.IGNORECASE,
@@ -120,21 +86,17 @@ class _LibrdkafkaTrace(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         self.lines.append(record.getMessage())
 
-    #: A broker's name carries its protocol (sasl_ssl://host:port), which would
-    #: make every line about that broker look like a SASL/SSL line.
     BROKER_NAME = re.compile(r"\b(?:sasl_ssl|sasl_plaintext|ssl|plaintext)://\S+", re.IGNORECASE)
 
     def key_lines(self, limit: int) -> List[str]:
         return [
             line
             for line in self.lines
-            # INIT is librdkafka's start-up banner, listing its ssl/sasl features.
             if not line.startswith("INIT ") and self.KEY_LINE.search(self.BROKER_NAME.sub("", line))
         ][-limit:]
 
 
 def _jwt_claims(token: str) -> Dict[str, Any]:
-    """The JWT's identifying claims, unverified, without the signature or the token."""
     try:
         payload = token.split(".")[1]
         claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
@@ -144,16 +106,6 @@ def _jwt_claims(token: str) -> Dict[str, Any]:
 
 
 def _observed_oauth_cb(callback: Callable[[Any], Any]) -> Callable[[Any], Any]:
-    """Wrap the BSP client's ``oauth_cb`` to log what it gives librdkafka.
-
-    The brokers get their token through this callback, not through the
-    ``get_token`` call the Schema Registry uses, so a token the registry
-    accepts says nothing about this path. confluent-kafka expects
-    ``(token, expiry in epoch seconds[, principal, extensions])``; an expiry in
-    milliseconds, an exception, or the wrong shape leaves SASL waiting and the
-    metadata request failing as ``_TRANSPORT``. Never logs the token itself.
-    """
-
     def observed(oauth_config: Any) -> Any:
         try:
             result = callback(oauth_config)
@@ -165,7 +117,7 @@ def _observed_oauth_cb(callback: Callable[[Any], Any]) -> Callable[[Any], Any]:
         token = parts[0] if parts else None
         expiry = parts[1] if len(parts) > 1 else None
         expires_in = expiry - time.time() if isinstance(expiry, (int, float)) else None
-        logger.info(
+        logger.debug(
             "oauth_cb supplied a token: shape=%d-tuple token_type=%s expires_in_seconds=%s principal=%s",
             len(parts),
             type(token).__name__,
@@ -192,13 +144,10 @@ def _observed_oauth_cb(callback: Callable[[Any], Any]) -> Callable[[Any], Any]:
             observed.supplied.set()
         return result
 
-    #: Set once the callback has handed librdkafka a usable token; the
-    #: factory waits on it before the first broker request.
     observed.supplied = threading.Event()  # type: ignore[attr-defined]
     return observed
 
 
-#: Producer properties safe to log: no credentials, tokens or callbacks.
 _LOGGED_PROPERTIES = (
     "security.protocol",
     "sasl.mechanism",
@@ -219,8 +168,6 @@ class KafkaStack:
     schema_id: int
     preflight: Dict[str, Any]
     producer: Any
-    #: Where the schema id came from: the registry subject and version in SECURE
-    #: mode, or ``{"mode": "DEV", ...}`` when it is pinned in config.
     schema_context: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -245,10 +192,7 @@ class KafkaStackFactory:
     def report(self) -> pf.PreflightReport:
         return self._report
 
-    # -- pieces ------------------------------------------------------------
-
     def _bsp_client(self) -> Optional[BSPClient]:
-        """None means a direct broker connection with no BSP involvement."""
         settings = self._settings
 
         if not settings.kafka.bsp_config_path:
@@ -265,20 +209,16 @@ class KafkaStackFactory:
                 "CyberArk is not enabled; relying on BSP_USERNAME/BSP_PASSWORD already in the environment"
             )
 
-        logger.info(
+        logger.debug(
             "BSP client config: %s (environment %s)",
             settings.kafka.bsp_config_path,
             settings.app.environment,
         )
-        # package_resource anchors a relative path at the connector root, so it
-        # does not depend on the working directory.
         return BSPClient(materialise_local(package_resource(settings.kafka.bsp_config_path)))
 
     def _producer_config(self, bsp: Optional[BSPClient]) -> Dict[str, Any]:
         overrides = dict(REQUIRED_PRODUCER_PROPERTIES)
         overrides["queue.buffering.max.messages"] = self._settings.kafka.local_queue_max_messages
-        # message.max.bytes must not be smaller than the guard, or librdkafka
-        # rejects records the guard would have allowed.
         overrides["message.max.bytes"] = max(
             self._settings.kafka.max_message_bytes + 1024, 1024 * 1024
         )
@@ -305,17 +245,11 @@ class KafkaStackFactory:
         return config
 
     def _enable_debug(self, config: Dict[str, Any]) -> None:
-        """Route librdkafka's debug trace into the JSON logs when kafka.debug is set.
-
-        Also honours a ``debug`` property that arrived through kafka.overrides
-        or the BSP config, so the trace is never left on stderr unparsed.
-        """
         debug = self._settings.kafka.debug or config.get("debug")
         if not debug:
             return
 
         rdkafka = logging.getLogger("librdkafka")
-        # Its own level, so the trace appears even when the run logs at INFO.
         rdkafka.setLevel(logging.DEBUG)
         for handler in [h for h in rdkafka.handlers if isinstance(h, _LibrdkafkaTrace)]:
             rdkafka.removeHandler(handler)
@@ -329,15 +263,10 @@ class KafkaStackFactory:
 
     @staticmethod
     def _log_client_config(config: Dict[str, Any]) -> None:
-        """What librdkafka will actually connect with, after the BSP client built it.
-
-        The BSP client may supply the brokers and security settings itself, so
-        the YAML alone does not say what is in effect.
-        """
         brokers = pf.parse_bootstrap_servers(config.get("bootstrap.servers", ""))
         effective = {key: config.get(key) for key in _LOGGED_PROPERTIES}
         ca_location = effective.get("ssl.ca.location")
-        logger.info(
+        logger.debug(
             "Kafka client config: security.protocol=%s sasl.mechanism=%s ssl.ca.location=%s "
             "(exists=%s) brokers=%d ports=%s request.timeout.ms=%s connections.max.idle.ms=%s "
             "metadata.max.age.ms=%s",
@@ -376,9 +305,6 @@ class KafkaStackFactory:
             settings.schema_registry.mode == "DEV" and settings.schema_registry.schema_id is not None
         )
         if registry_lookup:
-            # Every node is checked and reported; one reachable node is enough,
-            # since the lookup fails over to whichever answers. Either mode:
-            # DEV looks the schema up too, unless its id is pinned.
             registry = [pf.parse_url_endpoint(url) for url in settings.schema_registry.urls]
             single = len(registry) == 1
             pf.check_dns(self._report, registry, label="schema_registry", blocking=single)
@@ -401,8 +327,6 @@ class KafkaStackFactory:
             return local_schema, schema_id, {"mode": "DEV", "schema_id": schema_id}
 
         if mode == "DEV" and not settings.schema_registry.urls:
-            # Unframed Avro is undecodable by KafkaAvroDeserializer, so refuse
-            # to start rather than publish records no consumer can read.
             raise PreflightError(
                 "schema_registry.mode is DEV but neither schema_registry.dev.url nor "
                 "schema_registry.schema_id is set; records must carry the Confluent "
@@ -412,14 +336,13 @@ class KafkaStackFactory:
             )
 
         if mode == "DEV":
-            logger.info(
+            logger.debug(
                 "Schema Registry mode is DEV: looking the schema up on %s without a bearer token",
                 ", ".join(settings.schema_registry.urls),
             )
 
         client = SchemaRegistryClient(
             settings.schema_registry.urls,
-            # The DEV registry takes no token; SECURE sends the BAM bearer token.
             token_provider=None if mode == "DEV" else tokens,
             ca_location=settings.schema_registry.ca_location,
             timeout=settings.schema_registry.timeout_seconds,
@@ -451,7 +374,7 @@ class KafkaStackFactory:
 
             for finding in findings:
                 logger.log(
-                    logging.ERROR if finding.startswith("BLOCKING") else logging.INFO,
+                    logging.ERROR if finding.startswith("BLOCKING") else logging.DEBUG,
                     "Schema comparison: %s",
                     finding,
                     extra={"subject": subject},
@@ -467,23 +390,12 @@ class KafkaStackFactory:
             return dict(context)
 
         pf.check_schema_registry(self._report, resolve=resolve)
-        # A failed lookup is recorded, not raised; raise it here so a missing
-        # schema id can never reach the serializer.
         self._report.raise_if_failed()
 
         return local_schema, context["schema_id"], context
 
     @staticmethod
     def _await_oauth_token(producer: Any, config: Dict[str, Any], timeout: float = 15.0) -> None:
-        """Poll the new producer until the BSP ``oauth_cb`` has supplied its token.
-
-        confluent-kafka 2.4 (the image's version) runs ``oauth_cb`` only from
-        ``poll()``/``flush()``. ``list_topics()`` does not serve it, so a
-        metadata request made straight after the producer is built has no token
-        to authenticate with: every broker waits for one, and the request times
-        out as ``_TRANSPORT``. Newer clients call it on their own, and there the
-        first poll finds the token already set.
-        """
         supplied = getattr(config.get("oauth_cb"), "supplied", None)
         poll = getattr(producer, "poll", None)
         if supplied is None or not callable(poll):
@@ -492,8 +404,6 @@ class KafkaStackFactory:
             str(config.get("security.protocol", "")).upper().startswith("SASL")
             and str(config.get("sasl.mechanism", "")).upper() == "OAUTHBEARER"
         ):
-            # PLAINTEXT (the DEV-only 9092 listener) never asks for a token, so
-            # waiting for one would only stall and then log a false error.
             return
 
         started = time.monotonic()
@@ -502,7 +412,7 @@ class KafkaStackFactory:
 
         waited_ms = round((time.monotonic() - started) * 1000)
         if supplied.is_set():
-            logger.info("Kafka producer has its OAuth token for SASL after %d ms", waited_ms)
+            logger.debug("Kafka producer has its OAuth token for SASL after %d ms", waited_ms)
         else:
             logger.error(
                 "The BSP oauth_cb supplied no usable token within %.0f s; the brokers cannot "
@@ -517,20 +427,14 @@ class KafkaStackFactory:
             try:
                 metadata = producer.list_topics(topic=topic, timeout=timeout)
             except Exception as exc:
-                # error_cb is only served by poll(): drain it, then name the
-                # per-broker reasons, which also lets the classifier file a
-                # TLS or SASL failure as authentication rather than "broker".
                 poll = getattr(producer, "poll", None)
                 if callable(poll):
                     poll(0)
                 reasons = self._broker_errors.recent if self._broker_errors else []
-                # "N/N brokers are down" only restates the failure; keep it
-                # only when nothing more specific was reported.
                 reasons = [r for r in reasons if "_ALL_BROKERS_DOWN" not in r] or reasons
 
                 key_lines: List[str] = []
                 if self._trace is not None:
-                    # poll() above released the trace queued during the request.
                     key_lines = self._trace.key_lines(40)
                     logger.error(
                         "librdkafka trace before the failed metadata request: %d lines, %d about "
@@ -572,13 +476,9 @@ class KafkaStackFactory:
             topics=[self._settings.kafka.topic],
         )
 
-    # -- assembly ----------------------------------------------------------
-
     def build(self) -> KafkaStack:
         settings = self._settings
 
-        # First: the BSP client YAML's ssl.ca.location and the Schema Registry
-        # client both read this file, and neither can be built without it.
         ca_certificate.install(settings.ca_certificate)
 
         bsp = self._bsp_client()
@@ -586,13 +486,9 @@ class KafkaStackFactory:
 
         if settings.resilience.preflight_enabled:
             self._network_checks(config)
-            # Stop before authenticating if the network path is already broken:
-            # an auth timeout would mask the real cause.
             self._report.raise_if_failed()
 
         if bsp is not None and settings.schema_registry.mode == "SECURE":
-            # Only the secure registry takes the BAM token. The brokers get
-            # theirs from the BSP oauth_cb, which does not go through here.
             tokens = bsp.token_provider(
                 refresh_margin_seconds=settings.schema_registry.token_refresh_margin_seconds
             )
@@ -605,7 +501,7 @@ class KafkaStackFactory:
             self._report.raise_if_failed()
         else:
             if bsp is not None:
-                logger.info(
+                logger.debug(
                     "Schema Registry mode is DEV: no BAM token is requested; the DEV registry "
                     "is not password protected"
                 )
@@ -615,17 +511,13 @@ class KafkaStackFactory:
         self._report.raise_if_failed()
 
         producer = self._producer_factory(config)
-        # Before anything asks the brokers: SASL cannot start without it.
         self._await_oauth_token(producer, config)
 
         if settings.resilience.preflight_enabled and settings.resilience.preflight_metadata_enabled:
             self._metadata_checks(producer)
             self._report.raise_if_failed()
         else:
-            # As produce_app does: librdkafka fetches the topic's metadata
-            # itself when the first record is produced, and a missing topic or
-            # ACL comes back as that record's delivery error.
-            logger.info(
+            logger.debug(
                 "Topic metadata preflight is off; the first publish brings up the broker connection"
             )
 

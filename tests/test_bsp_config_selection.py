@@ -7,15 +7,24 @@ import os
 import pytest
 import yaml
 
-from utility.connector_config import load_settings
+from utility.connector_config import ENVIRONMENT_CONFIGS, config_path_for, load_settings
 
 UTILITY = os.path.join(os.path.dirname(__file__), "..", "utility")
-CONFIG = os.path.join(UTILITY, "connector_config.yaml")
 
 
 def bsp_yaml(name: str) -> dict:
     with open(os.path.join(UTILITY, name), encoding="utf-8") as handle:
         return yaml.safe_load(handle)
+
+
+def with_bsp_config_paths() -> str:
+    """The SIT config with a kafka.bsp_config_paths map, which no shipped file carries."""
+    document = bsp_yaml("connector_config_sit.yaml")
+    document["kafka"]["bsp_config_paths"] = {
+        "DEV": "utility/bsp_dev_config.yaml",
+        "SIT": "utility/bsp_sit_config.yaml",
+    }
+    return yaml.safe_dump(document)
 
 
 @pytest.fixture
@@ -26,12 +35,14 @@ def load(monkeypatch):
         monkeypatch.setenv("IFC_APP__ENVIRONMENT", environment)
         for name, value in env.items():
             monkeypatch.setenv(name, value)
-        return load_settings(CONFIG)
+        return load_settings("cfg.yaml", reader=lambda _p: with_bsp_config_paths())
 
     return load
 
 
 class TestSelection:
+    """kafka.bsp_config_paths, for a config that maps BSP files by app.environment."""
+
     @pytest.mark.parametrize("environment", ["DEV", "dev"])
     def test_a_dev_run_uses_the_dev_file(self, load, environment):
         assert load(environment).kafka.bsp_config_path == "utility/bsp_dev_config.yaml"
@@ -69,12 +80,64 @@ class TestTheDevFile:
         assert "C:/" not in yaml.safe_dump(bsp_yaml("bsp_dev_config.yaml"))
 
 
-class TestADevRunEndToEnd:
-    """DEV environment and DEV registry mode together: no token anywhere."""
+class TestPerEnvironmentFiles:
+    """connector_config_<env>.yaml, chosen by IFC_APP__ENVIRONMENT: each fixes its own BSP file and registry."""
 
-    def test_the_settings_a_dev_task_gets(self, load):
-        settings = load("DEV", IFC_SCHEMA_REGISTRY__MODE="DEV")
+    @pytest.fixture
+    def load_file(self, clean_ifc_env):
+        return lambda name: load_settings(os.path.join(UTILITY, name))
 
+    def test_the_sit_file(self, load_file):
+        settings = load_file("connector_config_sit.yaml")
+
+        assert settings.app.environment == "SIT"
+        assert settings.originating_system == "SNSVC0084378"
+        assert settings.kafka.bsp_config_path == "utility/bsp_sit_config.yaml"
+        assert settings.schema_registry.mode == "SECURE"
+        assert all(url.endswith(":8095") for url in settings.schema_registry.urls)
+
+    def test_the_dev_file(self, load_file):
+        settings = load_file("connector_config_dev.yaml")
+
+        assert settings.app.environment == "DEV"
         assert settings.originating_system == "SNSVC0084379"
         assert settings.kafka.bsp_config_path == "utility/bsp_dev_config.yaml"
         assert (settings.schema_registry.mode, settings.schema_registry.schema_id) == ("DEV", 1299)
+
+    @pytest.mark.parametrize("name", ["connector_config_sit.yaml", "connector_config_dev.yaml"])
+    def test_neither_maps_bsp_files_by_environment(self, name):
+        with open(os.path.join(UTILITY, name), encoding="utf-8") as handle:
+            assert "bsp_config_paths" not in yaml.safe_load(handle)["kafka"]
+
+
+class TestEnvironmentSelectsTheConfig:
+    """IFC_APP__ENVIRONMENT names the environment; the connector config, and through it the BSP file, follow."""
+
+    @pytest.mark.parametrize("environment, name", [("DEV", "dev"), ("sit", "sit"), (" Sit ", "sit")])
+    def test_each_environment_has_its_own_file(self, environment, name):
+        path = config_path_for(environment)
+        assert os.path.normpath(path).endswith(os.path.join("utility", f"connector_config_{name}.yaml"))
+
+    @pytest.mark.parametrize("environment", sorted(ENVIRONMENT_CONFIGS))
+    def test_each_connector_config_names_its_own_bsp_file(self, environment, clean_ifc_env):
+        if not os.path.isfile(os.path.join(UTILITY, "..", ENVIRONMENT_CONFIGS[environment])):
+            pytest.skip(f"{ENVIRONMENT_CONFIGS[environment]} is not in the repository yet")
+        settings = load_settings(config_path_for(environment))
+
+        assert settings.app.environment == environment
+        assert settings.kafka.bsp_config_path == f"utility/bsp_{environment.lower()}_config.yaml"
+
+    @pytest.mark.parametrize("environment", [None, "", "  "])
+    def test_no_environment_is_refused(self, environment):
+        with pytest.raises(ValueError, match="IFC_APP__ENVIRONMENT is not set"):
+            config_path_for(environment)
+
+    @pytest.mark.parametrize("environment", ["UAT", "PROD-ANALYTICS", "LOCAL"])
+    def test_an_unknown_environment_is_refused(self, environment):
+        with pytest.raises(ValueError, match="expected one of DEV, SIT, PROD"):
+            config_path_for(environment)
+
+    def test_a_file_missing_from_the_image_is_refused(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("IFC_HOME", str(tmp_path))
+        with pytest.raises(FileNotFoundError, match="connector_config_sit.yaml"):
+            config_path_for("SIT")

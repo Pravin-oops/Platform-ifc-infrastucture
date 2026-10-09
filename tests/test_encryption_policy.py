@@ -12,7 +12,7 @@ from utility.connector_config import load_settings
 from utility.connector_utility import load_schema_document
 from utility.tb_outcome_schema import EnvelopeBuilder
 
-CONFIG = os.path.join(os.path.dirname(__file__), "..", "utility", "connector_config.yaml")
+CONFIG = os.path.join(os.path.dirname(__file__), "..", "utility", "connector_config_sit.yaml")
 OWNER = "Client Relationship Owner Name"
 
 
@@ -80,3 +80,32 @@ def test_the_runner_builds_envelopes_for_its_environment(environment, declared):
     runner.start()
 
     assert runner._envelopes._declare_policies is declared
+
+
+class TestTheEcsVariable:
+    """IFC_ENVELOPE__TOKENISED_ENVIRONMENTS, as an ECS task definition would set it."""
+
+    DEV_CONFIG = os.path.join(os.path.dirname(__file__), "..", "utility", "connector_config_dev.yaml")
+
+    @pytest.fixture
+    def load_dev(self, clean_ifc_env, monkeypatch):
+        def load(value=None):
+            if value is not None:
+                monkeypatch.setenv("IFC_ENVELOPE__TOKENISED_ENVIRONMENTS", value)
+            return load_settings(self.DEV_CONFIG)
+
+        return load
+
+    def test_dev_declares_none_by_default(self, load_dev):
+        assert load_dev().declares_encryption_policies is False
+
+    @pytest.mark.parametrize("value", ["DEV", "dev", "DEV,PROD", " DEV , PROD ", '["DEV","PROD"]'])
+    def test_naming_dev_turns_it_on(self, load_dev, value):
+        assert load_dev(value).declares_encryption_policies is True
+
+    def test_the_variable_replaces_the_files_list(self, load_dev):
+        assert load_dev("DEV").envelope.tokenised_environments == ["DEV"]
+
+    @pytest.mark.parametrize("value", ["", "  "])
+    def test_an_empty_variable_leaves_it_to_the_config_file(self, load_dev, value):
+        assert load_dev(value).envelope.tokenised_environments == ["PROD"]

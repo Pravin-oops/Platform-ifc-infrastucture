@@ -13,6 +13,7 @@ from datetime import date
 import pytest
 from botocore.exceptions import ClientError
 
+from tests.conftest import use_config
 from utility import run_gate
 from utility.run_gate import (
     RunMarker,
@@ -520,7 +521,8 @@ def test_a_weekend_invocation_exits_clean_without_touching_anything(
         main_ecs_script, "should_run", lambda *a, **k: GateOutcome(False, "2026-10-03 is a Saturday", True)
     )
 
-    result = main_ecs_script.ecs_handler({"config_path": str(config), "trigger": TRIGGER_8})
+    use_config(monkeypatch, main_ecs_script, config)
+    result = main_ecs_script.ecs_handler({"trigger": TRIGGER_8})
 
     assert result["exit_code"] == 0
     assert result["outcome"] == "SKIPPED"
@@ -695,7 +697,8 @@ def test_trigger_9_invocation_reads_trigger_9_location(
         lambda t, m, **k: GateOutcome(not m.is_done(t, "2026-09"), "x", m.is_done(t, "2026-09")),
     )
 
-    result = main_ecs_script.ecs_handler({"config_path": str(config), "trigger": "trigger 9"})
+    use_config(monkeypatch, main_ecs_script, config)
+    result = main_ecs_script.ecs_handler({"trigger": "trigger 9"})
     assert result["exit_code"] == 0
     assert seen["table"] == "ifc_trigger_db.t9"
 
@@ -703,7 +706,8 @@ def test_trigger_9_invocation_reads_trigger_9_location(
     # and records that it looked: NOT RAN, with the SUCCESS still in force.
     fake_marker.mark_done("TRIGGER_9", "2026-09", records=1)
     seen.clear()
-    result = main_ecs_script.ecs_handler({"config_path": str(config), "trigger": "trigger 9"})
+    use_config(monkeypatch, main_ecs_script, config)
+    result = main_ecs_script.ecs_handler({"trigger": "trigger 9"})
     assert result["outcome"] == "SKIPPED"
     assert seen == {}
     assert fake_marker.history("TRIGGER_9")[-1]["run_status"] == STATUS_NOT_RAN
@@ -752,7 +756,7 @@ def test_scheduler_env_variable_through_the_ecs_entry_point(
         ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("APP_CONFIG_PATH", str(config))
+    use_config(monkeypatch, main_ecs_script, config)
     monkeypatch.setenv("IFC_RUN__TRIGGER", "TRIGGER_9")
 
     import utility.connector_runner as runner_module

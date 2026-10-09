@@ -28,7 +28,7 @@ from tests.conftest import APP_ROOT, UTILITY_DIR
 
 AVRO_SCHEMAS = ["utility/schema.json"]
 
-CONFIGS = ["connector_config.yaml"]
+CONFIGS = ["connector_config_sit.yaml", "connector_config_dev.yaml"]
 
 
 class TestPackageResource:
@@ -116,8 +116,8 @@ class TestBundledConfigs:
 
         assert os.path.isfile(package_resource(settings.schema_registry.schema_path))
 
-    def test_the_uat_config_keeps_the_secure_posture(self, clean_ifc_env):
-        path = os.path.join(UTILITY_DIR, "connector_config.yaml")
+    def test_the_sit_config_keeps_the_secure_posture(self, clean_ifc_env):
+        path = os.path.join(UTILITY_DIR, "connector_config_sit.yaml")
         with open(path, "r", encoding="utf-8") as handle:
             settings = ConnectorSettings.model_validate(yaml.safe_load(handle))
 

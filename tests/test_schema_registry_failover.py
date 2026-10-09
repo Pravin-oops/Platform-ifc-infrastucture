@@ -18,7 +18,7 @@ from utility.error_classifier import ConnectorError
 from utility.kafka_factory import KafkaStackFactory
 from utility.resilience_utility import BackoffPolicy, ShutdownSignal
 
-CONFIG = os.path.join(os.path.dirname(__file__), "..", "utility", "connector_config.yaml")
+CONFIG = os.path.join(os.path.dirname(__file__), "..", "utility", "connector_config_sit.yaml")
 
 A = "https://registry-a.example:8095"
 B = "https://registry-b.example:8095"
@@ -327,7 +327,7 @@ class TestObservedOauthCallback:
 
         from utility.kafka_factory import _observed_oauth_cb
 
-        with caplog.at_level(logging_module.INFO, logger="utility.kafka_factory"):
+        with caplog.at_level(logging_module.DEBUG, logger="utility.kafka_factory"):
             returned = _observed_oauth_cb(lambda _config: result)("cfg")
         return returned, caplog.records
 

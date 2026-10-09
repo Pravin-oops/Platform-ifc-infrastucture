@@ -1,29 +1,3 @@
-"""ECS entry point for the IFC trigger connector.
-
-The counterpart to ``produce_app``'s ``main_lambda.py``: the same pipeline, but
-bootstrapped the way the hosting platform expects. Where the Lambda handler is
-handed an event and a context by the runtime, an ECS task is handed environment
-variables by the task definition, and it has to survive the two things a Lambda
-never sees - a ``SIGTERM`` on every deployment, and a process lifetime longer
-than the BAM token it started with.
-
-    ENTRYPOINT ["python", "/app/ifc_trigger_connector/scripts/main_ecs.py"]
-
-Environment (all optional except the config path and the trigger):
-
-    APP_CONFIG_PATH   connector config YAML, local path or s3://   (required)
-    IFC_RUN__TRIGGER  TRIGGER_8 | TRIGGER_9 | TRIGGER_21 - the table to read  (required)
-    IFC_RUN__MONTH    YYYY-MM (or AUGUST_2026) - rerun that month's run instead of
-                      the current one; add IFC_RUN__FORCE=true if it was delivered
-    IFC_LOG_LEVEL     overrides app.log_level
-    IFC_*             any other setting, e.g. IFC_KAFKA__TOPIC
-
-``ecs_handler()`` returns the run summary as a dict so the same code can be
-driven from a test or an ECS RunTask. ``main()`` maps
-that summary onto the process exit code, because the stopped-task record is the
-only thing left after the container is gone.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -38,19 +12,15 @@ from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 from dotenv import load_dotenv
 load_dotenv()
-# Runnable directly from any working directory: put the app root - the directory
-# that holds utility/ and scripts/ - on sys.path.
 APP_ROOT = Path(__file__).resolve().parent.parent
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
-# Pick up APP_CONFIG_PATH and the IFC_ overlay from <app root>/.env when one is
-# present. Variables injected by the ECS task definition always win.
 load_dotenv(APP_ROOT / ".env", override=False)
 
 from utility import failure_catalog as catalog
 from utility.audit_utility import new_run_id, write_invocation_manifest
-from utility.connector_config import load_settings
+from utility.connector_config import ENVIRONMENT_VARIABLE, config_path_for, load_settings
 from utility.error_classifier import ConnectorError, classify
 from utility.failure_notifier import Notifier
 from utility.health_utility import HealthServer, HealthState
@@ -68,15 +38,8 @@ from utility.trigger_batch_notifier import (
 
 logger = logging.getLogger("ifc_trigger_connector.ecs")
 
-DEFAULT_CONFIG_ENV = "APP_CONFIG_PATH"
-
 
 def ecs_task_metadata() -> Dict[str, Optional[str]]:
-    """Identity of this task, for the run manifest and for alert routing.
-
-    ECS injects the metadata endpoint URI; the ARN suffix is the task id that
-    the stopped-task record and the CloudWatch log stream are keyed on.
-    """
     return {
         "cluster": os.getenv("ECS_CLUSTER"),
         "task_arn": os.getenv("ECS_TASK_ARN"),
@@ -87,20 +50,9 @@ def ecs_task_metadata() -> Dict[str, Optional[str]]:
 
 
 def _load(event: Dict[str, Any]):
-    """Resolve the config, set the log level, return (settings, config_path)."""
-    config_path = event.get("config_path") or os.getenv(DEFAULT_CONFIG_ENV)
-    if not config_path:
-        raise RuntimeError(
-            f"Missing config path: pass event['config_path'] or set {DEFAULT_CONFIG_ENV}"
-        )
-
-    # Configured twice on purpose: once so a config-loading failure is logged in
-    # the right format, then again at the level the config asks for.
     configure_logging(os.getenv("IFC_LOG_LEVEL", "INFO"))
+    config_path = config_path_for(os.getenv(ENVIRONMENT_VARIABLE))
     settings = load_settings(config_path)
-    # The trigger decides which Athena table is read, so it is fixed here -
-    # before anything logs or preflights the source. A run without one fails:
-    # EventBridge Scheduler always sends IFC_RUN__TRIGGER.
     settings.select_trigger(event.get("trigger"))
     configure_logging(os.getenv("IFC_LOG_LEVEL") or settings.app.log_level)
 
@@ -108,9 +60,6 @@ def _load(event: Dict[str, Any]):
 
 
 class Invocation:
-    """One ECS invocation, so a run that stops before the runner still leaves a
-    manifest in the audit bucket. The runner writes its own once it is reached."""
-
     def __init__(self, settings):
         self.settings = settings
         self.started_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
@@ -132,28 +81,11 @@ class Invocation:
 
 
 class Gate(NamedTuple):
-    """A claimed gate: which trigger this run is for, and where to record it.
-
-    The two travel together because they are only ever both set or both absent -
-    keeping them as separate optionals let a caller reach the marker without the
-    trigger, which the type checker rightly objected to.
-    """
-
     trigger: str
     marker: RunMarker
 
 
 def _gate(settings, event: Dict[str, Any]) -> Tuple[Optional[Gate], Optional[str]]:
-    """Decide whether to process. Returns (gate, skip_reason).
-
-    ``skip_reason`` is None when the run should proceed; ``gate`` is None when
-    gating is off entirely. Runs before preflight, Kafka and the source, so a
-    weekend invocation costs only a container start.
-
-    Both skips - a weekend, and a month already delivered - record NOT RAN, so
-    the file says this date looked and did nothing rather than staying silent.
-    NOT RAN never changes a month's outcome, so a delivered month stays SUCCESS.
-    """
     if not settings.gate_active:
         return None, None
 
@@ -173,12 +105,6 @@ def _gate(settings, event: Dict[str, Any]) -> Tuple[Optional[Gate], Optional[str
 
 
 def _record(gate: Optional[Gate], status: str, *, records: int = 0, reason: str = "") -> None:
-    """Append this invocation's outcome to the run marker file.
-
-    Best-effort: the run has already happened, and losing the marker must not
-    turn a delivered month into a failed task. It is logged loudly instead,
-    because a missing SUCCESS means the next invocation republishes the month.
-    """
     if gate is None:
         return
     month = month_of(execution_date())
@@ -203,17 +129,6 @@ def _record(gate: Optional[Gate], status: str, *, records: int = 0, reason: str 
 
 def _recon_gate(settings, config_path: str, task: Dict[str, Optional[str]],
                 invocation: Optional[Invocation] = None):
-    """Upstream reconciliation check. Returns a summary when the run stops here.
-
-    ``None`` means proceed. A block is a *reportable* outcome, not a silent
-    skip: it carries the catalogue exit code so the ECS stopped-task record
-    names the scenario, and it raises the same alert a failure would, because
-    nobody is watching the logs on a monthly schedule.
-
-    The exception is a genuine empty month (``NO_DATA_THIS_MONTH``): upstream
-    reconciled zero records, which is a delivered month with nothing in it.
-    It exits 0 without an alert and announces a zero-message batch to TBB.
-    """
     if not settings.recon_active:
         logger.info(
             "Upstream reconciliation gate is not active",
@@ -222,17 +137,12 @@ def _recon_gate(settings, config_path: str, task: Dict[str, Optional[str]],
         return None
 
     month = month_of(execution_date())
-    # Upstream writes its recon row when it runs, stamped with the current
-    # month - also when IFC_RUN__MONTH reprocesses an earlier month - so the
-    # recon check keys on today, not on the run month.
     recon_month = month_of(run_gate.today())
     try:
         decision = recon_gate.evaluate(
             settings.recon, settings.source.athena, execution_month=recon_month
         )
     except Exception as exc:
-        # Never let the gate itself decide the run by accident: an unexpected
-        # error here is a failure to classify, not permission to publish.
         logger.exception("Upstream reconciliation gate could not be evaluated")
         classification = classify(exc, operation="recon_gate", topic=settings.kafka.topic)
         _notify(settings, classification, config_path, task)
@@ -297,11 +207,6 @@ def _recon_gate(settings, config_path: str, task: Dict[str, Optional[str]],
 def _no_data_month(settings, decision, month: str, config_path: str,
                    task: Dict[str, Optional[str]],
                    invocation: Optional[Invocation]) -> Dict[str, Any]:
-    """A genuine empty month: nothing to publish, and the month is delivered.
-
-    TBB still gets its batch-completion event - the same body as a publishing
-    run, with zero messages - so "no event" never has to be read as "no data".
-    """
     logger.info(
         "Upstream reconciled zero records; nothing to publish this month",
         extra={"execution_month": month, **decision.to_dict()},
@@ -333,12 +238,6 @@ def _no_data_month(settings, decision, month: str, config_path: str,
 
 def _failure_summary(exc, settings, config_path, task,
                      invocation: Optional[Invocation] = None) -> Dict[str, Any]:
-    """Classify, alert and summarise a failure that never reached the runner.
-
-    A startup failure never reaches the runner's own manifest writer, so the
-    notification is raised here - the container is about to exit and the
-    evidence has to leave with it.
-    """
     classification = classify(exc, operation="ecs_handler", topic=settings.kafka.topic)
     _notify(settings, classification, config_path, task)
     run_id = (
@@ -357,12 +256,6 @@ def _failure_summary(exc, settings, config_path, task,
 
 
 def ecs_handler(event: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Run one connector lifecycle and return its summary.
-
-    ``event`` mirrors the Lambda handler's event so an ECS RunTask override, or
-    a test, can supply ``config_path`` / ``trigger`` without touching the
-    environment. Environment values win only when the event omits them.
-    """
     event = event or {}
     settings, config_path = _load(event)
     task = ecs_task_metadata()
@@ -385,8 +278,6 @@ def ecs_handler(event: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         settings.source.table,
         settings.kafka.topic,
         registry.mode,
-        # SECURE resolves the id from the registry at startup; the
-        # "Kafka target ready" line reports what it resolved to.
         registry.schema_id if registry.mode == "DEV" and registry.schema_id else "from registry",
         "BSP" if settings.kafka.bsp_config_path else "direct",
         settings.app.environment,
@@ -406,8 +297,6 @@ def ecs_handler(event: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     try:
         gate, skip_reason = _gate(settings, event)
     except Exception as exc:
-        # The run marker file could not be read: still an invocation, so it is
-        # recorded before the failure propagates.
         invocation.record(
             "RUN_GATE", "FAILED", catalog.CONTAINER_FAILURE.exit_code, reason=str(exc),
             classification=classify(exc, operation="run_gate", topic=settings.kafka.topic),
@@ -426,27 +315,14 @@ def ecs_handler(event: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
             "ecs": task,
         }
 
-    # The run gate has just said this invocation should do work; this says
-    # whether upstream produced anything to do it with. It runs after the
-    # weekend / already-delivered skips deliberately - those are days the run is
-    # not meant to happen at all, and checking upstream on them would alert six
-    # times a month for nothing. It runs before preflight, Kafka, the source and
-    # the marker claim, so a blocked invocation costs only a container start.
     blocked = _recon_gate(settings, config_path, task, invocation)
     if blocked is not None:
         if blocked.get("outcome") == recon_gate.OUTCOME_NO_DATA:
-            # A genuine empty month is delivered: SUCCESS with zero records, so
-            # the rest of the window stands down instead of announcing it again.
             _record(gate, run_gate.STATUS_SUCCESS, records=0, reason=recon_gate.OUTCOME_NO_DATA)
         else:
-            # Upstream had nothing ready, so the connector did not run. Recorded,
-            # so the file distinguishes "we looked and upstream was not ready"
-            # from "nobody looked".
             _record(gate, run_gate.STATUS_NOT_RAN, reason=str(blocked.get("outcome")))
         return blocked
 
-    # Installed before the runner is built: a deployment can stop the task while
-    # preflight is still running, and that drain must still be orderly.
     shutdown = ShutdownSignal().install()
     health = HealthState()
     metrics = Metrics(
@@ -467,8 +343,6 @@ def ecs_handler(event: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         else None
     )
 
-    # Set once runner.run() is entered: from then on the runner writes the
-    # manifest itself, whatever happens, so a later failure must not add another.
     runner_started = False
     try:
         from utility.connector_runner import ConnectorRunner
@@ -489,7 +363,6 @@ def ecs_handler(event: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
             "outcome": last.outcome if last else "FAILED",
             "topic": settings.kafka.topic,
             "schema_registry_mode": settings.schema_registry.mode,
-            # getattr: reporting must never be what fails a delivered run.
             "schema_id": getattr(runner, "schema_id", None),
             "published": last.counters.published if last else 0,
             "acked": last.counters.acked if last else 0,
@@ -498,16 +371,10 @@ def ecs_handler(event: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
             "sns_batch_notification": sns_status,
             "config_path": config_path,
             "environment": settings.app.environment,
-            # Which table, business date and Athena query this run read. The
-            # stopped-task record is all that survives the container, so "what
-            # did this run actually publish" has to be answerable from here.
             "source": runner.last_result.source if runner.last_result else {"table": settings.source.table},
             "ecs": task,
         }
 
-        # Only a run that delivered closes the month. Anything else records
-        # FAILURE, so the next date in the window retries and the file says
-        # what happened rather than staying silent.
         delivered = runner.last_result.counters.acked if runner.last_result else 0
         month = month_of(execution_date())
         if exit_code == catalog.EXIT_OK and delivered:
@@ -530,7 +397,6 @@ def ecs_handler(event: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
 
     except Exception as exc:
         logger.exception("Connector failed to start")
-        # A startup failure is still an invocation that ran and did not deliver.
         _record(gate, run_gate.STATUS_FAILURE, reason="startup failure")
         return _failure_summary(
             exc, settings, config_path, task, None if runner_started else invocation
@@ -545,15 +411,6 @@ def _publish_batch_notification(
     settings,
     runner,
 ) -> Dict[str, Any]:
-    """
-    Publish successful Trigger Backbone batch notification.
-
-    TBB starts downstream processing from this event,
-    therefore publish only after a fully successful batch.
-
-    Returns what happened (SENT or SKIPPED) for the run summary.
-    """
-
     result = runner.last_result
 
     skip_reason = _batch_notification_skip_reason(settings, result)
@@ -581,15 +438,12 @@ def _publish_batch_notification(
             result.batch_end_timestamp,
 
         Event_Timestamp=
-            datetime.now(timezone.utc).isoformat(
-                timespec="milliseconds"
-            ),
+            now_timestamp(),
 
         Correlation_Id=
             runner.run_id,
     )
 
-    # The notifier logs the topic, full message and MessageId (or the error).
     response = TriggerBatchNotifier(
         sns_topic_arn=
             settings.notifications.batch_sns_topic_arn
@@ -606,15 +460,11 @@ def _sent_status(settings, response: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _sns_failed(exc: Exception) -> Dict[str, Any]:
-    # Best-effort: a broken SNS topic must not turn a delivered batch into a
-    # failed task, but the summary still has to say the event never left.
     logger.exception("Trigger batch completion notification could not be sent")
     return {"status": "FAILED", "error": str(exc)}
 
 
 def _publish_zero_batch_notification(settings, run_id: str) -> Dict[str, Any]:
-    """Announce a genuine empty month to TBB: the same body as a publishing
-    run, with zero messages and the current time as the batch window."""
     skip_reason = _batch_config_skip_reason(settings)
     if skip_reason:
         _log_batch_skip(settings, skip_reason, run_id)
@@ -628,7 +478,7 @@ def _publish_zero_batch_notification(settings, run_id: str) -> Dict[str, Any]:
         Topic_Name=settings.kafka.topic,
         Trigger_Batch_Start_Timestamp=now,
         Trigger_Batch_End_Timestamp=now,
-        Event_Timestamp=datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+        Event_Timestamp=now_timestamp(),
         Correlation_Id=run_id,
     )
     response = TriggerBatchNotifier(
@@ -638,7 +488,6 @@ def _publish_zero_batch_notification(settings, run_id: str) -> Dict[str, Any]:
 
 
 def _log_batch_skip(settings, skip_reason: str, run_id: Optional[str]) -> None:
-    # Every skip says why: "no SNS in the logs" must be answerable from the logs.
     logger.warning(
         "SNS batch notification skipped: %s",
         skip_reason,
@@ -652,7 +501,6 @@ def _log_batch_skip(settings, skip_reason: str, run_id: Optional[str]) -> None:
 
 
 def _batch_config_skip_reason(settings) -> Optional[str]:
-    """Why no batch event may be sent at all under this config, or None."""
     if not settings.notifications.batch_notifications_enabled:
         return "batch_notifications_enabled is false"
     if not settings.notifications.batch_sns_topic_arn:
@@ -661,25 +509,19 @@ def _batch_config_skip_reason(settings) -> Optional[str]:
 
 
 def _batch_notification_skip_reason(settings, result) -> Optional[str]:
-    """Why this run must not announce itself to TBB, or None if it should."""
     if result is None:
         return "the run produced no batch result"
     config_reason = _batch_config_skip_reason(settings)
     if config_reason:
         return config_reason
-    # SUCCESS already means reconciliation balanced: every row published or
-    # quarantined, every publish acknowledged, none failed or left unflushed.
     if result.outcome != "SUCCESS":
         return f"run outcome is {result.outcome}, not SUCCESS"
-    # Still possible under SUCCESS when max_quarantine_ratio allows every row to
-    # be quarantined.
     if result.counters.acked <= 0:
         return "no messages were acknowledged by Kafka"
     return None
 
 
 def _notify(settings, classification, config_path: str, task: Dict[str, Optional[str]]) -> None:
-    """Best-effort alert. A failing notifier must not mask the original failure."""
     try:
         Notifier(
             sns_topic_arn=settings.notifications.sns_topic_arn,
@@ -694,9 +536,6 @@ def _notify(settings, classification, config_path: str, task: Dict[str, Optional
 
 
 def _event_from_argv(argv: Optional[List[str]] = None) -> Dict[str, Any]:
-    """The scheduler may name the trigger on the command line instead of the
-    environment: ``main_ecs.py trigger 9``, ``main_ecs.py "trigger 9"`` or
-    ``main_ecs.py --trigger TRIGGER_9``. The argument wins over IFC_RUN__TRIGGER."""
     parser = argparse.ArgumentParser(prog="ifc-connector-ecs")
     parser.add_argument("trigger_words", nargs="*", metavar="TRIGGER")
     parser.add_argument("--trigger", default=None)
@@ -724,7 +563,6 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 
 def _log_run_summary(result: Dict[str, Any]) -> None:
-    """The last line of every run: the answers first, the full summary after."""
     sns = result.get("sns_batch_notification") or {}
     headline = {
         "outcome": result.get("outcome") or ("FAILED" if result.get("exit_code") else None),

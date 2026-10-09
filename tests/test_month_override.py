@@ -88,7 +88,7 @@ class TestLoadedFromTheEnvironment:
     @pytest.fixture
     def settings(self, app_root, clean_ifc_env, in_october, monkeypatch):
         monkeypatch.setenv("IFC_RUN__MONTH", "2026-08")
-        loaded = load_settings(os.path.join(app_root, "utility", "connector_config.yaml"))
+        loaded = load_settings(os.path.join(app_root, "utility", "connector_config_sit.yaml"))
         loaded.select_trigger(TRIGGER_8)
         return loaded
 
@@ -112,7 +112,7 @@ class TestLoadedFromTheEnvironment:
         assert month_of(execution_date()) == "2026-08"
 
     def test_without_it_october_is_processed(self, app_root, clean_ifc_env, in_october):
-        loaded = load_settings(os.path.join(app_root, "utility", "connector_config.yaml"))
+        loaded = load_settings(os.path.join(app_root, "utility", "connector_config_sit.yaml"))
         loaded.select_trigger(TRIGGER_8)
         assert loaded.run.month is None
         assert make_source(loaded.source, trigger=loaded.trigger).business_date == date(2026, 9, 30)
@@ -136,7 +136,7 @@ class TestTheQueriedBusinessDate:
         self, app_root, clean_ifc_env, in_october, monkeypatch, run_month, business_date
     ):
         monkeypatch.setenv("IFC_RUN__MONTH", run_month)
-        loaded = load_settings(os.path.join(app_root, "utility", "connector_config.yaml"))
+        loaded = load_settings(os.path.join(app_root, "utility", "connector_config_sit.yaml"))
         loaded.select_trigger(TRIGGER_8)
 
         source = make_source(loaded.source, trigger=loaded.trigger)

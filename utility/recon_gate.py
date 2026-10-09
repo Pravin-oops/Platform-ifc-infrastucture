@@ -1,43 +1,3 @@
-"""The upstream reconciliation gate.
-
-Before any work, this decides whether upstream has anything worth running for.
-The Databricks recon job appends one row per model run to a recon table that
-Athena reads::
-
-    target_table_name   `sit_cds_snsvc0080860_prepared_db`.bdb_ifc_synthetic_data_test.BDP_Corp_IFC_Trigger_9
-    status              SUCCESS | RECON_FAILED | FAILED
-    source_count, target_count, error_record_count
-    last_modified_ts    when the row was written (UTC)
-    idempotency_key, batch_id, model_name, job_run_id, env, dataproduct_name,
-    last_modified_by
-
-A rerun appends a new row rather than updating the old one, so the newest row
-for the run's trigger - matched on ``target_table_name`` - is upstream's current
-verdict. Only that row is read.
-
-What the newest row decides, each mapped onto the agreed failure catalogue so
-the ECS stopped-task record alone tells RTB which one fired:
-
-* no row for the trigger - upstream data was never received;
-* the row is not from the current month - upstream has not processed this month
-  yet, and publishing would republish last month;
-* ``FAILED`` - the dbt model itself did not run;
-* ``RECON_FAILED`` - the model ran but upstream's reconciliation failed;
-* ``SUCCESS`` with counts that disagree - upstream's own definition of a failed
-  reconciliation, reported as SUCCESS by mistake;
-* ``SUCCESS`` with both counts zero - a genuine month with no data. Not a
-  failure: exit 0, no alert, and the caller announces a zero-message batch to
-  TBB and closes the month;
-* ``SUCCESS`` with matching, non-zero counts - the run proceeds and publishes.
-
-Every blocking reason carries the row's own details (model, job run, batch,
-counts, timestamp), because that reason is what the alert says.
-
-Stopping is the safe direction: a recon table that cannot be queried, or a row
-that cannot be understood, blocks the run rather than letting it proceed on an
-assumption. A status outside the three is untrusted, never a green light.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -56,20 +16,14 @@ from utility.connector_utility import SourceAccessError
 
 logger = logging.getLogger(__name__)
 
-#: The one status that lets a run proceed.
 STATUS_SUCCESS = "SUCCESS"
-#: The model ran, but upstream's reconciliation did not balance.
 STATUS_RECON_FAILED = "RECON_FAILED"
-#: The dbt model itself did not run.
 STATUS_FAILED = "FAILED"
 
-#: Upstream reconciled SUCCESS with zero records: nothing to publish, and that
-#: is a delivered month, not a failure.
 OUTCOME_NO_DATA = "NO_DATA_THIS_MONTH"
 
 REQUIRED_FIELDS = ("last_modified_ts", "status")
 
-#: The row details quoted in every reason, in this order, when present.
 _DETAIL_FIELDS = (
     "status",
     "source_count",
@@ -96,19 +50,10 @@ class ReconDecision:
 
     @property
     def no_data(self) -> bool:
-        """A genuine empty month: the run stops, but successfully."""
         return self.outcome == OUTCOME_NO_DATA
 
     @property
     def blocking_scenario(self) -> catalog.Scenario:
-        """The catalogue scenario behind a block.
-
-        ``scenario_key`` is optional because a *proceeding* decision has none,
-        which a caller on the blocking path can see is impossible but a type
-        checker cannot. This narrows it in one place instead of at every call
-        site, and falls back to ``UNKNOWN`` rather than raising: a gate that
-        blocked the run must still be able to report why.
-        """
         if not self.scenario_key:
             return catalog.UNKNOWN
         return catalog.get(self.scenario_key)
@@ -139,13 +84,6 @@ def _blocked(outcome: str, scenario, reason: str, **extra) -> ReconDecision:
 
 
 def parse_last_modified(value: Any) -> Optional[datetime]:
-    """The row's ``last_modified_ts`` as a naive UTC datetime, or ``None``.
-
-    Athena returns the column already typed; text is accepted too, in every
-    form ``athena_query.parse_timestamp`` reads - including Athena's
-    ``2026-10-05 06:12:13.790087 UTC`` for a ``timestamp with time zone``
-    column and Databricks' ``2026-10-05T06:12:13.790+00:00``.
-    """
     if isinstance(value, datetime):
         if value.tzinfo is not None:
             return value.astimezone(timezone.utc).replace(tzinfo=None)
@@ -156,7 +94,6 @@ def parse_last_modified(value: Any) -> Optional[datetime]:
 
 
 def _as_int(value: Any) -> Optional[int]:
-    """Counts arrive as numbers (bigint columns) or, defensively, as strings."""
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
@@ -172,18 +109,10 @@ def _as_int(value: Any) -> Optional[int]:
 
 
 def normalise_target(name: str) -> str:
-    """``target_table_name`` compared without backticks or case.
-
-    Databricks names are case-insensitive and the catalog part is quoted with
-    backticks because it holds hyphens, so a row written as
-    ```sit_cds_snsvc0080860_prepared_db`.bdb_ifc_synthetic_data_test.BDP_Corp_IFC_Trigger_9`` and a config
-    value written without the backticks still match.
-    """
     return str(name).replace("`", "").strip().lower()
 
 
 def recon_query(table: str, target: str) -> Tuple[str, List[str]]:
-    """The SQL for the newest row naming ``target``, and its parameters."""
     sql = (
         f"SELECT * FROM {athena_table(table)} "
         "WHERE lower(replace(target_table_name, '`', '')) = ? "
@@ -194,7 +123,6 @@ def recon_query(table: str, target: str) -> Tuple[str, List[str]]:
 
 
 def _json_safe(row: Dict[str, Any]) -> Dict[str, Any]:
-    """The row as it goes into the summary, manifest and alert: JSON values only."""
     return {
         key: value.isoformat() if isinstance(value, (date, datetime)) else value
         for key, value in row.items()
@@ -214,15 +142,6 @@ def evaluate(
     client: Any = None,
     sleep: Callable[[float], None] = time.sleep,
 ) -> ReconDecision:
-    """Decide from the recon table whether upstream has produced this month's data.
-
-    ``settings`` is ``ReconSettings`` with ``table`` and ``target_table``
-    resolved; ``athena`` is ``source.athena`` (workgroup, catalog, result
-    location, polling). ``execution_month`` is ``YYYY-MM`` - the month the
-    newest row's ``last_modified_ts`` has to fall in. The entry point passes the
-    current month, not ``IFC_RUN__MONTH``: upstream writes its recon row when it
-    runs, even when an earlier month is being reprocessed.
-    """
     table, target = settings.table, settings.target_table
     if not table or not target:
         raise ValueError("recon.table and the run's recon target must be resolved before evaluating")
@@ -267,7 +186,6 @@ def evaluate(
             **common,
         )
 
-    # 1. Is it this month's?
     last_modified = parse_last_modified(raw.get("last_modified_ts"))
     if last_modified is None:
         return _blocked(
@@ -288,7 +206,6 @@ def evaluate(
             **common,
         )
 
-    # 2. Did the model run, and did upstream's own reconciliation pass?
     status = str(raw.get("status", "")).strip().upper()
 
     if status == STATUS_FAILED:
@@ -310,10 +227,6 @@ def evaluate(
         )
 
     if status != STATUS_SUCCESS:
-        # The contract is exactly three statuses. Anything else means the row
-        # does not match the contract it was read under, so it is untrusted
-        # rather than a fourth outcome to interpret - there is no state in which
-        # an unknown status is a green light.
         return _blocked(
             "UPSTREAM_RECON_UNREADABLE",
             catalog.SCHEMA_VALIDATION_FAILURE,
@@ -322,7 +235,6 @@ def evaluate(
             **common,
         )
 
-    # 3. It succeeded - but did it produce anything?
     source_count = _as_int(raw.get("source_count"))
     target_count = _as_int(raw.get("target_count"))
     if source_count is None or target_count is None:
@@ -334,8 +246,6 @@ def evaluate(
         )
 
     if source_count == 0 and target_count == 0:
-        # Stops the run - there is nothing to publish - but it is not a
-        # failure: no catalogue scenario, exit 0.
         return ReconDecision(
             proceed=False,
             outcome=OUTCOME_NO_DATA,
@@ -347,10 +257,6 @@ def evaluate(
             **common,
         )
 
-    # Counts that disagree are upstream's own definition of a failed
-    # reconciliation, so a SUCCESS carrying them is a contradiction: upstream
-    # should have written RECON_FAILED and did not. Stop rather than publish a
-    # month upstream cannot account for.
     if source_count != target_count:
         return _blocked(
             "UPSTREAM_COUNT_MISMATCH",

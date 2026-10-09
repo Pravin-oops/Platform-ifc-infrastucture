@@ -1,4 +1,4 @@
-"""triggerOriginatingSystem and idSystem follow app.environment."""
+"""triggerOriginatingSystem follows app.environment; idSystem is the same everywhere."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from utility.connector_utility import load_schema_document
 from tests.test_envelope import trigger_8_event
 from utility.tb_outcome_schema import EnvelopeBuilder
 
-CONFIG = os.path.join(os.path.dirname(__file__), "..", "utility", "connector_config.yaml")
+CONFIG = os.path.join(os.path.dirname(__file__), "..", "utility", "connector_config_sit.yaml")
 
 #: The service number agreed for each environment.
 EXPECTED = {
@@ -49,7 +49,7 @@ def test_an_unknown_environment_stops_rather_than_borrowing_a_code(settings_for)
 
 
 @pytest.mark.parametrize("environment, code", sorted(EXPECTED.items()))
-def test_the_record_carries_the_code_as_both_fields_and_starts_its_trigger_id(environment, code):
+def test_the_code_is_the_originating_system_and_starts_the_trigger_id(environment, code):
     builder = EnvelopeBuilder(
         avro_schema=load_schema_document("utility/schema.json"),
         originating_system=code,
@@ -59,7 +59,7 @@ def test_the_record_carries_the_code_as_both_fields_and_starts_its_trigger_id(en
     built = builder.build(trigger_8_event())
 
     assert built.record["triggerOriginatingSystem"] == code
-    assert built.record["idSystem"] == code
+    assert built.record["idSystem"] == "UK-C CRIME"
     assert built.trigger_id.startswith(f"{code}_KYCRefresh_")
     assert '"system":"%s"' % code in built.business_key
 

@@ -220,7 +220,7 @@ class TestTemplateEnvironment:
         for name in list(os.environ):
             if name.startswith(("CYBERARK_", "IFC_")):
                 monkeypatch.delenv(name)
-        path = os.path.join(os.path.dirname(__file__), "..", "utility", "connector_config.yaml")
+        path = os.path.join(os.path.dirname(__file__), "..", "utility", "connector_config_sit.yaml")
 
         def load(**env: str):
             for name, value in env.items():

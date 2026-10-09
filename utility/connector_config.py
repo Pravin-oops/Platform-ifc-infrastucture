@@ -1,19 +1,3 @@
-"""Typed configuration for the IFC trigger connector.
-
-Config is layered, lowest precedence first:
-
-  1. defaults declared on the models below
-  2. the YAML document named by ``--config`` / ``APP_CONFIG_PATH`` (local path or s3://)
-  3. the ``CYBERARK_*`` environment variables the ECS product template sets
-     (``CYBERARK_ENV``), for the ``cyberark`` section
-  4. ``IFC_`` environment variables (double underscore separates sections,
-     e.g. ``IFC_KAFKA__TOPIC``) so an ECS task definition can override any
-     single value without republishing the config object to S3.
-
-Secrets never live here. CyberArk CCP supplies the BSP system-account
-credentials at runtime; only the *location* of the secret is configuration.
-"""
-
 from __future__ import annotations
 
 import json
@@ -26,22 +10,15 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from utility.trigger_definitions import resolve as resolve_trigger
 
-# Broker-enforced ceiling documented in the TBB failure catalogue (Message Too
-# Large). Kept just under 800 KiB so the Avro envelope and headers still fit.
 DEFAULT_MAX_MESSAGE_BYTES = 800 * 1024
 
 
 class AppSettings(BaseModel):
     name: str = "ifc-trigger-connector"
-    #: Selects the envelope's triggerOriginatingSystem and idSystem (see
-    #: EnvelopeSettings). The other envelope constants (triggerType,
-    #: triggerOriginatingBU, idType) are in tb_outcome_schema.
     environment: str = "UAT"
     log_level: str = "INFO"
 
 
-#: triggerOriginatingSystem and idSystem for each app.environment: the
-#: environment's service number.
 DEFAULT_ORIGINATING_SYSTEMS: Dict[str, str] = {
     "DEV": "SNSVC0084379",
     "SIT": "SNSVC0084378",
@@ -54,15 +31,15 @@ _SYSTEM_CODE = re.compile(r"^[A-Za-z0-9-]+$")
 
 
 class EnvelopeSettings(BaseModel):
-    #: app.environment (any case) -> the value sent as both
-    #: triggerOriginatingSystem and idSystem, and the first part of every
-    #: trigger ID. An environment missing here stops the run at startup.
     originating_systems: Dict[str, str] = Field(default_factory=lambda: dict(DEFAULT_ORIGINATING_SYSTEMS))
-    #: Environments (any case) whose upstream data is tokenised, so payload
-    #: fields declare the policy applied to them (UK_TOK_AC_L0R0_UNC_DE on
-    #: Client Relationship Owner Name). Everywhere else every
-    #: fieldEncryptionPolicy is empty.
     tokenised_environments: List[str] = Field(default_factory=lambda: ["PROD"])
+
+    @field_validator("tokenised_environments", mode="before")
+    @classmethod
+    def _split_a_string(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return value.split(",")
+        return value
 
     @field_validator("tokenised_environments")
     @classmethod
@@ -73,7 +50,6 @@ class EnvelopeSettings(BaseModel):
     @classmethod
     def _normalise(cls, value: Dict[str, str]) -> Dict[str, str]:
         systems = {str(env).strip().upper(): str(code).strip() for env, code in value.items()}
-        # The code is the trigger ID's first part, which is '_'-separated.
         bad = {env: code for env, code in systems.items() if not _SYSTEM_CODE.match(code)}
         if bad:
             raise ValueError(f"envelope.originating_systems codes must be letters, digits or '-': {bad}")
@@ -81,28 +57,13 @@ class EnvelopeSettings(BaseModel):
 
 
 class RunSettings(BaseModel):
-    """One invocation publishes one trigger's month and exits (ECS RunTask
-    under EventBridge Scheduler)."""
-
     shutdown_grace_seconds: int = Field(
         default=90,
         ge=5,
         description="Must be <= the ECS task definition stopTimeout, or SIGKILL wins.",
     )
-    #: Which trigger this invocation publishes. EventBridge Scheduler supplies it
-    #: on every invocation as ``IFC_RUN__TRIGGER``; a run without it fails.
     trigger: Optional[str] = None
-    #: Bypass the weekend and already-delivered gates. Operator decision for a
-    #: re-delivery, never a scheduled value - see ``run_gate``.
     force: bool = False
-    #: Reprocess a past month instead of the current one: ``YYYY-MM`` (or
-    #: ``MONTH_YYYY``), normally ``IFC_RUN__MONTH`` on a one-off
-    #: RunTask. The run then queries the month before it (``2026-08`` reads
-    #: ``business_date = 2026-07-31``), stamps that as the business month and
-    #: records the outcome against it - exactly as the run that month would
-    #: have. The recon check still needs a recon row from the current month,
-    #: since upstream writes it when it runs. Unset, the month is the current one. A month
-    #: already delivered still needs ``force``.
     month: Optional[str] = None
 
     @field_validator("trigger", mode="before")
@@ -121,22 +82,11 @@ class RunSettings(BaseModel):
 
 
 class RunMarkerSettings(BaseModel):
-    """Where the record of each invocation's outcome is appended.
-
-    A JSON Lines file - an ``s3://bucket/folder/run_markers.json`` URI, or a
-    local path - that the run gate reads to decide whether this month is
-    already delivered, and that Athena queries as a table over the folder.
-    Leave ``path`` unset to switch the gate off (local runs).
-    """
-
     path: Optional[str] = None
 
     @model_validator(mode="before")
     @classmethod
     def _no_table(cls, data: Any) -> Any:
-        # The DynamoDB table is gone. A config still naming it must fail rather
-        # than be ignored: an ignored key leaves ``path`` unset, which switches
-        # the gate off and lets every date in the window republish the month.
         if isinstance(data, dict) and data.get("table_name"):
             raise ValueError(
                 "run_marker.table_name is no longer supported (DynamoDB is not used); "
@@ -154,12 +104,6 @@ class RunMarkerSettings(BaseModel):
 
 
 def canonical_trigger(value: Any) -> Optional[str]:
-    """``'trigger 9'``, ``'TRIGGER-9'``, ``9`` -> ``'TRIGGER_9'``.
-
-    The scheduler's spelling is not ours to control, but the run marker key and
-    the source lookup must agree on one, or 'trigger 9' and 'TRIGGER_9' would
-    each deliver the same month.
-    """
     if value is None or (isinstance(value, str) and not value.strip()):
         return None
     try:
@@ -168,20 +112,16 @@ def canonical_trigger(value: Any) -> Optional[str]:
         raise ValueError(str(exc)) from None
 
 
-#: A bare SQL identifier. Table and column names cannot be bound as query
-#: parameters, so they are checked against this before being quoted into SQL.
 _SQL_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def sql_identifier(value: str, *, what: str) -> str:
-    """``value`` double-quoted for Athena, or ``ValueError`` if it is not a plain name."""
     if not isinstance(value, str) or not _SQL_IDENTIFIER.match(value):
         raise ValueError(f"{what} {value!r} is not a plain SQL identifier")
     return f'"{value}"'
 
 
 def athena_table(name: str) -> str:
-    """``database.table`` as a quoted, validated SQL table reference."""
     parts = name.split(".") if isinstance(name, str) else []
     if len(parts) != 2:
         raise ValueError(f"Athena source {name!r} must be named as database.table")
@@ -193,20 +133,10 @@ def athena_table(name: str) -> str:
 
 
 class AthenaSettings(BaseModel):
-    """How the trigger tables are queried through Athena."""
-
     workgroup: str = "primary"
     catalog: str = "AwsDataCatalog"
-    #: Where Athena writes result files. ``None`` defers to the workgroup, which
-    #: is the right place to enforce the location and its KMS key.
     output_location: Optional[str] = None
-    #: The column the Databricks jobs filtered on. Upstream stamps every row of
-    #: a month with that month's last day, so a run reads the rows equal to the
-    #: last day of the previous month (a September run reads the 31 August rows).
     business_date_column: str = "business_date"
-    #: Optional deterministic row order. Sequence numbers are allocated per CSID
-    #: in the order rows arrive, so a re-run only reproduces them if the order
-    #: is fixed.
     order_by: List[str] = Field(default_factory=list)
     poll_interval_seconds: float = Field(default=1.0, gt=0)
     query_timeout_seconds: int = Field(default=300, ge=10)
@@ -220,23 +150,10 @@ class AthenaSettings(BaseModel):
 
 
 class SourceSettings(BaseModel):
-    """Where trigger events come from: one Athena (Iceberg) table per trigger.
-
-    Athena is the only source this project may read. Unknown keys are rejected,
-    so a config still carrying the old S3 extract settings (``type``, ``path``,
-    ``trigger_paths``, ``file_suffixes`` ...) fails at load instead of being
-    silently ignored.
-    """
-
     model_config = ConfigDict(extra="forbid")
 
     athena: AthenaSettings = Field(default_factory=AthenaSettings)
-    #: Per-trigger table as ``database.table``, keyed by trigger (any accepted
-    #: spelling). ``IFC_RUN__TRIGGER`` decides which one a run queries.
     trigger_tables: Dict[str, str] = Field(default_factory=dict)
-    #: Fallback table, used when the run's trigger has no ``trigger_tables``
-    #: entry. Production leaves it unset, so an unmapped trigger fails rather
-    #: than reading another trigger's table.
     table: Optional[str] = None
 
     @field_validator("trigger_tables", mode="before")
@@ -257,12 +174,6 @@ class SourceSettings(BaseModel):
 
     @property
     def resolved_table(self) -> str:
-        """The ``database.table`` this run queries.
-
-        ``table`` is optional in config because a trigger's ``trigger_tables``
-        entry supplies it, but by the time the source is read
-        ``ConnectorSettings.select_trigger`` must have resolved it.
-        """
         if not self.table:
             raise ValueError(
                 "source.table is not resolved: set IFC_RUN__TRIGGER so the trigger's "
@@ -272,30 +183,11 @@ class SourceSettings(BaseModel):
 
 
 class ReconSettings(BaseModel):
-    """Where upstream's reconciliation rows are read from: one Athena table.
-
-    The Databricks recon job appends a row per model run, naming the table it
-    built in ``target_table_name``. A run reads the newest row for its own
-    trigger's Databricks table and decides from it whether to publish (see
-    ``recon_gate``). The query runs through ``source.athena``'s workgroup,
-    catalog and result location. ``enabled: false`` switches the check off.
-
-    Unknown keys are rejected, so a config still carrying the old S3 recon
-    settings (``path``, ``trigger_paths``, ``file_suffixes`` ...) fails at load
-    instead of the check being silently switched off.
-    """
-
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = True
-    #: The recon table, as ``database.table``.
     table: Optional[str] = None
-    #: Per trigger, the ``target_table_name`` value its rows carry - the
-    #: Databricks table the trigger's model writes. Keyed by trigger (any
-    #: accepted spelling); ``IFC_RUN__TRIGGER`` decides which one a run reads.
     trigger_targets: Dict[str, str] = Field(default_factory=dict)
-    #: This run's ``target_table_name``, set from ``trigger_targets`` by
-    #: ``ConnectorSettings.select_trigger``.
     target_table: Optional[str] = None
 
     @field_validator("trigger_targets", mode="before")
@@ -315,24 +207,12 @@ class ReconSettings(BaseModel):
 
 class KafkaSettings(BaseModel):
     topic: str
-    #: BSP client YAML (librdkafka props); local path or s3://. Omit only for a
-    #: local broker, where ``overrides`` supplies bootstrap.servers directly and
-    #: the BSP client is not involved at all.
     bsp_config_path: Optional[str] = None
-    #: app.environment (any case) -> that environment's BSP client YAML. The
-    #: matching entry replaces bsp_config_path when the config is loaded,
-    #: unless IFC_KAFKA__BSP_CONFIG_PATH names one for the task.
     bsp_config_paths: Dict[str, str] = Field(default_factory=dict)
     max_message_bytes: int = Field(default=DEFAULT_MAX_MESSAGE_BYTES, ge=1024)
     flush_timeout_seconds: int = Field(default=120, ge=1)
     local_queue_max_messages: int = Field(default=20000, ge=100)
-    #: Extra librdkafka properties merged over whatever the BSP client returns.
-    #: Anything security-related is deliberately left to BSP.
     overrides: Dict[str, Any] = Field(default_factory=dict)
-    #: librdkafka debug contexts, e.g. ``security,broker,protocol``. Turns on
-    #: librdkafka's own trace (log level 7) into the connector's JSON logs, and
-    #: logs the lines leading up to a failed metadata request. For diagnosis
-    #: only: it is verbose. Never ``all`` or ``conf``, which print the config.
     debug: Optional[str] = None
 
     @field_validator("debug")
@@ -345,16 +225,12 @@ class KafkaSettings(BaseModel):
 
 
 def _join_url_list(value: Any) -> Any:
-    """A YAML list of registry URLs, as the comma-separated string the rest expects."""
     if isinstance(value, (list, tuple)):
         return ",".join(str(item) for item in value)
     return value
 
 
 class SchemaRegistryModeSettings(BaseModel):
-    """Values for one registry mode. Each one set here overrides the shared
-    ``schema_registry`` value while that mode is active; unset ones fall back."""
-
     url: Optional[str] = None
     ca_location: Optional[str] = None
     timeout_seconds: Optional[int] = Field(default=None, ge=1)
@@ -370,31 +246,15 @@ class SchemaRegistryModeSettings(BaseModel):
 
 
 class SchemaRegistrySettings(BaseModel):
-    #: SECURE: the 8095 registry with the BAM bearer token. DEV: the 8082
-    #: registry with no token, or a schema_id pinned in config. Set in the
-    #: YAML; IFC_SCHEMA_REGISTRY__MODE on the task overrides it.
     mode: Literal["DEV", "SECURE"] = "SECURE"
-    #: Per-mode values; the block for ``mode`` overrides the shared values
-    #: below, so the rest of the connector reads one set of settings.
     dev: Optional[SchemaRegistryModeSettings] = None
     secure: Optional[SchemaRegistryModeSettings] = None
-    #: One registry URL, or several separated by commas (a YAML list is also
-    #: accepted). Every one is checked at preflight; the schema is looked up on
-    #: the first that answers, so one registry node being down is not an outage.
     url: Optional[str] = None
     ca_location: Optional[str] = None
     timeout_seconds: int = Field(default=30, ge=1)
-    #: Refresh the SR bearer token this many seconds before its ``exp`` claim.
     token_refresh_margin_seconds: int = Field(default=300, ge=30)
-    #: Attempts at each registry request (schema lookup) before preflight fails,
-    #: backing off per ``resilience.backoff_*_seconds``.
     max_attempts: int = Field(default=5, ge=1)
-    #: Local .avsc used to serialise. Compared against the registered subject at
-    #: preflight so producer/registry drift fails before any publish happens.
     schema_path: str = "utility/schema.json"
-    #: DEV only: a registry id to frame records with instead of looking it up.
-    #: Consumers deserialise with Confluent's KafkaAvroDeserializer, which needs
-    #: the magic byte and id on every record, DEV or not.
     schema_id: Optional[int] = Field(default=None, ge=1)
 
     @field_validator("mode", mode="before")
@@ -417,7 +277,6 @@ class SchemaRegistrySettings(BaseModel):
 
     @property
     def urls(self) -> List[str]:
-        """The registry URLs in configured order, without trailing slashes."""
         return [part.strip().rstrip("/") for part in (self.url or "").split(",") if part.strip()]
 
     @model_validator(mode="after")
@@ -431,24 +290,11 @@ class SchemaRegistrySettings(BaseModel):
 
 
 class CaCertificateSettings(BaseModel):
-    """The Barclays root CA, fetched from Secrets Manager at container start.
-
-    Written to ``path`` before the BSP client is built; ``ssl.ca.location`` in
-    the BSP client YAML and ``schema_registry.ca_location`` point at the same
-    file. No ``secret_id`` means nothing is fetched, for a local run that has
-    the CA on disk already.
-    """
-
-    #: Secrets Manager name or ARN of the CA certificate, a plain PEM.
     secret_id: Optional[str] = None
     secret_region: str = "eu-west-1"
-    #: Where the CA is written. /tmp, because the container runs as a
-    #: non-root user that cannot write anywhere else outside its home.
     path: str = "/tmp/ifc-certs/CARoot.pem"
 
 
-#: Environment variables the ECS product template sets from its CyberArk
-#: parameters, and the ``cyberark`` field each one fills.
 CYBERARK_ENV: Dict[str, str] = {
     "CYBERARK_ENABLED": "enabled",
     "CYBERARK_CCP_URL": "base_url",
@@ -459,44 +305,19 @@ CYBERARK_ENV: Dict[str, str] = {
 
 
 class CyberArkSettings(BaseModel):
-    """Where the BSP system-account credential lives in CyberArk.
-
-    Locations only. The client certificate and key are read from the Secrets
-    Manager secrets named here; the account itself comes from CCP at runtime.
-
-    In ECS the product template supplies ``enabled``, ``base_url``, ``app_id``,
-    ``safe`` and ``object`` as ``CYBERARK_*`` environment variables (see
-    ``CYBERARK_ENV``), so they are not repeated in the YAML.
-    """
-
-    #: Off for dev runs, which publish without a BSP system account: CCP is not
-    #: called and whatever ``BSP_USERNAME``/``BSP_PASSWORD`` the environment
-    #: holds is used as is.
     enabled: bool = True
-    #: CCP host, or the full ``.../AIMWebService_certs/api/Accounts`` URL; the
-    #: fetcher appends the endpoint path only when it is not already there.
     base_url: Optional[str] = None
-    #: Application ID registered with CyberArk (``APP_<name>``).
     app_id: Optional[str] = None
-    #: Safe that holds the account.
     safe: Optional[str] = None
     folder: str = "Root"
-    #: The account's name in the Safe, sent as CCP's ``Object``.
     object: Optional[str] = None
-    #: Secrets Manager name or ARN of the client certificate, a plain PEM.
     client_cert_secret_id: str
-    #: Secrets Manager name or ARN of the client private key, a plain
-    #: unencrypted PEM.
     client_key_secret_id: str
     secret_region: str = "eu-west-1"
-    #: Trust store for the CCP *server* certificate.
     ca_bundle_path: str = "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"
     ssl_verify: bool = True
     request_timeout: int = 30
-    #: Attempts at the credential when CCP or Secrets Manager is unavailable.
-    #: A rejected certificate or query fails on the first attempt.
     max_attempts: int = Field(default=3, ge=1)
-    #: Realm appended to the CyberArk username to form the BSP principal.
     principal_realm: str = "@INTRANET.BARCAPINT.COM"
 
     @model_validator(mode="after")
@@ -513,16 +334,10 @@ class CyberArkSettings(BaseModel):
 
 
 class AuditSettings(BaseModel):
-    #: Where the audit evidence is written. Either a bare bucket name, or a full
-    #: ``s3://bucket/folder`` URI when the evidence lives under a folder rather
-    #: than at the root of a bucket of its own. The three prefixes below are
-    #: appended to it, so a URI with a folder nests them under that folder.
     bucket: Optional[str] = None
     manifest_prefix: str = "triggerbackbone/ifc/manifests/"
     quarantine_prefix: str = "triggerbackbone/ifc/quarantine/"
     payload_prefix: str = "triggerbackbone/ifc/payloads/"
-    #: Writing every serialised record to S3 is control evidence but costs one
-    #: PUT per message; disable for high-volume environments.
     write_payloads: bool = False
 
     @field_validator("bucket", mode="before")
@@ -532,12 +347,6 @@ class AuditSettings(BaseModel):
 
     @property
     def root(self) -> str:
-        """``bucket`` as an ``s3://`` URI, however it was written.
-
-        A bare bucket name gains the scheme; a URI keeps whatever folder it
-        already names. Normalising here rather than at each call site is what
-        stops a configured ``s3://...`` value becoming ``s3://s3://...``.
-        """
         if not self.bucket:
             raise ValueError("audit.bucket is not configured")
         if self.bucket.startswith("s3://"):
@@ -546,8 +355,6 @@ class AuditSettings(BaseModel):
 
 
 class ResilienceSettings(BaseModel):
-    #: Attempts at publishing each record, backing off per ``backoff_*_seconds``;
-    #: every failed attempt counts towards the circuit breaker.
     max_publish_attempts: int = Field(default=5, ge=1)
     backoff_base_seconds: float = Field(default=1.0, gt=0)
     backoff_max_seconds: float = Field(default=60.0, gt=0)
@@ -556,19 +363,9 @@ class ResilienceSettings(BaseModel):
     )
     circuit_breaker_reset_seconds: float = Field(default=120.0, gt=0)
     preflight_enabled: bool = True
-    #: Per-endpoint DNS/TCP connect timeout at preflight: how long an
-    #: unreachable endpoint takes to report.
     preflight_timeout_seconds: int = Field(default=30, ge=1)
-    #: Off: the first publish brings the broker connection up, as the Trigger
-    #: Backbone's produce_app does, and topic or ACL problems arrive as
-    #: delivery errors. On: an explicit list_topics() before any record is read,
-    #: which fails fast with the reason - kept for diagnosis.
     preflight_metadata_enabled: bool = False
-    #: How long the metadata request may take. librdkafka retries the TLS and
-    #: SASL handshakes across the brokers within it, so it is the longer one.
     preflight_metadata_timeout_seconds: int = Field(default=60, ge=1)
-    #: Fail the run if more than this fraction of records is quarantined, so a
-    #: run cannot silently publish a fraction of its content and report success.
     max_quarantine_ratio: float = Field(default=0.05, ge=0.0, le=1.0)
 
 
@@ -580,13 +377,8 @@ class HealthSettings(BaseModel):
 
 class NotificationSettings(BaseModel):
     sns_topic_arn: Optional[str] = None
-    #: Included in the alert subject so RTB can route without opening the body.
     application_label: str = "IFC Trigger Connector"
-    #: The Trigger Backbone batch-completion topic. Separate from
-    #: ``sns_topic_arn``: that one carries failures to RTB, this one carries a
-    #: successful business event that TBB starts downstream processing from.
     batch_sns_topic_arn: Optional[str] = None
-    #: Published on the completion event as ``Trigger_Originating_BU``.
     trigger_originating_bu: str = "UK-C"
     batch_notifications_enabled: bool = True
 
@@ -631,14 +423,6 @@ class ConnectorSettings(BaseModel):
 
     @property
     def recon_active(self) -> bool:
-        """Whether the upstream reconciliation gate applies to this run.
-
-        Mirrors ``gate_active``: a recon table, or a target for this run's
-        trigger, that is not configured switches the gate off, so a local run
-        needs no recon feed. ``recon.enabled: false``
-        is the explicit off-switch for a deployment that has one but wants it
-        bypassed.
-        """
         if not self.recon.enabled:
             return False
         target = self.recon.target_table or self.recon.trigger_targets.get(self.run.trigger or "")
@@ -646,41 +430,26 @@ class ConnectorSettings(BaseModel):
 
     @property
     def originating_system(self) -> str:
-        """The environment's service number: triggerOriginatingSystem and idSystem.
-
-        Looked up from ``app.environment`` (any case). Resolved when a run starts,
-        not at load, so tooling can read a config for an environment it does not
-        publish from; a run never falls back to another environment's code.
-        """
         environment = self.app.environment.strip().upper()
         try:
             return self.envelope.originating_systems[environment]
         except KeyError:
             raise ValueError(
                 f"app.environment {self.app.environment!r} has no envelope.originating_systems "
-                f"entry, so triggerOriginatingSystem/idSystem cannot be set; known: "
+                f"entry, so triggerOriginatingSystem cannot be set; known: "
                 f"{sorted(self.envelope.originating_systems)}"
             ) from None
 
     @property
     def declares_encryption_policies(self) -> bool:
-        """Whether payload fields carry their tokenisation policy in this environment."""
         return self.app.environment.strip().upper() in self.envelope.tokenised_environments
 
     @property
     def gate_active(self) -> bool:
-        """Whether the entry-point run gate applies: only with a marker file."""
         return bool(self.run_marker.path)
 
     @property
     def trigger(self) -> str:
-        """This run's trigger, as a ``str``.
-
-        ``run.trigger`` is optional in config because ``IFC_RUN__TRIGGER`` supplies
-        it per invocation; this is the one place a run without it fails. The
-        table holds only attribute columns, so the trigger is what says which
-        sub-type the rows are published as.
-        """
         if not self.run.trigger:
             raise ValueError(
                 "No trigger specified: set IFC_RUN__TRIGGER (TRIGGER_8 | TRIGGER_9 | TRIGGER_21)"
@@ -688,11 +457,6 @@ class ConnectorSettings(BaseModel):
         return self.run.trigger
 
     def select_trigger(self, trigger: Any) -> str:
-        """Fix this run's trigger and point the source at that trigger's table.
-
-        ``trigger`` is the invocation's own value; ``None`` keeps the one from
-        ``IFC_RUN__TRIGGER``.
-        """
         if trigger is not None:
             self.run.trigger = canonical_trigger(trigger)
         selected = self.trigger
@@ -700,8 +464,6 @@ class ConnectorSettings(BaseModel):
         if selected in self.source.trigger_tables:
             self.source.table = self.source.trigger_tables[selected]
 
-        # The recon rows are looked up by the same trigger, so the table read and
-        # the reconciliation checked cannot end up being different triggers'.
         if selected in self.recon.trigger_targets:
             self.recon.target_table = self.recon.trigger_targets[selected]
 
@@ -712,17 +474,11 @@ class ConnectorSettings(BaseModel):
         return selected
 
 
-
-# ---------------------------------------------------------------------------
-# Loading
-# ---------------------------------------------------------------------------
-
 _ENV_PREFIX = "IFC_"
 _SECTION_SEP = "__"
 
 
 def _coerce(raw: str) -> Any:
-    """Environment values arrive as strings; recover ints/bools/JSON where obvious."""
     lowered = raw.strip().lower()
     if lowered in {"true", "false"}:
         return lowered == "true"
@@ -734,10 +490,11 @@ def _coerce(raw: str) -> Any:
         return raw
 
 
-#: Settings where an empty IFC_ variable means "not set, use the config file".
-#: Elsewhere an empty value is a deliberate null (an empty
-#: IFC_CA_CERTIFICATE__SECRET_ID turns the CA download off).
-_EMPTY_MEANS_UNSET = {("schema_registry", "mode"), ("app", "environment")}
+_EMPTY_MEANS_UNSET = {
+    ("schema_registry", "mode"),
+    ("app", "environment"),
+    ("envelope", "tokenised_environments"),
+}
 
 
 def _env_overlay() -> Dict[str, Any]:
@@ -752,7 +509,6 @@ def _env_overlay() -> Dict[str, Any]:
         for part in path[:-1]:
             nxt = cursor.setdefault(part, {})
             if not isinstance(nxt, dict):
-                # A scalar already claimed this path; the more specific key wins.
                 nxt = {}
                 cursor[part] = nxt
             cursor = nxt
@@ -761,7 +517,6 @@ def _env_overlay() -> Dict[str, Any]:
 
 
 def _cyberark_env_overlay() -> Dict[str, Any]:
-    """The template's ``CYBERARK_*`` variables, as a ``cyberark`` section."""
     section = {
         field: os.environ[env].strip()
         for env, field in CYBERARK_ENV.items()
@@ -781,12 +536,6 @@ def _deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]
 
 
 def _select_bsp_config(layered: Dict[str, Any]) -> None:
-    """Put this environment's BSP client YAML into kafka.bsp_config_path.
-
-    An explicit IFC_KAFKA__BSP_CONFIG_PATH on the task wins; otherwise the
-    kafka.bsp_config_paths entry for app.environment does; an environment
-    without one keeps kafka.bsp_config_path.
-    """
     if os.environ.get(f"{_ENV_PREFIX}KAFKA{_SECTION_SEP}BSP_CONFIG_PATH", "").strip():
         return
     kafka = layered.get("kafka")
@@ -799,11 +548,34 @@ def _select_bsp_config(layered: Dict[str, Any]) -> None:
         kafka["bsp_config_path"] = chosen
 
 
-def load_settings(config_path: str, *, reader=None) -> ConnectorSettings:
-    """Read the YAML config, apply the ``IFC_`` env overlay, validate.
+ENVIRONMENT_VARIABLE = "IFC_APP__ENVIRONMENT"
 
-    ``reader`` is injected by tests; it defaults to the S3-aware reader.
-    """
+ENVIRONMENT_CONFIGS = {
+    "DEV": "utility/connector_config_dev.yaml",
+    "SIT": "utility/connector_config_sit.yaml",
+    "PROD": "utility/connector_config_prod.yaml",
+}
+
+
+def config_path_for(environment: Optional[str]) -> str:
+    from utility.connector_utility import package_resource
+
+    name = (environment or "").strip().upper()
+    if not name:
+        raise ValueError(f"{ENVIRONMENT_VARIABLE} is not set; expected one of {', '.join(ENVIRONMENT_CONFIGS)}")
+    if name not in ENVIRONMENT_CONFIGS:
+        raise ValueError(
+            f"{ENVIRONMENT_VARIABLE}={environment!r} has no connector config; "
+            f"expected one of {', '.join(ENVIRONMENT_CONFIGS)}"
+        )
+
+    path = package_resource(ENVIRONMENT_CONFIGS[name])
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"{ENVIRONMENT_VARIABLE}={name} needs {ENVIRONMENT_CONFIGS[name]}, which is missing")
+    return path
+
+
+def load_settings(config_path: str, *, reader=None) -> ConnectorSettings:
     if reader is None:
         from utility.connector_utility import read_text
 
@@ -813,14 +585,10 @@ def load_settings(config_path: str, *, reader=None) -> ConnectorSettings:
     if not isinstance(document, dict):
         raise ValueError(f"Config at {config_path} is not a YAML mapping")
 
-    # IFC_ variables are applied last, so IFC_CYBERARK__* still overrides the
-    # template's CYBERARK_* for a single task.
     layered = _deep_merge(_deep_merge(document, _cyberark_env_overlay()), _env_overlay())
     _select_bsp_config(layered)
     settings = ConnectorSettings.model_validate(layered)
 
-    # The month is read deep inside path expansion and the envelope builder,
-    # which are not handed the settings, so it is pinned for the process here.
     from utility.run_gate import set_execution_month
 
     set_execution_month(settings.run.month)
