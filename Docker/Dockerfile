@@ -71,7 +71,7 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
     CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health/live', timeout=3).read()"]
 
-# main_ecs.py is the platform entry point: it reads APP_CONFIG_PATH from the task
-# definition and maps the run summary onto the exit code. main.py is the same
+# main_ecs.py is the platform entry point: IFC_APP__ENVIRONMENT (DEV | SIT | PROD) on the
+# task picks utility/connector_config_<env>.yaml, and the run summary maps onto the exit code. main.py is the same
 # pipeline with a CLI in front, for `docker run ... catalogue` and one-off runs.
 ENTRYPOINT ["python", "/app/ifc_trigger_connector/scripts/main_ecs.py"]

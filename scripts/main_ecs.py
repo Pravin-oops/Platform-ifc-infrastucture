@@ -20,13 +20,13 @@ APP_ROOT = Path(__file__).resolve().parent.parent
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
-# Pick up APP_CONFIG_PATH and the IFC_ overlay from <app root>/.env when one is
-# present. Variables injected by the ECS task definition always win.
+# Pick up the IFC_ overlay from <app root>/.env when one is present.
+# Variables injected by the ECS task definition always win.
 load_dotenv(APP_ROOT / ".env", override=False)
 
 from utility import failure_catalog as catalog
 from utility.audit_utility import new_run_id, write_invocation_manifest
-from utility.connector_config import load_settings
+from utility.connector_config import ENVIRONMENT_VARIABLE, config_path_for, load_settings
 from utility.error_classifier import ConnectorError, classify
 from utility.failure_notifier import Notifier
 from utility.health_utility import HealthServer, HealthState
@@ -44,9 +44,6 @@ from utility.trigger_batch_notifier import (
 
 logger = logging.getLogger("ifc_trigger_connector.ecs")
 
-DEFAULT_CONFIG_ENV = "APP_CONFIG_PATH"
-
-
 def ecs_task_metadata() -> Dict[str, Optional[str]]:
     """Identity of this task, for the run manifest and for alert routing."""
     return {
@@ -59,16 +56,11 @@ def ecs_task_metadata() -> Dict[str, Optional[str]]:
 
 
 def _load(event: Dict[str, Any]):
-    """Resolve the config, set the log level, return (settings, config_path)."""
-    config_path = event.get("config_path") or os.getenv(DEFAULT_CONFIG_ENV)
-    if not config_path:
-        raise RuntimeError(
-            f"Missing config path: pass event['config_path'] or set {DEFAULT_CONFIG_ENV}"
-        )
-
+    """Load the environment's config, set the log level, return (settings, config_path)."""
     # Configured twice on purpose: once so a config-loading failure is logged in
     # the right format, then again at the level the config asks for.
     configure_logging(os.getenv("IFC_LOG_LEVEL", "INFO"))
+    config_path = config_path_for(os.getenv(ENVIRONMENT_VARIABLE))
     settings = load_settings(config_path)
     # The trigger picks the Athena table, so it is required before anything else runs.
     settings.select_trigger(event.get("trigger"))

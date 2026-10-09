@@ -18,8 +18,8 @@ APP_ROOT = Path(__file__).resolve().parent.parent
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
-# Pick up APP_CONFIG_PATH and the IFC_ overlay from <app root>/.env when one is
-# present. Variables already set (e.g. by the ECS task definition) always win.
+# Pick up the IFC_ overlay from <app root>/.env when one is present.
+# Variables already set (e.g. by the ECS task definition) always win.
 load_dotenv(APP_ROOT / ".env", override=False)
 
 from utility import failure_catalog as catalog
@@ -27,20 +27,12 @@ from utility.error_classifier import ConnectorError, classify
 from utility.health_utility import HealthServer, HealthState
 from utility.observability_utility import Metrics, configure_logging
 from utility.resilience_utility import ShutdownSignal
-from utility.connector_config import load_settings
+from utility.connector_config import ENVIRONMENT_VARIABLE, config_path_for, load_settings
 
 logger = logging.getLogger("ifc_trigger_connector")
 
-DEFAULT_CONFIG_ENV = "APP_CONFIG_PATH"
-
-
 def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="ifc-connector", description="IFC trigger connector")
-    parser.add_argument(
-        "--config",
-        default=os.environ.get(DEFAULT_CONFIG_ENV),
-        help="Connector config YAML (local path or s3://). Defaults to $APP_CONFIG_PATH.",
-    )
     parser.add_argument("--log-level", default=None, help="Override app.log_level.")
 
     sub = parser.add_subparsers(dest="command")
@@ -73,26 +65,21 @@ def main(argv: Optional[List[str]] = None) -> int:
         configure_logging("WARNING")
         return _command_catalogue()
 
-    if not args.config:
-        print(
-            f"--config is required (or set {DEFAULT_CONFIG_ENV})",
-            file=sys.stderr,
-        )
-        return catalog.CONTAINER_FAILURE.exit_code
-
     # Logging is configured twice on purpose: once to capture config-loading
     # failures, then again at the level the config asks for.
     configure_logging(args.log_level or "INFO")
 
+    config_path = None
     try:
-        settings = load_settings(args.config)
+        config_path = config_path_for(os.getenv(ENVIRONMENT_VARIABLE))
+        settings = load_settings(config_path)
         # IFC_RUN__TRIGGER decides which Athena table this run reads.
         settings.select_trigger(None)
     except Exception as exc:
         classification = classify(exc, operation="load_settings")
         logger.error(
             "Configuration could not be loaded",
-            extra={"config_path": args.config, **classification.to_dict()},
+            extra={"config_path": config_path, **classification.to_dict()},
         )
         return catalog.CONTAINER_FAILURE.exit_code
 

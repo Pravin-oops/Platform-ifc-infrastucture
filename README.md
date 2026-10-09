@@ -112,7 +112,7 @@ Platform-ifc-infrastructure/      # the app root; imports are utility.*
 |
 ├── scripts/                      # Executable entry points
 │   ├── main.py                   # CLI: run, catalogue
-│   └── main_ecs.py               # ECS platform entry: APP_CONFIG_PATH -> exit code
+│   └── main_ecs.py               # ECS platform entry: IFC_APP__ENVIRONMENT -> exit code
 |
 ├── utility/
 │   ├── __init__.py
@@ -523,11 +523,11 @@ and report success.
 ### A trigger's monthly run
 
 ```bash
-APP_CONFIG_PATH=utility/connector_config_sit.yaml IFC_RUN__TRIGGER=TRIGGER_8 python scripts/main_ecs.py
+IFC_APP__ENVIRONMENT=SIT IFC_RUN__TRIGGER=TRIGGER_8 python scripts/main_ecs.py
 ```
 
-`APP_CONFIG_PATH` picks the environment: `utility/connector_config_sit.yaml` or
-`utility/connector_config_dev.yaml` (see [Configuration per environment](#configuration-per-environment)).
+`IFC_APP__ENVIRONMENT` (`DEV`, `SIT` or `PROD`) picks the connector config; no file name is passed
+in (see [Configuration per environment](#configuration-per-environment)).
 
 `IFC_RUN__TRIGGER` is required: it picks the Athena table and the published sub-type. The run
 needs AWS credentials that can query that table (see [Deployment](#deployment)).
@@ -535,7 +535,7 @@ needs AWS credentials that can query that table (see [Deployment](#deployment)).
 ### Reprocessing a past month
 
 ```bash
-APP_CONFIG_PATH=utility/connector_config_sit.yaml IFC_RUN__TRIGGER=TRIGGER_8 IFC_RUN__MONTH=2026-08 IFC_RUN__FORCE=true python scripts/main_ecs.py
+IFC_APP__ENVIRONMENT=SIT IFC_RUN__TRIGGER=TRIGGER_8 IFC_RUN__MONTH=2026-08 IFC_RUN__FORCE=true python scripts/main_ecs.py
 ```
 
 Runs as the August run did: queries `business_date = 2026-07-31` and records the outcome against
@@ -570,14 +570,17 @@ refuses to start. Records are always written in Confluent wire format, because t
 
 ### Configuration per environment
 
-Each environment has its own connector config, chosen with `APP_CONFIG_PATH` when the container
-runs. Each file fixes its `app.environment`, its BSP client YAML (`kafka.bsp_config_path`) and its
-Schema Registry mode.
+`IFC_APP__ENVIRONMENT`, set when the container starts, picks the connector config; the config file
+name is never passed in. Each connector config fixes its `app.environment`, its BSP client YAML
+(`kafka.bsp_config_path`) and its Schema Registry mode. The map is `ENVIRONMENT_CONFIGS` in
+`utility/connector_config.py`. A missing or unknown environment, or a file missing from the image,
+stops the container at startup.
 
-| `APP_CONFIG_PATH` | Environment | BSP client YAML | Connection | Registry |
+| `IFC_APP__ENVIRONMENT` | Connector config | BSP client YAML | Connection | Registry |
 |---|---|---|---|---|
-| `utility/connector_config_sit.yaml` | `SIT` | `utility/bsp_sit_config.yaml` | `SASL_SSL` on 9095, BAM token via the BSP `oauth_cb` | SECURE |
-| `utility/connector_config_dev.yaml` | `DEV` | `utility/bsp_dev_config.yaml` | `PLAINTEXT` on 9092, the DEV-only unsecured listener: no TLS, no SASL, no token | DEV, schema id 1299 |
+| `DEV` | `utility/connector_config_dev.yaml` | `utility/bsp_dev_config.yaml` | `PLAINTEXT` on 9092, the DEV-only unsecured listener: no TLS, no SASL, no token | DEV, schema id 1299 |
+| `SIT` | `utility/connector_config_sit.yaml` | `utility/bsp_sit_config.yaml` | `SASL_SSL` on 9095, BAM token via the BSP `oauth_cb` | SECURE |
+| `PROD` | `utility/connector_config_prod.yaml` | `utility/bsp_prod_config.yaml` | not yet in the repository | |
 
 A DEV run gets the DEV brokers, service number `SNSVC0084379`, schema id 1299, and no BAM token
 for the registry or the brokers. `IFC_KAFKA__BSP_CONFIG_PATH` on a task still overrides the BSP
@@ -654,9 +657,9 @@ configuration, so the image must be able to resolve that index from inside the b
 
 ## Configuration
 
-Three layers, lowest precedence first: model defaults → the YAML at `--config` /
-`APP_CONFIG_PATH` (local or `s3://`) → `IFC_` environment variables, where a double underscore
-separates sections:
+Three layers, lowest precedence first: model defaults → the environment's YAML, picked by
+`IFC_APP__ENVIRONMENT` → `IFC_` environment variables, where a double underscore separates
+sections:
 
 ```
 IFC_KAFKA__TOPIC=tc01_fncmtrgrbb_ifc_tbb_kyc_refresh

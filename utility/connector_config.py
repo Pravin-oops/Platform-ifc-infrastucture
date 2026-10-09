@@ -668,6 +668,36 @@ def _select_bsp_config(layered: Dict[str, Any]) -> None:
         kafka["bsp_config_path"] = chosen
 
 
+#: Set at container start; picks the connector config, which names its BSP client YAML.
+ENVIRONMENT_VARIABLE = "IFC_APP__ENVIRONMENT"
+
+#: The connector config each environment loads, relative to the app root.
+ENVIRONMENT_CONFIGS = {
+    "DEV": "utility/connector_config_dev.yaml",
+    "SIT": "utility/connector_config_sit.yaml",
+    "PROD": "utility/connector_config_prod.yaml",
+}
+
+
+def config_path_for(environment: Optional[str]) -> str:
+    """The connector config for ``environment`` (any case), refused if unknown or absent."""
+    from utility.connector_utility import package_resource
+
+    name = (environment or "").strip().upper()
+    if not name:
+        raise ValueError(f"{ENVIRONMENT_VARIABLE} is not set; expected one of {', '.join(ENVIRONMENT_CONFIGS)}")
+    if name not in ENVIRONMENT_CONFIGS:
+        raise ValueError(
+            f"{ENVIRONMENT_VARIABLE}={environment!r} has no connector config; "
+            f"expected one of {', '.join(ENVIRONMENT_CONFIGS)}"
+        )
+
+    path = package_resource(ENVIRONMENT_CONFIGS[name])
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"{ENVIRONMENT_VARIABLE}={name} needs {ENVIRONMENT_CONFIGS[name]}, which is missing")
+    return path
+
+
 def load_settings(config_path: str, *, reader=None) -> ConnectorSettings:
     """Read the YAML config, apply the ``IFC_`` env overlay, validate."""
     if reader is None:
