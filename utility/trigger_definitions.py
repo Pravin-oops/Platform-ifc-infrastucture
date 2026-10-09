@@ -80,7 +80,7 @@ def _payload_fields() -> List[FieldSpec]:
         # Held as a string: it is an identifier, never arithmetic, and a bigint
         # rendered as Integer would lose leading zeros if the source ever pads.
         FieldSpec(
-            "Counterparty ID",
+            "Counterparty SDS ID / CSID",
             "counterparty_csid_sds",
             transform=normalise_identifier,
             max_length=MAX_LENGTHS["counterparty_csid_sds"],
@@ -110,7 +110,7 @@ def _payload_fields() -> List[FieldSpec]:
             default=DEFAULT_LOCATION,
             max_length=MAX_LENGTHS["client_relationship_owner_location"],
         ),
-        FieldSpec("Region", "region", max_length=MAX_LENGTHS["region"]),
+        FieldSpec("Client Region", "region", max_length=MAX_LENGTHS["region"]),
     ]
 
 

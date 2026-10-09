@@ -109,12 +109,12 @@ class TestEnvelope:
         assert [f["fieldName"] for f in fields] == [
             "Date of Request",
             "Counterparty Full Legal Entity Name",
-            "Counterparty ID",
+            "Counterparty SDS ID / CSID",
             "Client Relationship Owner Name",
             "Client Relationship Owner BRID",
             "Client Relationship Owner Business Unit",
             "Client Relationship Owner Location",
-            "Region",
+            "Client Region",
         ]
 
     def test_date_of_request_is_published_as_a_date_not_a_timestamp(self, builder):
@@ -365,7 +365,7 @@ class TestAllTriggers:
         built = builder.build(event)
         fields = {f["fieldName"]: f["fieldValue"] for f in built.payload_fields}
         assert built.record["idValue"] == "4471002233"
-        assert fields["Counterparty ID"] == "4471002233"
+        assert fields["Counterparty SDS ID / CSID"] == "4471002233"
         # last_run_date is no longer published, though the source row still carries it.
         assert "Last Run Date" not in fields
 
@@ -390,7 +390,7 @@ class TestAllTriggers:
         fields = {f["fieldName"]: f["fieldValue"] for f in built.payload_fields}
         assert built.record["idValue"] == "8812774001"
         # Trigger 21 publishes the same eight fields as Triggers 8 and 9.
-        assert fields["Counterparty ID"] == "8812774001"
+        assert fields["Counterparty SDS ID / CSID"] == "8812774001"
         assert fields["Client Relationship Owner Location"] == "UK"
         assert len(fields) == 8
 

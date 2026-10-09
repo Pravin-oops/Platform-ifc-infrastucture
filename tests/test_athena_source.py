@@ -360,7 +360,7 @@ class TestEndToEnd:
         assert built.record["upstreamTriggerID"] is None
         # date_of_request is a string column; the payload publishes its date part, YY-MM-DD.
         assert fields["Date of Request"] == "26-08-10"
-        assert fields["Counterparty ID"] == "9912345678"
+        assert fields["Counterparty SDS ID / CSID"] == "9912345678"
 
     @pytest.mark.parametrize(
         "run_trigger, table, published",

@@ -388,7 +388,7 @@ class TestRejectionReporting:
         assert len(lines) == 2
         assert "column=Date of Request (date_of_request) check=not a valid DATE" in lines[0]
         assert "row=1 " in lines[0] and "'10/06/2026'" in lines[0]
-        assert "column=Region (region) check=missing" in lines[1]
+        assert "column=Client Region (region) check=missing" in lines[1]
 
     def test_the_summary_counts_each_problem(self, runner_factory, caplog):
         caplog.set_level("INFO")
@@ -398,7 +398,7 @@ class TestRejectionReporting:
         [summary] = self.warnings(caplog, "Quarantine summary:")
         assert summary.getMessage() == (
             "Quarantine summary: 3 of 4 records rejected: "
-            "Date of Request (date_of_request) not a valid DATE x2; Region (region) missing x1"
+            "Date of Request (date_of_request) not a valid DATE x2; Client Region (region) missing x1"
         )
         assert summary.rejections[0]["count"] == 2
 
@@ -408,9 +408,9 @@ class TestRejectionReporting:
 
         assert result.outcome == "QUALITY_GATE_FAILED"
         assert result.classification.raw_error.endswith(
-            "tolerance: Date of Request (date_of_request) not a valid DATE x2; Region (region) missing x1"
+            "tolerance: Date of Request (date_of_request) not a valid DATE x2; Client Region (region) missing x1"
         )
-        assert result.classification.context["rejections"][1]["column"] == "Region (region)"
+        assert result.classification.context["rejections"][1]["column"] == "Client Region (region)"
 
     def test_the_run_finished_line_carries_the_reason(self, runner_factory, caplog):
         caplog.set_level("INFO")
@@ -423,7 +423,7 @@ class TestRejectionReporting:
 
         [finished] = [r.getMessage() for r in caplog.records if r.getMessage().startswith("Run finished:")]
         assert "reason=75.0% of records were rejected" in finished
-        assert "Region (region) missing x1" in finished
+        assert "Client Region (region) missing x1" in finished
 
     def test_a_clean_batch_logs_no_summary(self, runner_factory, caplog):
         caplog.set_level("INFO")

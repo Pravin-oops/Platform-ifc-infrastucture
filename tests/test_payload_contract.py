@@ -151,12 +151,12 @@ class TestContractLengths:
     EXPECTED = {
         "Date of Request": 10,
         "Counterparty Full Legal Entity Name": 100,
-        "Counterparty ID": 11,
+        "Counterparty SDS ID / CSID": 11,
         "Client Relationship Owner Name": 50,
         "Client Relationship Owner BRID": 10,
         "Client Relationship Owner Business Unit": 20,
         "Client Relationship Owner Location": 5,
-        "Region": 50,
+        "Client Region": 50,
     }
 
     @pytest.mark.parametrize("definition", definitions.DEFINITIONS.values(), ids=lambda d: d.sub_type)
@@ -183,7 +183,7 @@ class TestContractLengths:
                 "region": "EMEA",
             },
         )
-        assert field_map(fields)["Counterparty ID"]["fieldValue"] == "9912345678"
+        assert field_map(fields)["Counterparty SDS ID / CSID"]["fieldValue"] == "9912345678"
 
 
 class TestPayloadValidation:
@@ -235,12 +235,12 @@ class TestTriggerDefinitions:
     EXPECTED_FIELDS = [
         "Date of Request",
         "Counterparty Full Legal Entity Name",
-        "Counterparty ID",
+        "Counterparty SDS ID / CSID",
         "Client Relationship Owner Name",
         "Client Relationship Owner BRID",
         "Client Relationship Owner Business Unit",
         "Client Relationship Owner Location",
-        "Region",
+        "Client Region",
     ]
 
     @pytest.mark.parametrize(
@@ -273,7 +273,7 @@ class TestTriggerDefinitions:
     )
     def test_counterparty_id_carries_the_csid_sds_value(self, sub_type):
         spec = next(
-            s for s in definitions.DEFINITIONS[sub_type].fields if s.name == "Counterparty ID"
+            s for s in definitions.DEFINITIONS[sub_type].fields if s.name == "Counterparty SDS ID / CSID"
         )
         assert spec.source == "counterparty_csid_sds"
         # The sub-event identity: a row without it is not publishable.

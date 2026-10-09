@@ -254,12 +254,12 @@ Every trigger publishes the **same eight fields**, in this order:
 |---|---|---|---|---|
 | 1 | `Date of Request` | `DATE` | `date_of_request` | — |
 | 2 | `Counterparty Full Legal Entity Name` | `STRING` | `counterparty_full_legal_entity_name` | — |
-| 3 | `Counterparty ID` | `STRING` | `counterparty_csid_sds` | — |
+| 3 | `Counterparty SDS ID / CSID` | `STRING` | `counterparty_csid_sds` | — |
 | 4 | `Client Relationship Owner Name` | `STRING` | `client_relationship_owner_name` | `UK_TOK_AC_L0R0_UNC_DE` in PROD, `""` elsewhere |
 | 5 | `Client Relationship Owner BRID` | `STRING` | `client_relationship_owner_brid` | — |
 | 6 | `Client Relationship Owner Business Unit` | `STRING` | `client_relationship_owner_business_unit` | — |
 | 7 | `Client Relationship Owner Location` | `STRING` | `client_relationship_owner_location` | — |
-| 8 | `Region` | `STRING` | `region` | — |
+| 8 | `Client Region` | `STRING` | `region` | — |
 
 `Date of Request` is the date the trigger file was generated. Source rows carry a full timestamp;
 `DataType.DATE` renders the date part only, as `YY-MM-DD` per the payload specification
@@ -267,7 +267,7 @@ Every trigger publishes the **same eight fields**, in this order:
 is quarantined. Every other
 field is a string taken from the source row unchanged.
 
-`Counterparty ID` is the counterparty's CSID SDS value. It also travels as the envelope's
+`Counterparty SDS ID / CSID` is the counterparty's CSID SDS value. It also travels as the envelope's
 `idValue`.
 
 In PROD, `UK_TOK_AC_L0R0_UNC_DE` goes on `Client Relationship Owner Name` and on **nothing else**.
@@ -314,12 +314,12 @@ characters it renders to, not as the source string:
 | --- | --- | --- | --- |
 | Date of Request | `date_of_request` | Date (`YY-MM-DD`, 8 characters) | 10 |
 | Counterparty Full Legal Entity Name | `counterparty_full_legal_entity_name` | String | 100 |
-| Counterparty ID | `counterparty_csid_sds` | String | 11 |
+| Counterparty SDS ID / CSID | `counterparty_csid_sds` | String | 11 |
 | Client Relationship Owner Name | `client_relationship_owner_name` | String | 50 |
 | Client Relationship Owner BRID | `client_relationship_owner_brid` | String | 10 |
 | Client Relationship Owner Business Unit | `client_relationship_owner_business_unit` | String | 20 |
 | Client Relationship Owner Location | `client_relationship_owner_location` | String | 5 |
-| Region | `region` | String | 50 |
+| Client Region | `region` | String | 50 |
 
 The widths live in `MAX_LENGTHS` in `utility/trigger_definitions.py`; changing one is a
 consumer-visible change, like changing a `FieldSpec.name`. An over-long value is **rejected, not
@@ -349,13 +349,13 @@ three have the same columns:
 |---|---|---|
 | `date_of_request` | `string` | Date of Request (date part published); first sort key |
 | `counterparty_full_legal_entity_name` | `string` | Counterparty Full Legal Entity Name |
-| `counterparty_csid_sds` | `bigint` | Counterparty ID and the envelope's `idValue`; second sort key |
+| `counterparty_csid_sds` | `bigint` | Counterparty SDS ID / CSID and the envelope's `idValue`; second sort key |
 | `customer_segment` | `string` | not published |
 | `client_relationship_owner_brid` | `string` | Client Relationship Owner BRID |
 | `client_relationship_owner_name` | `string` | Client Relationship Owner Name (tokenised) |
 | `client_relationship_owner_business_unit` | `string` | Client Relationship Owner Business Unit |
 | `client_relationship_owner_location` | `string` | Client Relationship Owner Location |
-| `region` | `string` | Region |
+| `region` | `string` | Client Region |
 | `business_date` | `date` | the month filter, and the sub-event discriminator; not published |
 
 Query results go to `s3://sit1-logs-corpdeng-509153454187-eu-west-1/athena_output/`
