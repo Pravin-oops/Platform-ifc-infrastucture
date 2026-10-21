@@ -28,7 +28,7 @@ from tests.conftest import APP_ROOT, UTILITY_DIR
 
 AVRO_SCHEMAS = ["utility/schema.json"]
 
-CONFIGS = ["connector_config_sit.yaml", "connector_config_dev.yaml"]
+CONFIGS = ["connector_config_sit.yaml", "connector_config_dev.yaml", "connector_config_prod.yaml"]
 
 
 class TestPackageResource:

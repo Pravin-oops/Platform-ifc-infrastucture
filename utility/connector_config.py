@@ -299,9 +299,9 @@ CYBERARK_ENV: Dict[str, str] = {
     "CYBERARK_ENABLED": "enabled",
     "CYBERARK_CCP_URL": "base_url",
     "CYBERARK_APP_ID": "app_id",
-    "CYBERARK_SAFE": "safe",
-    "CYBERARK_ACCOUNT": "object",
 }
+
+CYBERARK_QUERY = ("base_url", "app_id", "safe", "object")
 
 
 class CyberArkSettings(BaseModel):
@@ -323,10 +323,11 @@ class CyberArkSettings(BaseModel):
     @model_validator(mode="after")
     def _query_is_complete(self) -> "CyberArkSettings":
         if self.enabled:
+            env_for = {name: env for env, name in CYBERARK_ENV.items()}
             missing = [
-                f"cyberark.{name} ({env})"
-                for env, name in CYBERARK_ENV.items()
-                if name != "enabled" and not getattr(self, name)
+                f"cyberark.{name} ({env_for[name]})" if name in env_for else f"cyberark.{name}"
+                for name in CYBERARK_QUERY
+                if not getattr(self, name)
             ]
             if missing:
                 raise ValueError(f"CyberArk is enabled but these are not set: {', '.join(missing)}")

@@ -65,7 +65,9 @@ ca_certificate:
 
 cyberark:
   enabled: false
+  safe: Unx_corpdla
   folder: Root
+  object: INTRANET-sysEUWdjfnsljdnf
   client_cert_secret_id: /ifc/bsp-event-processor/cyberark/client-cert
   client_key_secret_id: /ifc/bsp-event-processor/cyberark/private-key
   secret_region: eu-west-1

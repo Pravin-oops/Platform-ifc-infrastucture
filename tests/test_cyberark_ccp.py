@@ -196,7 +196,7 @@ class TestSettings:
         with pytest.raises(ValueError) as exc:
             CyberArkSettings(base_url="https://ccp.example", **self.SECRETS)
 
-        for missing in ("CYBERARK_APP_ID", "CYBERARK_SAFE", "CYBERARK_ACCOUNT"):
+        for missing in ("CYBERARK_APP_ID", "cyberark.safe", "cyberark.object"):
             assert missing in str(exc.value)
         assert "CYBERARK_CCP_URL" not in str(exc.value)
 
@@ -205,14 +205,12 @@ class TestSettings:
 
 
 class TestTemplateEnvironment:
-    """The ECS product template's CYBERARK_* variables fill the cyberark section."""
+    """The ECS product template's CYBERARK_* variables fill the cyberark section; the YAML names the safe and account."""
 
     TEMPLATE = {
         "CYBERARK_ENABLED": "true",
         "CYBERARK_CCP_URL": "https://ccp.example/AIMWebService_certs/api/Accounts",
         "CYBERARK_APP_ID": "APP_TEST",
-        "CYBERARK_SAFE": "SAFE",
-        "CYBERARK_ACCOUNT": "sysaccount",
     }
 
     @pytest.fixture
@@ -220,11 +218,13 @@ class TestTemplateEnvironment:
         for name in list(os.environ):
             if name.startswith(("CYBERARK_", "IFC_")):
                 monkeypatch.delenv(name)
-        path = os.path.join(os.path.dirname(__file__), "..", "utility", "connector_config_sit.yaml")
 
-        def load(**env: str):
+        def load(environment: str = "sit", **env: str):
             for name, value in env.items():
                 monkeypatch.setenv(name, value)
+            path = os.path.join(
+                os.path.dirname(__file__), "..", "utility", f"connector_config_{environment}.yaml"
+            )
             return load_settings(path).cyberark
 
         return load
@@ -234,7 +234,24 @@ class TestTemplateEnvironment:
 
         assert cyberark.enabled is True
         assert cyberark.base_url == self.TEMPLATE["CYBERARK_CCP_URL"]
-        assert (cyberark.app_id, cyberark.safe, cyberark.object) == ("APP_TEST", "SAFE", "sysaccount")
+        assert cyberark.app_id == "APP_TEST"
+
+    @pytest.mark.parametrize(
+        "environment, safe, account",
+        [
+            ("sit", "Unx_corpdla", "INTRANET-sysEUWdjfnsljdnf"),
+            ("prod", "Unx_CorpDLASP", "INTRANET-sysEUWENGDEV"),
+        ],
+    )
+    def test_each_environment_names_its_own_safe_and_account(self, load, environment, safe, account):
+        cyberark = load(environment, **self.TEMPLATE)
+
+        assert (cyberark.safe, cyberark.object) == (safe, account)
+
+    def test_the_template_cannot_replace_the_safe_or_account(self, load):
+        cyberark = load(**self.TEMPLATE, CYBERARK_SAFE="OTHER", CYBERARK_ACCOUNT="other")
+
+        assert (cyberark.safe, cyberark.object) == ("Unx_corpdla", "INTRANET-sysEUWdjfnsljdnf")
 
     def test_the_yaml_alone_leaves_cyberark_off(self, load):
         assert load().enabled is False

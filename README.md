@@ -32,7 +32,7 @@ environment picks it.
 |---|---|---|---|
 | `IFC_APP__ENVIRONMENT` | **yes** | task definition | `SIT` — loads `utility/connector_config_sit.yaml`, which names `utility/bsp_sit_config.yaml` |
 | `IFC_RUN__TRIGGER` | **yes** | EventBridge Scheduler override | `TRIGGER_8`, `TRIGGER_9` or `TRIGGER_21` (also `trigger 9`, `T9`, `9`) |
-| `CYBERARK_ENABLED`, `CYBERARK_CCP_URL`, `CYBERARK_APP_ID`, `CYBERARK_SAFE`, `CYBERARK_ACCOUNT` | for CyberArk | ECS product template | the CCP query for the BSP system account; with `CYBERARK_ENABLED` unset or `false`, `BSP_USERNAME` / `BSP_PASSWORD` must be set instead |
+| `CYBERARK_ENABLED`, `CYBERARK_CCP_URL`, `CYBERARK_APP_ID` | for CyberArk | ECS product template | the CCP endpoint and app id for the BSP system account (the safe and account come from the connector config); with `CYBERARK_ENABLED` unset or `false`, `BSP_USERNAME` / `BSP_PASSWORD` must be set instead |
 | `BAM_URL`, `BAM_NAME` | **yes** (SECURE registry) | task definition | read by the BSP client to fetch the BAM token |
 | `AWS_REGION` | **yes** | task definition | `eu-west-1` |
 | `IFC_RUN__MONTH`, `IFC_RUN__FORCE` | no | one-off RunTask | reprocess a past month — see [section 10](#10-reprocessing-a-past-month) |
@@ -237,10 +237,12 @@ counters are running totals re-emitted during the run.
 |---|---|---|---|---|
 | `DEV` | `utility/connector_config_dev.yaml` | `utility/bsp_dev_config.yaml` | `PLAINTEXT` `:9092`, DEV-only listener, no token | `DEV`, schema id `1299` pinned, no token |
 | `SIT` | `utility/connector_config_sit.yaml` | `utility/bsp_sit_config.yaml` | `SASL_SSL` `:9095`, BAM token | `SECURE` `:8095`, BAM token |
-| `PROD` | `utility/connector_config_prod.yaml` | `utility/bsp_prod_config.yaml` | not yet in the repository | |
+| `PROD` | `utility/connector_config_prod.yaml` (placeholders) | `utility/bsp_prod_config.yaml` (not yet in the repository) | | `SECURE` `:8095`, BAM token |
 
 Each connector config fixes its `app.environment`, its `kafka.bsp_config_path` and its
-`schema_registry.mode`. The DEV file uses SIT's AWS locations until DEV has its own.
+`schema_registry.mode`. The DEV file uses SIT's AWS locations until DEV has its own. The PROD
+file is the SIT layout with every PROD location still a `REPLACE_ME_PROD_…` placeholder; only its
+CyberArk safe and account are real.
 
 ### Overrides
 
@@ -261,13 +263,23 @@ that need confirming are marked `CONFIRM` in the YAML.
 None are configuration. The BSP system-account credential comes from **CyberArk CCP** at runtime,
 authenticated with a client certificate and key read from Secrets Manager
 (`/ifc/bsp-event-processor/cyberark/client-cert`, `…/private-key`). The ECS product template sets
-the CCP query:
+the CCP endpoint:
 
 | Variable | Fills |
 |---|---|
 | `CYBERARK_ENABLED` | `cyberark.enabled` (`false` in the YAML; then `BSP_USERNAME` / `BSP_PASSWORD` come from the environment) |
 | `CYBERARK_CCP_URL` | `cyberark.base_url`, the full `…/AIMWebService_certs/api/Accounts` URL |
-| `CYBERARK_APP_ID`, `CYBERARK_SAFE`, `CYBERARK_ACCOUNT` | `app_id`, `safe`, `object` |
+| `CYBERARK_APP_ID` | `app_id` |
+
+The safe and account differ by environment, so each connector config names its own
+(`cyberark.safe`, `cyberark.object`); `CYBERARK_SAFE` / `CYBERARK_ACCOUNT` are not read.
+
+| Environment | `cyberark.safe` | `cyberark.object` |
+|---|---|---|
+| SIT | `Unx_corpdla` | `INTRANET-sysEUWdjfnsljdnf` |
+| PROD | `Unx_CorpDLASP` | `INTRANET-sysEUWENGDEV` |
+
+DEV does not use CyberArk.
 
 The Barclays root CA is never committed or baked into the image: it is read from Secrets Manager at
 start (`ca_certificate.secret_id`) and written to `/tmp/ifc-certs/CARoot.pem`, which both
@@ -499,7 +511,7 @@ Tests:
 │   └── main.py                  # CLI: one-off run, `catalogue`
 ├── utility/
 │   ├── connector_config.py      # typed config, environment → file, IFC_ overlay
-│   ├── connector_config_dev.yaml / connector_config_sit.yaml
+│   ├── connector_config_dev.yaml / _sit.yaml / _prod.yaml
 │   ├── bsp_dev_config.yaml / bsp_sit_config.yaml
 │   ├── schema.json              # TriggerBackboneTopicSchema (Avro)
 │   ├── run_gate.py              # weekend / delivered checks, run marker file
@@ -537,7 +549,7 @@ repository. The task definition's `stopTimeout` (120) must exceed `run.shutdown_
 
 | Item | Status |
 |---|---|
-| PROD configs | `connector_config_prod.yaml` and `bsp_prod_config.yaml` not yet added; `IFC_APP__ENVIRONMENT=PROD` stops at start-up until they are |
+| PROD configs | `connector_config_prod.yaml` has `REPLACE_ME_PROD_…` placeholders for the tables, buckets, topic, Schema Registry hosts and the CA / CyberArk secret ids; `bsp_prod_config.yaml` not yet added |
 | SNS topics | `sns_topic_arn` (RTB alerts) and `batch_sns_topic_arn` (TBB event) are null in SIT: both log only |
 | CyberArk | client certificate and key secrets exist but are empty; `cyberark.enabled` is `false` in the YAML |
 | Topic and subject | `tc01_fncmtrgrbb_ifc_tbb_kyc_refresh` to be confirmed |
