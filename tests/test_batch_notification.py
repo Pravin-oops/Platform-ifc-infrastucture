@@ -9,6 +9,7 @@ downstream work on an incomplete topic.
 from __future__ import annotations
 
 import json
+import re
 import types
 
 import pytest
@@ -39,7 +40,7 @@ def a_notification(**overrides) -> TriggerBatchNotification:
         "Topic_Name": "ifc_tbb_kyc_refresh",
         "Trigger_Batch_Start_Timestamp": "2026-07-01T02:00:00.000000000Z",
         "Trigger_Batch_End_Timestamp": "2026-07-01T02:00:09.000000000Z",
-        "Event_Timestamp": "2026-07-01T02:00:10.123+00:00",
+        "Event_Timestamp": "2026-07-01T02:00:10.123000000Z",
         "Correlation_Id": "run-abc",
     }
     fields.update(overrides)
@@ -61,7 +62,7 @@ class TestTriggerBatchNotifier:
             "Topic_Name": "ifc_tbb_kyc_refresh",
             "Trigger_Batch_Start_Timestamp": "2026-07-01T02:00:00.000000000Z",
             "Trigger_Batch_End_Timestamp": "2026-07-01T02:00:09.000000000Z",
-            "Event_Timestamp": "2026-07-01T02:00:10.123+00:00",
+            "Event_Timestamp": "2026-07-01T02:00:10.123000000Z",
             "Correlation_Id": "run-abc",
         }
 
@@ -197,6 +198,18 @@ class TestPublishBatchNotification:
         # Distinct from the batch window, which is when the records were posted.
         assert sent[0].Event_Timestamp > sent[0].Trigger_Batch_End_Timestamp[:10]
         assert sent[0].Trigger_Batch_Start_Timestamp == "2026-07-01T02:00:00.000000000Z"
+
+    def test_the_event_timestamp_has_the_batch_window_format(self, main_ecs_script, sent):
+        runner = types.SimpleNamespace(last_result=a_result(), run_id="run-abc")
+        main_ecs_script._publish_batch_notification(a_settings(), runner)
+
+        rfc3339_nanos = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{9}Z"
+        for value in (
+            sent[0].Event_Timestamp,
+            sent[0].Trigger_Batch_Start_Timestamp,
+            sent[0].Trigger_Batch_End_Timestamp,
+        ):
+            assert re.fullmatch(rfc3339_nanos, value), value
 
     @pytest.mark.parametrize(
         "reason, result",

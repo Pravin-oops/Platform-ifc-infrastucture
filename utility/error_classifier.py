@@ -1,15 +1,3 @@
-"""Map any runtime error onto exactly one catalogue scenario.
-
-The connector never reports a bare stack trace to RTB. Every failure is resolved
-to a ``Scenario``, which carries the owning team, the agreed action and the exit
-code, so the on-call response is the same whether the failure surfaced in
-preflight, in a delivery callback or in the top-level handler.
-
-Matching order is deliberate: narrow, unambiguous signatures are tested before
-broad ones, because several Kafka errors share substrings (a 401 from the
-Schema Registry is an authentication failure, not a registry outage).
-"""
-
 from __future__ import annotations
 
 import logging
@@ -22,14 +10,7 @@ from utility.failure_catalog import Scenario
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Connector exception hierarchy
-# ---------------------------------------------------------------------------
-
-
 class ConnectorError(RuntimeError):
-    """An error already resolved to a catalogue scenario."""
-
     def __init__(
         self,
         message: str,
@@ -49,20 +30,14 @@ class ConnectorError(RuntimeError):
 
 
 class PreflightError(ConnectorError):
-    """A readiness check failed; nothing has been published."""
+    pass
 
 
 class PublishError(ConnectorError):
-    """Publishing a record was abandoned."""
+    pass
 
 
 class RecordRejected(Exception):
-    """One record cannot be published and must be quarantined.
-
-    Not a ``ConnectorError``: the run continues. It carries the scenario so the
-    quarantine object records why the record was rejected.
-    """
-
     def __init__(self, message: str, scenario: Scenario, *, detail: Optional[Dict[str, Any]] = None):
         super().__init__(message)
         self.scenario = scenario
@@ -70,14 +45,9 @@ class RecordRejected(Exception):
 
 
 class ZeroRecordsError(ConnectorError):
-    """The source held nothing. Upstream (TED/FRED) failure until proven otherwise."""
+    pass
 
 
-# ---------------------------------------------------------------------------
-# Pattern table
-# ---------------------------------------------------------------------------
-
-# (scenario, substrings). Evaluated top to bottom; first hit wins.
 _PATTERNS: Sequence[Tuple[Scenario, List[str]]] = (
     (
         catalog.MESSAGE_TOO_LARGE,
@@ -99,8 +69,6 @@ _PATTERNS: Sequence[Tuple[Scenario, List[str]]] = (
             "SSLHANDSHAKEEXCEPTION", "SSL HANDSHAKE", "CERTIFICATE VERIFY FAILED",
             "AUTHENTICATION FAILED", "INVALID_GRANT", "UNAUTHORIZED", "HTTP 401",
             "STATUS=401", "MALFORMED JWT", "TOKEN EXPIRED", "BAM TOKEN",
-            # librdkafka failing to load the CA file at producer creation. It
-            # carries _INVALID_ARG, which would otherwise read as a schema fault.
             "SSL.CA.LOCATION FAILED",
         ],
     ),
@@ -137,9 +105,6 @@ _PATTERNS: Sequence[Tuple[Scenario, List[str]]] = (
             "NETWORKEXCEPTION", "DISCONNECTEXCEPTION", "DISCONNECTED", "_ALL_BROKERS_DOWN",
         ],
     ),
-    # Ahead of publish latency: separators are ignored when matching, so that
-    # row's "_TIMED_OUT" also matches "connection timed out", which is a
-    # network fault, not a slow broker.
     (
         catalog.NETWORK_FAILURE,
         [
@@ -214,12 +179,11 @@ class Classification:
 
 
 def _safe_attr(obj: Any, name: str) -> Optional[str]:
-    """confluent_kafka.KafkaError exposes name()/code()/str() as methods."""
     try:
         attr = getattr(obj, name, None)
         value = attr() if callable(attr) else attr
         return None if value is None else str(value)
-    except Exception:  # pragma: no cover - defensive around C extension objects
+    except Exception:  # pragma: no cover
         return None
 
 
@@ -238,7 +202,6 @@ def normalize(error: Any) -> str:
         if value:
             parts.append(value)
 
-    # Nested causes carry the real signature when a library wraps its errors.
     cause = getattr(error, "cause", None) or getattr(error, "__cause__", None)
     if cause is not None and cause is not error:
         try:
@@ -250,8 +213,6 @@ def normalize(error: Any) -> str:
 
 
 def _matches(haystack: str, needles: List[str]) -> bool:
-    # Compare with separators removed too, so LEADER_NOT_AVAILABLE and
-    # "leader not available" both hit the same pattern.
     compact = haystack.replace("_", "").replace(" ", "").replace("-", "")
     for needle in needles:
         upper = needle.upper()
@@ -269,9 +230,6 @@ def classify(
     topic: Optional[str] = None,
     context: Optional[Dict[str, Any]] = None,
 ) -> Classification:
-    """Resolve ``error`` to a catalogue scenario."""
-
-    # Already classified upstream - trust it rather than re-deriving from text.
     if isinstance(error, (ConnectorError, RecordRejected)):
         merged = dict(getattr(error, "context", None) or getattr(error, "detail", None) or {})
         merged.update(context or {})
@@ -290,9 +248,6 @@ def classify(
         scenario = (
             catalog.BDP_WRITE_FAILURE if error.operation == "write" else catalog.BDP_READ_FAILURE
         )
-        # An AccessDenied on a read is still a permissions problem, but the
-        # catalogue routes reads and writes to different rows; keep the
-        # operation authoritative and record the S3 code as evidence.
         return Classification(
             scenario=scenario,
             raw_error=str(error),
@@ -319,8 +274,6 @@ def classify(
             scenario = candidate
             break
     else:
-        # Fall back to the catalogue's own "typical errors" wording, which
-        # covers phrasings the pattern table has not yet learned.
         for candidate in catalog.SCENARIOS.values():
             if candidate.typical_errors and _matches(normalized, candidate.typical_errors):
                 scenario = candidate

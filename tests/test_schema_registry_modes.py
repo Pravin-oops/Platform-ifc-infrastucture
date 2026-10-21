@@ -7,6 +7,7 @@ import os
 from typing import Any, Dict, List
 
 import pytest
+import yaml
 
 from utility import kafka_factory
 from utility import schema_registry_client as src
@@ -16,18 +17,39 @@ from utility.error_classifier import PreflightError
 from utility.kafka_factory import KafkaStackFactory
 from utility.resilience_utility import ShutdownSignal
 
-CONFIG = os.path.join(os.path.dirname(__file__), "..", "utility", "connector_config.yaml")
+UTILITY = os.path.join(os.path.dirname(__file__), "..", "utility")
+SIT_CONFIG = os.path.join(UTILITY, "connector_config_sit.yaml")
+DEV_CONFIG = os.path.join(UTILITY, "connector_config_dev.yaml")
+
+
+def read_yaml(path: str) -> Dict[str, Any]:
+    with open(path, encoding="utf-8") as handle:
+        return yaml.safe_load(handle)
+
+
+def both_blocks(mode: str) -> str:
+    """The SIT config carrying the DEV file's dev block as well, in ``mode``.
+
+    Each shipped file has only its own mode's block, so an override to the
+    other mode needs a document that has both.
+    """
+    document = read_yaml(SIT_CONFIG)
+    document["schema_registry"]["dev"] = read_yaml(DEV_CONFIG)["schema_registry"]["dev"]
+    document["schema_registry"]["mode"] = mode
+    return yaml.safe_dump(document)
 
 
 @pytest.fixture
 def registry(monkeypatch):
-    """The shipped config's schema_registry, with IFC_SCHEMA_REGISTRY__MODE as given."""
+    """A config's schema_registry, with IFC_SCHEMA_REGISTRY__MODE as given."""
 
-    def load(mode=None):
+    def load(mode=None, *, path=None, document=None):
         monkeypatch.delenv("IFC_SCHEMA_REGISTRY__MODE", raising=False)
         if mode is not None:
             monkeypatch.setenv("IFC_SCHEMA_REGISTRY__MODE", mode)
-        return load_settings(CONFIG).schema_registry
+        if document is not None:
+            return load_settings("cfg.yaml", reader=lambda _p: document).schema_registry
+        return load_settings(path or SIT_CONFIG).schema_registry
 
     return load
 
@@ -37,33 +59,33 @@ def ports(settings: SchemaRegistrySettings) -> List[str]:
 
 
 class TestModeSelection:
-    def test_without_the_variable_the_config_file_decides(self, registry):
+    def test_without_the_variable_the_sit_file_is_secure(self, registry):
         settings = registry()
 
         assert settings.mode == "SECURE"
         assert ports(settings) == ["8095", "8095"]
 
-    def test_an_empty_variable_also_leaves_it_to_the_config_file(self, registry):
-        assert registry("").mode == "SECURE"
-
-    @pytest.mark.parametrize("value", ["DEV", "dev", " Dev "])
-    def test_the_variable_wins_in_any_case(self, registry, value):
-        settings = registry(value)
+    def test_without_the_variable_the_dev_file_is_dev(self, registry):
+        settings = registry(path=DEV_CONFIG)
 
         assert settings.mode == "DEV"
         assert ports(settings) == ["8082", "8082"]
 
-    def test_the_variable_can_select_secure_over_a_dev_config(self, monkeypatch):
-        with open(CONFIG, encoding="utf-8") as handle:
-            shipped = handle.read()
-        dev_config = shipped.replace("  mode: SECURE\n", "  mode: DEV\n", 1)
-        assert dev_config != shipped
+    def test_an_empty_variable_also_leaves_it_to_the_config_file(self, registry):
+        assert registry("").mode == "SECURE"
+        assert registry("", path=DEV_CONFIG).mode == "DEV"
 
-        monkeypatch.delenv("IFC_SCHEMA_REGISTRY__MODE", raising=False)
-        assert load_settings("cfg.yaml", reader=lambda _p: dev_config).schema_registry.mode == "DEV"
+    @pytest.mark.parametrize("value", ["DEV", "dev", " Dev "])
+    def test_the_variable_wins_in_any_case(self, registry, value):
+        settings = registry(value, document=both_blocks("SECURE"))
 
-        monkeypatch.setenv("IFC_SCHEMA_REGISTRY__MODE", "SECURE")
-        settings = load_settings("cfg.yaml", reader=lambda _p: dev_config).schema_registry
+        assert settings.mode == "DEV"
+        assert ports(settings) == ["8082", "8082"]
+
+    def test_the_variable_can_select_secure_over_a_dev_config(self, registry):
+        assert registry(document=both_blocks("DEV")).mode == "DEV"
+
+        settings = registry("SECURE", document=both_blocks("DEV"))
         assert settings.mode == "SECURE"
         assert ports(settings) == ["8095", "8095"]
 
@@ -229,7 +251,7 @@ class TestDevNeedsNoBamToken:
         assert bsp.tokens_requested == 1
 
     def test_the_shipped_dev_config_pins_1299_and_skips_the_registry(self, registry, monkeypatch):
-        settings = registry("DEV")
+        settings = registry(path=DEV_CONFIG)
         assert settings.schema_id == 1299
 
         from tests.test_runner_pipeline import make_settings

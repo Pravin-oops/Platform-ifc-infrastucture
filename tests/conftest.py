@@ -60,16 +60,22 @@ def main_ecs_script() -> types.ModuleType:
     return load_script("main_ecs")
 
 
+def use_config(monkeypatch, script: types.ModuleType, path) -> str:
+    """Make ``script`` load ``path`` whatever IFC_APP__ENVIRONMENT says."""
+    monkeypatch.setattr(script, "config_path_for", lambda _environment: str(path))
+    return str(path)
+
+
 @pytest.fixture
 def clean_ifc_env(monkeypatch) -> Iterator[None]:
-    """Remove IFC_/APP_CONFIG_PATH values leaked in from the developer's shell.
+    """Remove IFC_ values leaked in from the developer's shell.
 
     The settings loader merges an ``IFC_`` overlay over the YAML, so a stray
     ``IFC_KAFKA__TOPIC`` in the environment would silently change what a test
     is asserting about a config file.
     """
     for key in list(os.environ):
-        if key.startswith("IFC_") or key in {"APP_CONFIG_PATH", "IFC_HOME"}:
+        if key.startswith("IFC_") or key == "IFC_HOME":
             monkeypatch.delenv(key, raising=False)
     yield
 

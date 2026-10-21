@@ -8,9 +8,11 @@ and no BSP, so the suite runs anywhere.
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
+from tests.conftest import APP_ROOT, use_config
 from utility import failure_catalog as catalog
 
 pytestmark = pytest.mark.usefixtures("clean_ifc_env")
@@ -48,17 +50,22 @@ class TestCatalogueCommand:
 
 
 class TestMainWithoutAConfig:
-    def test_it_refuses_rather_than_guessing(self, main_script, capsys):
-        code = main_script.main([])
+    def test_it_refuses_without_an_environment(self, main_script, clean_ifc_env):
+        assert main_script.main([]) == catalog.CONTAINER_FAILURE.exit_code
 
-        assert code == catalog.CONTAINER_FAILURE.exit_code
-        assert "--config is required" in capsys.readouterr().err
+    def test_it_refuses_an_unknown_environment(self, main_script, clean_ifc_env, monkeypatch):
+        monkeypatch.setenv("IFC_APP__ENVIRONMENT", "UAT")
+        assert main_script.main([]) == catalog.CONTAINER_FAILURE.exit_code
 
-    def test_an_unreadable_config_is_classified_not_raised(self, main_script, tmp_path):
-        missing = str(tmp_path / "nope.yaml")
-        assert main_script.main(["--config", missing]) == catalog.CONTAINER_FAILURE.exit_code
+    def test_a_config_file_cannot_be_named(self, main_script):
+        with pytest.raises(SystemExit):
+            main_script.main(["--config", "utility/connector_config_sit.yaml"])
 
-    def test_a_run_without_a_trigger_is_refused(self, main_script, tmp_path):
+    def test_an_unreadable_config_is_classified_not_raised(self, main_script, monkeypatch, tmp_path):
+        use_config(monkeypatch, main_script, tmp_path / "nope.yaml")
+        assert main_script.main([]) == catalog.CONTAINER_FAILURE.exit_code
+
+    def test_a_run_without_a_trigger_is_refused(self, main_script, monkeypatch, tmp_path):
         """IFC_RUN__TRIGGER picks the Athena table; without it there is nothing to read."""
         config = tmp_path / "c.yaml"
         config.write_text(
@@ -71,19 +78,36 @@ class TestMainWithoutAConfig:
             ),
             encoding="utf-8",
         )
-        assert main_script.main(["--config", str(config)]) == catalog.CONTAINER_FAILURE.exit_code
+        use_config(monkeypatch, main_script, config)
+        assert main_script.main([]) == catalog.CONTAINER_FAILURE.exit_code
 
 
 class TestEcsEntryPoint:
-    def test_it_refuses_without_a_config_path(self, main_ecs_script):
-        with pytest.raises(RuntimeError, match="Missing config path"):
+    def test_it_refuses_without_an_environment(self, main_ecs_script, clean_ifc_env):
+        with pytest.raises(ValueError, match="IFC_APP__ENVIRONMENT is not set"):
             main_ecs_script.ecs_handler()
 
-    def test_the_event_config_path_is_honoured(self, main_ecs_script, tmp_path):
-        """An ECS RunTask override supplies the path the same way a Lambda event does."""
-        with pytest.raises(Exception) as exc:
-            main_ecs_script.ecs_handler({"config_path": str(tmp_path / "absent.yaml")})
-        assert "Missing config path" not in str(exc.value)
+    @pytest.mark.parametrize("environment, name", [("SIT", "sit"), ("dev", "dev")])
+    def test_the_environment_picks_the_config_file(
+        self, main_ecs_script, clean_ifc_env, monkeypatch, environment, name
+    ):
+        loaded = []
+
+        def stop(path):
+            loaded.append(path)
+            raise RuntimeError("stop after the config is chosen")
+
+        monkeypatch.setenv("IFC_APP__ENVIRONMENT", environment)
+        monkeypatch.setattr(main_ecs_script, "load_settings", stop)
+        with pytest.raises(RuntimeError, match="stop after"):
+            main_ecs_script.ecs_handler({"trigger": "TRIGGER_8"})
+
+        [path] = loaded
+        assert os.path.normpath(path) == os.path.join(APP_ROOT, "utility", f"connector_config_{name}.yaml")
+
+    def test_an_event_cannot_name_a_config_file(self, main_ecs_script, clean_ifc_env, tmp_path):
+        with pytest.raises(ValueError, match="IFC_APP__ENVIRONMENT is not set"):
+            main_ecs_script.ecs_handler({"config_path": str(tmp_path / "c.yaml")})
 
     def test_task_metadata_is_read_from_the_agent_environment(self, main_ecs_script, monkeypatch):
         monkeypatch.setenv("ECS_CLUSTER", "ifc-uat")
@@ -133,7 +157,8 @@ class TestEcsEntryPoint:
 
         monkeypatch.setattr(runner_module, "ConnectorRunner", Boom)
 
-        result = main_ecs_script.ecs_handler({"config_path": str(config), "trigger": "TRIGGER_8"})
+        use_config(monkeypatch, main_ecs_script, config)
+        result = main_ecs_script.ecs_handler({"trigger": "TRIGGER_8"})
 
         assert result["exit_code"] != 0
         assert result["scenario"]
@@ -144,5 +169,5 @@ class TestEcsEntryPoint:
     def test_main_maps_a_bootstrap_failure_onto_the_container_exit_code(
         self, main_ecs_script, monkeypatch
     ):
-        monkeypatch.delenv("APP_CONFIG_PATH", raising=False)
+        monkeypatch.delenv("IFC_APP__ENVIRONMENT", raising=False)
         assert main_ecs_script.main([]) == catalog.CONTAINER_FAILURE.exit_code

@@ -109,10 +109,10 @@ try {
     # Run detached: this step expects a non-zero exit and output on stderr, and
     # in Windows PowerShell 5.1 redirecting a native command's stderr inline
     # raises NativeCommandError instead of just capturing the text.
-    # Blank APP_CONFIG_PATH explicitly: otherwise main_ecs.py would load it from
+    # Blank IFC_APP__ENVIRONMENT explicitly: otherwise main_ecs.py would load it from
     # the tracked .env (load_dotenv never overrides a variable already set).
-    $PrevConfig = $env:APP_CONFIG_PATH
-    [Environment]::SetEnvironmentVariable('APP_CONFIG_PATH', '', 'Process')
+    $PrevEnvironment = $env:IFC_APP__ENVIRONMENT
+    [Environment]::SetEnvironmentVariable('IFC_APP__ENVIRONMENT', '', 'Process')
     $StdOut = [System.IO.Path]::GetTempFileName()
     $StdErr = [System.IO.Path]::GetTempFileName()
     try {
@@ -123,14 +123,14 @@ try {
                               -RedirectStandardOutput $StdOut `
                               -RedirectStandardError $StdErr
         if ($Proc.ExitCode -eq 0) {
-            Write-Host 'FAIL: main_ecs.py exited 0 with no APP_CONFIG_PATH' -ForegroundColor Red
+            Write-Host 'FAIL: main_ecs.py exited 0 with no IFC_APP__ENVIRONMENT' -ForegroundColor Red
             exit 1
         }
         Write-Host "main_ecs.py exited $($Proc.ExitCode) as expected"
     }
     finally {
         Remove-Item $StdOut, $StdErr -ErrorAction SilentlyContinue
-        $env:APP_CONFIG_PATH = $PrevConfig
+        $env:IFC_APP__ENVIRONMENT = $PrevEnvironment
     }
 
     Write-Host ''

@@ -1,25 +1,10 @@
-"""The connector run loop.
-
-One run is one batch: query the trigger's month from Athena, build and validate
-each envelope, serialise, size-check, publish, flush, reconcile, write the
-manifest, and exit - the shape that matches the monthly cadence under
-EventBridge Scheduler and ECS RunTask.
-
-Nothing is de-duplicated here: the consuming team resolves duplicates, so a
-re-run republishes the month rather than the connector keeping durable state to
-recognise what it already sent.
-
-Every exit is deliberate and carries a catalogue exit code, so ECS's
-``stoppedReason`` and exit code alone tell RTB which scenario fired.
-"""
-
 from __future__ import annotations
 
 import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from utility.audit_utility import AuditWriter, RunCounters, build_manifest, new_run_id, reconcile
 from utility import failure_catalog as catalog
@@ -41,11 +26,16 @@ from utility.connector_utility import SourceAccessError
 from utility.trigger_source import make_source
 from utility.run_gate import execution_date
 from utility.sequence_allocator import SequenceAllocator
-from utility.tb_outcome_schema import BuiltRecord, EnvelopeBuilder, TriggerEvent, previous_month
+from utility.tb_outcome_schema import (
+    ID_SYSTEM,
+    BuiltRecord,
+    EnvelopeBuilder,
+    TriggerEvent,
+    previous_month,
+)
 
 logger = logging.getLogger(__name__)
 
-#: How often the produce loop reports progress and refreshes health/metrics.
 PROGRESS_INTERVAL = 500
 
 
@@ -61,12 +51,7 @@ class BatchResult:
     outcome: str
     exit_code: int
     classification: Optional[Classification] = None
-    #: The table, business date and Athena query execution id this run read.
     source: Dict[str, Any] = field(default_factory=dict)
-    #: Earliest and latest ``triggerPostingTimestamp`` published by this batch,
-    #: and the published sub-type they carried. The Trigger Backbone completion
-    #: notification reports the window; none of them is set by a batch that
-    #: published nothing.
     batch_start_timestamp: Optional[str] = None
     batch_end_timestamp: Optional[str] = None
     published_trigger_subtype: Optional[str] = None
@@ -95,12 +80,8 @@ class ConnectorRunner:
         self._producer_factory = producer_factory
 
         self._run_id = new_run_id()
-        # Resolved here, before any network call, so an environment with no
-        # code configured stops the run instead of publishing under another's.
         self._originating_system = settings.originating_system
         self._sequence = SequenceAllocator()
-        # Fixed once, so the rows queried and the business month stamped on them
-        # cannot disagree even if the run crosses midnight at a month end.
         self._business_month = previous_month(execution_date())
         self._source = make_source(
             settings.source, trigger=settings.trigger, business_month=self._business_month
@@ -128,6 +109,7 @@ class ConnectorRunner:
         self._batch_start_timestamp: Optional[str] = None
         self._batch_end_timestamp: Optional[str] = None
         self._published_trigger_subtype: Optional[str] = None
+        self._rejections: Dict[Tuple[str, str], Dict[str, Any]] = {}
 
         set_log_context(run_id=self._run_id, environment=settings.app.environment)
 
@@ -137,7 +119,6 @@ class ConnectorRunner:
 
     @property
     def schema_id(self) -> Optional[int]:
-        """The id records were framed with; None if the run stopped before startup finished."""
         return self._stack.schema_id if self._stack else None
 
     @property
@@ -150,18 +131,9 @@ class ConnectorRunner:
 
     @property
     def last_result(self) -> Optional[BatchResult]:
-        """The finished batch, for a caller that needs more than the exit code.
-
-        The run-gate needs to know whether anything was actually delivered
-        before it closes the execution month; an exit code cannot distinguish
-        'published nothing because there was nothing' from 'published 400'.
-        """
         return self._last_result
 
-    # -- startup -----------------------------------------------------------
-
     def start(self) -> None:
-        """Preflight, then build the publishing stack. Raises on any blocker."""
         settings = self._settings
         factory = KafkaStackFactory(
             settings,
@@ -178,6 +150,7 @@ class ConnectorRunner:
 
         self._stack = factory.build()
         self._preflight = self._stack.preflight
+        factory.report.log_summary()
 
         self._envelopes = EnvelopeBuilder(
             avro_schema=self._stack.serializer.schema,
@@ -187,9 +160,10 @@ class ConnectorRunner:
             business_month=self._business_month,
         )
         logger.info(
-            "Envelope identity: triggerOriginatingSystem=idSystem=%s, field encryption "
+            "Envelope identity: triggerOriginatingSystem=%s, idSystem=%s, field encryption "
             "policies %s (environment %s)",
             self._originating_system,
+            ID_SYSTEM,
             "declared" if settings.declares_encryption_policies else "empty",
             settings.app.environment,
         )
@@ -198,7 +172,6 @@ class ConnectorRunner:
         self._log_kafka_target()
 
     def _log_kafka_target(self) -> None:
-        """One line that says where this run publishes and how records are framed."""
         assert self._stack is not None
         settings = self._settings
         context = self._stack.schema_context
@@ -232,25 +205,19 @@ class ConnectorRunner:
             },
         )
 
-    # -- per-record handling -----------------------------------------------
-
     def _handle_rejection(
         self,
         *,
         trigger_id: Optional[str],
         rejection: RecordRejected,
+        row: Optional[int] = None,
         record: Optional[Dict[str, Any]] = None,
         raw: Optional[str] = None,
         counters: RunCounters,
     ) -> None:
-        """Quarantine the rejected record to S3.
-
-        The quarantine object is the whole record of a rejection: there is no
-        DLQ topic, so this is where a rejected record is recovered from and the
-        only place its reason is kept.
-        """
         counters.quarantined += 1
         self._metrics.incr("RecordsQuarantined")
+        self._note_rejection(trigger_id, rejection, row)
 
         self._audit.quarantine(
             trigger_id=trigger_id,
@@ -260,6 +227,39 @@ class ConnectorRunner:
             record=record,
             raw=raw,
         )
+
+    def _note_rejection(self, trigger_id: Optional[str], rejection: RecordRejected, row: Optional[int]) -> None:
+        detail = rejection.detail
+        field_name, source_key = detail.get("field_name"), detail.get("source_key")
+        column = f"{field_name} ({source_key})" if field_name and source_key else field_name or "-"
+        check = detail.get("check") or rejection.scenario.key
+
+        entry = self._rejections.get((column, check))
+        first = entry is None
+        if first:
+            entry = self._rejections[(column, check)] = {
+                "column": column, "check": check, "count": 0, "example": str(rejection),
+            }
+        entry["count"] += 1
+
+        logger.log(
+            logging.WARNING if first else logging.DEBUG,
+            "Record rejected: column=%s check=%s row=%s trigger_id=%s reason=%s%s",
+            column,
+            check,
+            row,
+            trigger_id,
+            rejection,
+            "; further rows with this problem are counted in the quarantine summary" if first else "",
+            extra={"column": column, "check": check, "scenario": rejection.scenario.key},
+        )
+
+    def _rejection_summary(self) -> List[Dict[str, Any]]:
+        return sorted(self._rejections.values(), key=lambda entry: -entry["count"])
+
+    @staticmethod
+    def _describe(rejections: List[Dict[str, Any]]) -> str:
+        return "; ".join(f"{r['column']} {r['check']} x{r['count']}" for r in rejections)
 
     def _publish_record(self, built: BuiltRecord, counters: RunCounters) -> None:
         assert self._stack is not None
@@ -297,14 +297,6 @@ class ConnectorRunner:
         counters.published += 1
 
     def _publish_with_retry(self, built: BuiltRecord, payload: bytes) -> None:
-        """Publish one record, retrying a retryable failure with backoff.
-
-        Every failed attempt counts towards the circuit breaker, so a total
-        outage abandons the batch after ``circuit_breaker_threshold`` attempts
-        rather than retrying each record in turn. A record that runs out of
-        attempts is not quarantined: it stays unpublished, and the
-        reconciliation fails the run.
-        """
         assert self._stack is not None
         publisher = self._stack.publisher
 
@@ -315,8 +307,6 @@ class ConnectorRunner:
             return exc.scenario.retryable and not self._breaker.is_open
 
         retry(
-            # No Kafka headers: the Trigger Backbone reads everything from the
-            # envelope, and its reference records carry an empty header list.
             lambda: publisher.publish(key=built.kafka_key, value=payload, trigger_id=built.trigger_id),
             attempts=self._settings.resilience.max_publish_attempts,
             policy=self._backoff,
@@ -324,8 +314,6 @@ class ConnectorRunner:
             shutdown=self._shutdown,
             description=f"publish of {built.trigger_id}",
         )
-
-    # -- batch -------------------------------------------------------------
 
     def _classify_outcome(
         self,
@@ -336,21 +324,12 @@ class ConnectorRunner:
         reconciliation,
         stream_exhausted: bool,
     ):
-        """Decide the final outcome of a run that did not fail outright.
-
-        Three ways a technically-successful batch is still not a clean run, in
-        priority order: it found nothing, its counts do not reconcile, or it
-        rejected more than the tolerated fraction. Returns
-        ``(outcome, exit_code, classification)``.
-        """
         settings = self._settings
 
         if outcome != "SUCCESS":
             return outcome, exit_code, classification
 
         if stream_exhausted and not counters.records_parsed:
-            # No rows for the month on a scheduled run means upstream produced
-            # nothing. That is a reportable condition, not a clean run.
             return (
                 "ZERO_RECORDS",
                 catalog.TED_MISSING_SOURCE_DATA.exit_code,
@@ -387,9 +366,10 @@ class ConnectorRunner:
                 classify(
                     ConnectorError(
                         f"{ratio:.1%} of records were rejected, over the "
-                        f"{settings.resilience.max_quarantine_ratio:.1%} tolerance",
+                        f"{settings.resilience.max_quarantine_ratio:.1%} tolerance: "
+                        f"{self._describe(self._rejection_summary())}",
                         catalog.SCHEMA_VALIDATION_FAILURE,
-                        context={"quarantine_ratio": round(ratio, 4)},
+                        context={"quarantine_ratio": round(ratio, 4), "rejections": self._rejection_summary()},
                     ),
                     operation="quality_gate",
                     topic=settings.kafka.topic,
@@ -403,6 +383,7 @@ class ConnectorRunner:
 
         settings = self._settings
         counters = RunCounters()
+        self._rejections = {}
         classification: Optional[Classification] = None
         outcome = "SUCCESS"
         exit_code = catalog.EXIT_OK
@@ -428,8 +409,6 @@ class ConnectorRunner:
                 stream_exhausted = True
 
         except SourceAccessError as exc:
-            # The Athena query could not be run: nothing was read, so nothing
-            # can be published. A HIGH-severity Trigger BDP read failure.
             classification = classify(exc, operation="run_batch", topic=settings.kafka.topic)
             outcome = "SOURCE_UNREADABLE"
             exit_code = classification.exit_code
@@ -454,8 +433,6 @@ class ConnectorRunner:
             exit_code = classification.exit_code
             logger.exception("Batch failed", extra=classification.to_dict())
 
-        # Flush regardless of how the loop ended: messages already queued must
-        # be given their chance to land before anything is reported.
         counters.unflushed = self._drain()
 
         stats = self._stack.publisher.stats
@@ -476,6 +453,15 @@ class ConnectorRunner:
             counters.quarantined,
             extra={"topic": settings.kafka.topic, "schema_id": self._stack.schema_id, **counters.to_dict()},
         )
+        if counters.quarantined:
+            rejections = self._rejection_summary()
+            logger.warning(
+                "Quarantine summary: %d of %d records rejected: %s",
+                counters.quarantined,
+                counters.records_parsed,
+                self._describe(rejections),
+                extra={"rejections": rejections},
+            )
 
         outcome, exit_code, classification = self._classify_outcome(
             outcome,
@@ -508,6 +494,7 @@ class ConnectorRunner:
             self._handle_rejection(
                 trigger_id=None,
                 rejection=rejection,
+                row=event.source_index + 1,
                 raw=str(event.attributes)[:2000],
                 counters=counters,
             )
@@ -520,11 +507,11 @@ class ConnectorRunner:
             self._handle_rejection(
                 trigger_id=built.trigger_id,
                 rejection=rejection,
+                row=event.source_index + 1,
                 record=built.record,
                 counters=counters,
             )
         except PublishError as exc:
-            # The breaker has already counted every failed attempt.
             if not exc.scenario.retryable:
                 raise
             logger.error(
@@ -537,7 +524,6 @@ class ConnectorRunner:
         timeout = float(self._settings.kafka.flush_timeout_seconds)
 
         if self._shutdown.is_set:
-            # Never flush for longer than the container has left to live.
             timeout = min(timeout, float(self._settings.run.shutdown_grace_seconds))
 
         return self._stack.publisher.flush(timeout)
@@ -562,8 +548,6 @@ class ConnectorRunner:
 
         logger.info("Progress", extra={**counters.to_dict(), "queue_depth": self._stack.publisher.queue_depth})
 
-    # -- run ---------------------------------------------------------------
-
     def _report(
         self,
         *,
@@ -574,12 +558,6 @@ class ConnectorRunner:
         started_at: str,
         duration_seconds: float,
     ) -> None:
-        """Write the manifest, alert, and emit metrics for a finished run.
-
-        Everything here is evidence, not control flow: it runs whether the batch
-        succeeded, drained or failed, and a failure to record must not change the
-        exit code the run already earned.
-        """
         counters = result.counters if result else RunCounters()
         reconciliation = result.reconciliation if result else reconcile(counters)
 
@@ -621,11 +599,12 @@ class ConnectorRunner:
         self._metrics.emit({"run_id": self._run_id, "outcome": outcome})
 
         logger.info(
-            "Run finished: outcome=%s exit_code=%s acked=%d quarantined=%d",
+            "Run finished: outcome=%s exit_code=%s acked=%d quarantined=%d%s",
             outcome,
             exit_code,
             counters.acked,
             counters.quarantined,
+            f" reason={classification.raw_error}" if classification is not None else "",
             extra={"outcome": outcome, "exit_code": exit_code, **counters.to_dict()},
         )
 

@@ -75,3 +75,58 @@ class TestOtherChecks:
         report = pf.PreflightReport()
         pf.check_topic_metadata(report, fetch=failing(RuntimeError(message)), topics=["t"])
         assert report.failures[0].scenario is scenario
+
+
+class TestLogLevels:
+    """At INFO a preflight is one line; each endpoint's check is DEBUG unless it fails."""
+
+    @staticmethod
+    def passing(name: str) -> pf.CheckResult:
+        return pf.CheckResult(name=name, passed=True, duration_ms=10.0)
+
+    def report(self, *results: pf.CheckResult) -> pf.PreflightReport:
+        report = pf.PreflightReport()
+        for result in results:
+            report.add(result)
+        return report
+
+    def test_a_passing_check_is_debug_and_a_failing_one_error(self, caplog):
+        caplog.set_level("DEBUG", logger="utility.kafka_preflight")
+        self.report(
+            self.passing("dns:kafka:a"),
+            pf.CheckResult(name="tcp:kafka:a:9095", passed=False, duration_ms=1.0, detail="refused"),
+        )
+
+        assert [r.levelname for r in caplog.records] == ["DEBUG", "ERROR"]
+
+    def test_the_summary_counts_endpoints_per_label(self):
+        report = self.report(
+            self.passing("source:readable"),
+            *(self.passing(f"dns:kafka:b{i}") for i in range(50)),
+            *(self.passing(f"tcp:kafka:b{i}:9095") for i in range(49)),
+            pf.CheckResult(name="tcp:kafka:b49:9095", passed=False, duration_ms=1.0, blocking=False),
+            pf.CheckResult(name="tcp:kafka:quorum", passed=True, duration_ms=0.0),
+            self.passing("auth:bam_token"),
+        )
+
+        assert report.summary() == "source:readable ok, dns:kafka 50/50, tcp:kafka 49/50, auth:bam_token ok"
+
+    def test_info_shows_only_the_summary(self, caplog):
+        caplog.set_level("INFO", logger="utility.kafka_preflight")
+        report = self.report(*(self.passing(f"dns:kafka:b{i}") for i in range(50)))
+        report.log_summary()
+
+        [line] = caplog.records
+        assert line.levelname == "INFO"
+        assert line.getMessage().startswith("Preflight passed in ")
+        assert line.getMessage().endswith(": dns:kafka 50/50")
+
+    def test_a_failed_preflight_logs_its_summary_as_error_before_raising(self, caplog):
+        caplog.set_level("INFO", logger="utility.kafka_preflight")
+        report = pf.PreflightReport()
+        pf.check_authentication(report, acquire=failing(RuntimeError("no token")))
+
+        with pytest.raises(PreflightError):
+            report.raise_if_failed()
+        assert caplog.records[-1].levelname == "ERROR"
+        assert caplog.records[-1].getMessage().endswith(": auth:bam_token FAILED")

@@ -1,10 +1,3 @@
-"""Path helpers that treat ``s3://`` URIs and local paths interchangeably.
-
-Every read here is streaming or single-object; nothing loads a whole prefix into
-memory. That is deliberate - the OOM failure scenario is caused as often by an
-eager loader as by a genuine leak.
-"""
-
 from __future__ import annotations
 
 import json
@@ -24,7 +17,6 @@ _s3_client = None
 
 
 def s3() -> Any:
-    """Lazily created S3 client, so importing this module needs no credentials."""
     global _s3_client
     if _s3_client is None:
         _s3_client = boto3.client("s3")
@@ -41,12 +33,6 @@ def parse_s3_path(path: str) -> Tuple[str, str]:
 
 
 class SourceAccessError(RuntimeError):
-    """Raised when the Trigger BDP cannot be read or written.
-
-    Maps to the TBB catalogue entries 'Trigger BDP Read Failure' and 'Trigger
-    BDP Write Failure' so the classifier can route the incident correctly.
-    """
-
     def __init__(self, message: str, *, path: str, operation: str, cause: Optional[BaseException] = None):
         super().__init__(message)
         self.path = path
@@ -111,18 +97,12 @@ def write_json(path: str, document: Any) -> str:
 
 
 def join_path(base: str, *parts: str) -> str:
-    """Join a base prefix/directory with path parts, S3-safe."""
     if is_s3_path(base):
         return base.rstrip("/") + "/" + "/".join(p.strip("/") for p in parts if p)
     return os.path.join(base, *parts)
 
 
 def materialise_local(path: str, suffix: str = ".yaml") -> str:
-    """Return a local filesystem path for ``path``.
-
-    The BSP client insists on a real file, so an S3-hosted client config is
-    written to a temp file first.
-    """
     if not is_s3_path(path):
         return path
 
@@ -136,13 +116,6 @@ def materialise_local(path: str, suffix: str = ".yaml") -> str:
 
 
 def package_resource(relative: str) -> str:
-    """Resolve an app-relative resource (e.g. a bundled schema) inside the image.
-
-    Paths are relative to the app root (the directory holding ``utility/``), so a bundled
-    schema is named ``utility/schema.json``. ``IFC_HOME`` is set in the
-    Dockerfile; it falls back to the app root, two levels up from this file
-    (``<app>/utility/connector_utility.py``), when running from a checkout.
-    """
     if is_s3_path(relative) or os.path.isabs(relative):
         return relative
 
@@ -153,5 +126,4 @@ def package_resource(relative: str) -> str:
 
 
 def load_schema_document(path: str) -> Dict[str, Any]:
-    """Load an Avro schema from a repo-relative path, absolute path or S3 URI."""
     return read_json(package_resource(path))

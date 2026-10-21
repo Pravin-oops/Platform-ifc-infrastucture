@@ -4,8 +4,6 @@ tests/
 deploy/
 deployment/
 README.md
-# Read with `docker build -f Docker/Dockerfile`, so it never needs to be
-# shipped into the context itself.
 Docker/
 **/__pycache__/
 **/*.py[cod]

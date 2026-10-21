@@ -108,7 +108,7 @@ def test_an_empty_secret_says_so(tmp_path):
 def test_the_bsp_yaml_and_the_registry_read_the_file_the_ca_is_written_to():
     """The three paths must agree, or the CA is written where nobody reads it."""
     utility = os.path.join(os.path.dirname(__file__), "..", "utility")
-    connector = load_settings(os.path.join(utility, "connector_config.yaml"))
+    connector = load_settings(os.path.join(utility, "connector_config_sit.yaml"))
     with open(os.path.join(utility, "bsp_sit_config.yaml"), encoding="utf-8") as handle:
         bsp = yaml.safe_load(handle)
 

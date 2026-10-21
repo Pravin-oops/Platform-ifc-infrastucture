@@ -309,12 +309,15 @@ class TestRunLogs:
     def messages(self, caplog, prefix):
         return [r.getMessage() for r in caplog.records if r.getMessage().startswith(prefix)]
 
-    def test_each_acknowledged_message_is_logged_as_published(self, runner_factory, caplog):
-        caplog.set_level("INFO")
+    def test_each_acknowledged_message_is_logged_as_published_at_debug(self, runner_factory, caplog):
+        """Per message, so DEBUG only: at INFO the publish summary carries the totals."""
+        caplog.set_level("DEBUG")
         runner, _ = runner_factory([VALID_ROW])
         runner.run_batch()
 
-        [published] = self.messages(caplog, "Message published:")
+        [record] = [r for r in caplog.records if r.getMessage().startswith("Message published:")]
+        assert record.levelname == "DEBUG"
+        published = record.getMessage()
         assert "topic=test_ifc_topic" in published
         assert f"trigger_id={FIRST_TRIGGER_ID}" in published
         assert "offset=1" in published
@@ -358,6 +361,76 @@ class TestQuarantine:
 
         assert result.outcome == "QUALITY_GATE_FAILED"
         assert result.exit_code == catalog.SCHEMA_VALIDATION_FAILURE.exit_code
+
+
+class TestRejectionReporting:
+    """At INFO a rejected row names its column and check, once per kind, plus a summary."""
+
+    ROWS = [
+        row(date_of_request="10/06/2026"),
+        row(date_of_request="not a date"),
+        row(region=None),
+        VALID_ROW,
+    ]
+
+    def warnings(self, caplog, prefix):
+        return [
+            r for r in caplog.records
+            if r.levelname == "WARNING" and r.getMessage().startswith(prefix)
+        ]
+
+    def test_the_first_row_of_each_problem_is_logged_with_its_column(self, runner_factory, caplog):
+        caplog.set_level("INFO")
+        runner, _ = runner_factory(self.ROWS)
+        runner.run_batch()
+
+        lines = [r.getMessage() for r in self.warnings(caplog, "Record rejected:")]
+        assert len(lines) == 2
+        assert "column=Date of Request (date_of_request) check=not a valid DATE" in lines[0]
+        assert "row=1 " in lines[0] and "'10/06/2026'" in lines[0]
+        assert "column=Client Region (region) check=missing" in lines[1]
+
+    def test_the_summary_counts_each_problem(self, runner_factory, caplog):
+        caplog.set_level("INFO")
+        runner, _ = runner_factory(self.ROWS)
+        runner.run_batch()
+
+        [summary] = self.warnings(caplog, "Quarantine summary:")
+        assert summary.getMessage() == (
+            "Quarantine summary: 3 of 4 records rejected: "
+            "Date of Request (date_of_request) not a valid DATE x2; Client Region (region) missing x1"
+        )
+        assert summary.rejections[0]["count"] == 2
+
+    def test_the_quality_gate_failure_names_the_columns(self, runner_factory):
+        runner, _ = runner_factory(self.ROWS, resilience={"max_quarantine_ratio": 0.05})
+        result = runner.run_batch()
+
+        assert result.outcome == "QUALITY_GATE_FAILED"
+        assert result.classification.raw_error.endswith(
+            "tolerance: Date of Request (date_of_request) not a valid DATE x2; Client Region (region) missing x1"
+        )
+        assert result.classification.context["rejections"][1]["column"] == "Client Region (region)"
+
+    def test_the_run_finished_line_carries_the_reason(self, runner_factory, caplog):
+        caplog.set_level("INFO")
+        runner, _ = runner_factory(self.ROWS, resilience={"max_quarantine_ratio": 0.05})
+        result = runner.run_batch()
+        runner._report(
+            result=result, classification=result.classification,
+            outcome=result.outcome, exit_code=result.exit_code, started_at="t", duration_seconds=0.0,
+        )
+
+        [finished] = [r.getMessage() for r in caplog.records if r.getMessage().startswith("Run finished:")]
+        assert "reason=75.0% of records were rejected" in finished
+        assert "Client Region (region) missing x1" in finished
+
+    def test_a_clean_batch_logs_no_summary(self, runner_factory, caplog):
+        caplog.set_level("INFO")
+        runner, _ = runner_factory([VALID_ROW])
+        runner.run_batch()
+
+        assert self.warnings(caplog, "Quarantine summary:") == []
 
 
 class TestSequenceNumbers:

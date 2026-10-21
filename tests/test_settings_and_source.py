@@ -206,7 +206,7 @@ class TestTheAuditLocation:
         from utility.audit_utility import AuditWriter
         from utility.connector_config import load_settings
 
-        settings = load_settings(os.path.join(app_root, "utility", "connector_config.yaml"))
+        settings = load_settings(os.path.join(app_root, "utility", "connector_config_sit.yaml"))
         writer = AuditWriter(settings.audit, run_id="r", environment="TEST")
 
         for prefix in (

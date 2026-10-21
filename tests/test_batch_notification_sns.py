@@ -78,7 +78,7 @@ def a_notification(**overrides) -> TriggerBatchNotification:
         "Topic_Name": "tc01_fncmtrgrbb_ifc_tbb_kyc_refresh",
         "Trigger_Batch_Start_Timestamp": "2026-07-01T02:00:00.000000000Z",
         "Trigger_Batch_End_Timestamp": "2026-07-01T02:04:37.000000000Z",
-        "Event_Timestamp": "2026-07-01T02:04:38.512+00:00",
+        "Event_Timestamp": "2026-07-01T02:04:38.512000000Z",
         "Correlation_Id": "run-7f3a91",
     }
     fields.update(overrides)

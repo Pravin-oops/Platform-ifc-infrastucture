@@ -102,10 +102,10 @@ say "Smoke: failure catalogue (scripts/main.py catalogue)"
 echo "catalogue rendered as JSON"
 
 say "Smoke: ECS entry point refuses to start without a config"
-# Blank APP_CONFIG_PATH explicitly: otherwise main_ecs.py would load it from the
+# Blank IFC_APP__ENVIRONMENT explicitly: otherwise main_ecs.py would load it from the
 # tracked .env (load_dotenv never overrides a variable that is already set).
-if APP_CONFIG_PATH= "$PY" scripts/main_ecs.py > /dev/null 2>&1; then
-    echo "FAIL: main_ecs.py exited 0 with no APP_CONFIG_PATH" >&2
+if IFC_APP__ENVIRONMENT= "$PY" scripts/main_ecs.py > /dev/null 2>&1; then
+    echo "FAIL: main_ecs.py exited 0 with no IFC_APP__ENVIRONMENT" >&2
     exit 1
 fi
 echo "main_ecs.py exited non-zero as expected"

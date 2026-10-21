@@ -1,11 +1,3 @@
-"""Turn a classification into an RTB-ready alert.
-
-The subject line alone has to be enough for the on-call engineer to route the
-incident, because that is all a paging integration shows. The body then answers,
-in order: what broke, what the connector already did about it, who owns it, and
-what to do next - all lifted from the agreed catalogue rather than invented here.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -18,7 +10,7 @@ from utility.error_classifier import Classification
 
 logger = logging.getLogger(__name__)
 
-_MAX_SUBJECT = 100  # SNS subject limit.
+_MAX_SUBJECT = 100
 
 
 def build_subject(
@@ -91,7 +83,6 @@ def build_body(
 
 
 def describe_aws_error(exc: Exception) -> str:
-    """``AuthorizationError: User ... is not authorized`` rather than a bare class name."""
     if isinstance(exc, ClientError):
         error = exc.response.get("Error", {})
         return f"{error.get('Code', 'ClientError')}: {error.get('Message', exc)}"
@@ -99,12 +90,6 @@ def describe_aws_error(exc: Exception) -> str:
 
 
 class Notifier:
-    """Publishes alerts to SNS when configured; always logs them.
-
-    A failure to notify is never allowed to mask the failure being notified, so
-    SNS errors are logged and swallowed.
-    """
-
     def __init__(
         self,
         *,
@@ -166,7 +151,7 @@ class Notifier:
             )
             return {"subject": subject, "message": body}
 
-        logger.info(
+        logger.debug(
             "SNS failure alert sending: topic=%s subject=%r message=\n%s",
             self._topic_arn,
             subject,

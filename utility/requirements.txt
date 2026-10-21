@@ -1,12 +1,3 @@
-# Runtime dependencies.
-#
-# Pinned to minor versions: an ECS image is rebuilt on a release cadence, and an
-# unpinned transitive bump inside confluent-kafka has broken SASL handshakes
-# before. Refresh deliberately, not implicitly.
-
-# 1.35.69 is the first release that accepts IfMatch on S3 PutObject, which the
-# run marker file's append relies on (utility/run_gate.py); an older client
-# rejects the parameter and no run outcome would ever be recorded.
 boto3~=1.35.69
 botocore~=1.35.69
 PyYAML~=6.0
@@ -14,23 +5,6 @@ requests~=2.31
 fastavro~=1.9
 confluent-kafka~=2.4
 pydantic~=2.7
-
-# Loads <app root>/.env in scripts/main.py and scripts/main_ecs.py. Never
-# overrides variables already set, so the ECS task definition always wins.
 python-dotenv~=1.0
-
-# Zone database for zoneinfo. The runtime image is python:3.11-slim, which
-# carries no system tzdata, and the entry-point gate decides 'is today a
-# weekday' in Europe/London. Without this the gate falls back to UTC and a
-# run started late on a Sunday evening in BST would read as a Sunday.
 tzdata~=2024.1
-
-# BSP Python client. Proprietary to Barclays and served from the internal
-# package index rather than PyPI, so `pip install bsp_python_client` resolves
-# on the Barclays network and the image installs it like any other
-# dependency. There is no vendored wheel.
-#
-# Unpinned, unlike everything above: the internal version series is not
-# documented here yet. Pin it to a minor range once it is known, so the image
-# cannot pick up a new client on an unrelated rebuild.
 bsp_python_client

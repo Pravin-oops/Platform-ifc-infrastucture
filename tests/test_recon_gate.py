@@ -22,6 +22,7 @@ from typing import Any, Dict, List
 import pytest
 from botocore.exceptions import ClientError
 
+from tests.conftest import use_config
 from utility import athena_query
 from utility import failure_catalog as catalog
 from utility import recon_gate
@@ -534,8 +535,9 @@ def ecs(main_ecs_script, monkeypatch, tmp_path, clean_ifc_env):
 
     def run(**config_kwargs):
         config = a_config(tmp_path, **config_kwargs)
+        use_config(monkeypatch, main_ecs_script, config)
         return main_ecs_script.ecs_handler(
-            {"config_path": str(config), "trigger": "TRIGGER_8"}
+            {"trigger": "TRIGGER_8"}
         )
 
     return type("Ecs", (), {"write": staticmethod(write), "run": staticmethod(run),
@@ -646,6 +648,9 @@ class TestThroughTheEntryPoint:
         assert body["Trigger_Originating_BU"] == "UK-C"
         assert body["Trigger_Batch_Start_Timestamp"] == body["Trigger_Batch_End_Timestamp"]
         assert before <= body["Trigger_Batch_Start_Timestamp"] <= after
+        # Same RFC 3339 nanosecond format as the batch window.
+        assert before <= body["Event_Timestamp"] <= after
+        assert len(body["Event_Timestamp"]) == len(body["Trigger_Batch_End_Timestamp"])
         # Joins the RECON_GATE manifest this invocation wrote.
         assert body["Correlation_Id"] == summary["run_id"]
 
@@ -740,8 +745,9 @@ class TestAReprocessChecksTheCurrentMonthsRecon:
 
         # No recon document anywhere: the gate would block if it were consulted.
         config = a_config(tmp_path)
+        use_config(monkeypatch, main_ecs_script, config)
         summary = main_ecs_script.ecs_handler(
-            {"config_path": str(config), "trigger": "TRIGGER_8"}
+            {"trigger": "TRIGGER_8"}
         )
 
         assert summary["outcome"] == "SKIPPED"
@@ -806,7 +812,7 @@ class TestGateActivation:
         from utility.connector_config import load_settings
 
         for trigger, suffix in (("TRIGGER_8", "8"), ("TRIGGER_9", "9"), ("TRIGGER_21", "21")):
-            settings = load_settings("utility/connector_config.yaml")
+            settings = load_settings("utility/connector_config_sit.yaml")
             settings.select_trigger(trigger)
             assert settings.recon_active
             assert settings.recon.table == "bdb_ifc_synthetic_data_test.batch_recon"
@@ -849,14 +855,15 @@ class TestTheRunMarkerStatus:
 
         ecs.write(a_row(status="RECON_FAILED"))
         config = a_config(tmp_path, marker=True)
-        main_ecs_script.ecs_handler({"config_path": str(config), "trigger": "TRIGGER_8"})
+        use_config(monkeypatch, main_ecs_script, config)
+        main_ecs_script.ecs_handler({"trigger": "TRIGGER_8"})
 
         assert [w["status"] for w in recording.writes] == [run_gate.STATUS_NOT_RAN]
         assert recording.writes[0]["records"] == 0
         assert recording.writes[0]["month"] == "2026-09"
 
     def test_a_zero_count_month_records_success_with_zero_records(
-        self, ecs, recording, main_ecs_script, tmp_path
+        self, ecs, recording, main_ecs_script, monkeypatch, tmp_path
     ):
         """A genuine empty month is delivered: SUCCESS closes it, so the rest of
         the window stands down instead of announcing it to TBB again."""
@@ -864,7 +871,8 @@ class TestTheRunMarkerStatus:
 
         ecs.write(a_row(source_count=0, target_count=0))
         config = a_config(tmp_path, marker=True)
-        main_ecs_script.ecs_handler({"config_path": str(config), "trigger": "TRIGGER_8"})
+        use_config(monkeypatch, main_ecs_script, config)
+        main_ecs_script.ecs_handler({"trigger": "TRIGGER_8"})
 
         assert [(w["status"], w["records"]) for w in recording.writes] == [
             (run_gate.STATUS_SUCCESS, 0)
@@ -882,21 +890,23 @@ class TestTheRunMarkerStatus:
             lambda *a, **k: GateOutcome(False, "TRIGGER_8 2026-09 was already delivered", True),
         )
         config = a_config(tmp_path, marker=True)
-        summary = main_ecs_script.ecs_handler({"config_path": str(config), "trigger": "TRIGGER_8"})
+        use_config(monkeypatch, main_ecs_script, config)
+        summary = main_ecs_script.ecs_handler({"trigger": "TRIGGER_8"})
 
         assert summary["outcome"] == "SKIPPED"
         assert [w["status"] for w in recording.writes] == [run_gate.STATUS_NOT_RAN]
         assert recording.writes[0]["records"] == 0
         assert "already delivered" in recording.writes[0]["reason"]
 
-    def test_a_failed_run_records_failure(self, ecs, recording, main_ecs_script, tmp_path):
+    def test_a_failed_run_records_failure(self, ecs, recording, main_ecs_script, monkeypatch, tmp_path):
         """The fused runner raises, which is a startup failure: the invocation
         ran and did not deliver."""
         from utility import run_gate
 
         ecs.write(a_row())
         config = a_config(tmp_path, marker=True)
-        main_ecs_script.ecs_handler({"config_path": str(config), "trigger": "TRIGGER_8"})
+        use_config(monkeypatch, main_ecs_script, config)
+        main_ecs_script.ecs_handler({"trigger": "TRIGGER_8"})
 
         assert [w["status"] for w in recording.writes] == [run_gate.STATUS_FAILURE]
         assert recording.writes[0]["records"] == 0
@@ -990,8 +1000,9 @@ class TestInvocationManifest:
             "should_run",
             lambda *a, **k: GateOutcome(False, "2026-10-03 is a Saturday", True),
         )
+        use_config(monkeypatch, main_ecs_script, a_config(tmp_path))
         summary = main_ecs_script.ecs_handler(
-            {"config_path": str(a_config(tmp_path)), "trigger": "TRIGGER_8"}
+            {"trigger": "TRIGGER_8"}
         )
 
         assert len(manifests) == 1
@@ -1008,8 +1019,9 @@ class TestInvocationManifest:
 
         monkeypatch.setattr(main_ecs_script, "should_run", unreachable)
         with pytest.raises(RuntimeError, match="unreachable"):
+            use_config(monkeypatch, main_ecs_script, a_config(tmp_path))
             main_ecs_script.ecs_handler(
-                {"config_path": str(a_config(tmp_path)), "trigger": "TRIGGER_8"}
+                {"trigger": "TRIGGER_8"}
             )
 
         assert [(m["stage"], m["outcome"]) for m in manifests] == [("RUN_GATE", "FAILED")]

@@ -1,0 +1,110 @@
+app:
+  name: ifc-trigger-connector
+  environment: DEV
+  log_level: INFO
+
+envelope:
+  originating_systems:
+    DEV: SNSVC0084379
+    SIT: SNSVC0084378
+    PROD-ANALYTICS: SNSVC0084375
+    PROD-PARALLEL: SNSVC0084371
+    PROD: SNSVC0084373
+  tokenised_environments: [PROD]
+
+run:
+  shutdown_grace_seconds: 90
+
+source:
+  trigger_tables:
+    TRIGGER_8: bdb_ifc_synthetic_data_test.bdp_corp_ifc_trigger_8
+    TRIGGER_9: bdb_ifc_synthetic_data_test.bdp_corp_ifc_trigger_9
+    TRIGGER_21: bdb_ifc_synthetic_data_test.bdp_corp_ifc_trigger_21
+  athena:
+    workgroup: primary
+    catalog: AwsDataCatalog
+    output_location: s3://sit1-logs-corpdeng-509153454187-eu-west-1/athena_output/
+    business_date_column: business_date
+    order_by: [date_of_request, counterparty_csid_sds]
+    poll_interval_seconds: 1.0
+    query_timeout_seconds: 300
+
+recon:
+  enabled: true
+  table: bdb_ifc_synthetic_data_test.batch_recon
+  trigger_targets:
+    TRIGGER_8: "`sit_cds_snsvc0080860_prepared_db`.bdb_ifc_synthetic_data_test.BDP_Corp_IFC_Trigger_8"
+    TRIGGER_9: "`sit_cds_snsvc0080860_prepared_db`.bdb_ifc_synthetic_data_test.BDP_Corp_IFC_Trigger_9"
+    TRIGGER_21: "`sit_cds_snsvc0080860_prepared_db`.bdb_ifc_synthetic_data_test.BDP_Corp_IFC_Trigger_21"
+
+kafka:
+  topic: tc01_fncmtrgrbb_ifc_tbb_kyc_refresh
+  bsp_config_path: utility/bsp_dev_config.yaml
+  max_message_bytes: 819200
+  flush_timeout_seconds: 120
+  local_queue_max_messages: 20000
+  overrides:
+    request.timeout.ms: 60000
+    connections.max.idle.ms: 300000
+    metadata.max.age.ms: 300000
+
+schema_registry:
+  mode: DEV
+  ca_location: /tmp/ifc-certs/CARoot.pem
+  timeout_seconds: 30
+  max_attempts: 5
+  schema_path: utility/schema.json
+  dev:
+    schema_id: 1299
+    url: https://ldndsr000010177.intranet.barcapint.com:8082, https://gbrdsr000014551.intranet.barcapint.com:8082
+
+ca_certificate:
+  secret_id: /ifc/bsp-event-processor/kafka/ca-bundle
+  secret_region: eu-west-1
+  path: /tmp/ifc-certs/CARoot.pem
+
+cyberark:
+  enabled: false
+  folder: Root
+  client_cert_secret_id: /ifc/bsp-event-processor/cyberark/client-cert
+  client_key_secret_id: /ifc/bsp-event-processor/cyberark/private-key
+  secret_region: eu-west-1
+  ca_bundle_path: /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
+  ssl_verify: true
+  request_timeout: 30
+  max_attempts: 3
+  principal_realm: "@INTRANET.BARCAPINT.COM"
+
+run_marker:
+  path: s3://sit1-pre-cds01-509153454187-eu-west-1/dbx-sit-cds-snsvc0080860-prepared-db/ifc-bdp-audit-recon-json/run-markers/run_markers.json
+
+audit:
+  bucket: s3://sit1-pre-cds01-509153454187-eu-west-1/dbx-sit-cds-snsvc0080860-prepared-db/ifc-bdp-audit-recon-json/audit-bucket
+  manifest_prefix: manifests/
+  quarantine_prefix: quarantine/
+  payload_prefix: payloads/
+  write_payloads: true
+
+resilience:
+  max_publish_attempts: 5
+  backoff_base_seconds: 1.0
+  backoff_max_seconds: 60.0
+  circuit_breaker_threshold: 20
+  circuit_breaker_reset_seconds: 120
+  preflight_enabled: true
+  preflight_timeout_seconds: 30
+  preflight_metadata_enabled: false
+  preflight_metadata_timeout_seconds: 60
+  max_quarantine_ratio: 0.05
+
+health:
+  enabled: true
+  port: 8080
+  bind_host: 0.0.0.0
+
+notifications:
+  sns_topic_arn: null
+  application_label: IFC Trigger Connector
+  batch_sns_topic_arn: null
+  trigger_originating_bu: UK-C
+  batch_notifications_enabled: true

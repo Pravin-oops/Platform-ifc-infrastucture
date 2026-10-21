@@ -1,17 +1,3 @@
-"""Readiness checks run before a single record is read or published.
-
-The POC readiness assessment lists the things that were unproven for the AWS to
-on-prem BSP path: DNS from the AWS runtime, TCP on 9095/8095, BAM token
-acquisition, registry access, cluster metadata, then publish. Those are exactly
-the checks here, in that order, so a broken environment is diagnosed by the
-connector's own startup log instead of by a separate diagnostic exercise.
-
-Ordering is cheapest-and-most-likely-first: a firewall rule that was never
-implemented should fail in under a second, not after a full auth handshake.
-Each check returns a result rather than raising, so the log shows every check's
-outcome before the run aborts on the first blocking failure.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -57,7 +43,7 @@ class PreflightReport:
     def add(self, result: CheckResult) -> CheckResult:
         self.results.append(result)
         logger.log(
-            logging.INFO if result.passed else logging.ERROR,
+            logging.DEBUG if result.passed else logging.ERROR,
             "Preflight %s: %s",
             result.name,
             "ok" if result.passed else result.detail,
@@ -79,10 +65,48 @@ class PreflightReport:
             "checks": [r.to_dict() for r in self.results],
         }
 
+    def summary(self) -> str:
+        groups: Dict[str, List[CheckResult]] = {}
+        for result in self.results:
+            parts = result.name.split(":")
+            if parts[0] in ("dns", "tcp"):
+                if parts[-1] == "quorum":
+                    continue
+                group = ":".join(parts[:2])
+            else:
+                group = result.name
+            groups.setdefault(group, []).append(result)
+
+        described = []
+        for group, results in groups.items():
+            if len(results) == 1:
+                described.append(f"{group} {'ok' if results[0].passed else 'FAILED'}")
+            else:
+                described.append(f"{group} {sum(r.passed for r in results)}/{len(results)}")
+        return ", ".join(described)
+
+    def log_summary(self) -> None:
+        if not self.results:
+            return
+        duration_ms = sum(r.duration_ms for r in self.results)
+        logger.log(
+            logging.INFO if self.passed else logging.ERROR,
+            "Preflight %s in %.0f ms: %s",
+            "passed" if self.passed else "failed",
+            duration_ms,
+            self.summary(),
+            extra={
+                "preflight_passed": self.passed,
+                "preflight_checks": len(self.results),
+                "preflight_duration_ms": round(duration_ms, 1),
+            },
+        )
+
     def raise_if_failed(self) -> None:
         if self.passed:
             return
 
+        self.log_summary()
         first = self.failures[0]
         raise PreflightError(
             f"Preflight check '{first.name}' failed: {first.detail}",
@@ -94,27 +118,15 @@ class PreflightReport:
 def _timed(
     fn: Callable[[], Tuple[bool, str, Dict[str, Any]]],
 ) -> Tuple[bool, str, Dict[str, Any], float, Optional[Scenario]]:
-    """Run a check, returning its outcome, timing and the scenario its error carried.
-
-    A ``ConnectorError`` has already been classified where it was raised, and
-    that scenario is returned so the check does not re-derive it from the
-    message text - a registry outage reads "Schema Registry ..." exactly as a
-    schema fault does.
-    """
     start = time.perf_counter()
     scenario: Optional[Scenario] = None
     try:
         ok, detail, context = fn()
-    except Exception as exc:  # a check must never crash the run itself
+    except Exception as exc:
         ok, detail, context = False, f"{type(exc).__name__}: {exc}", {}
         if isinstance(exc, ConnectorError):
             scenario = exc.scenario
     return ok, detail, context, (time.perf_counter() - start) * 1000.0, scenario
-
-
-# ---------------------------------------------------------------------------
-# Individual checks
-# ---------------------------------------------------------------------------
 
 
 def parse_bootstrap_servers(bootstrap: str) -> List[Tuple[str, int]]:
@@ -141,12 +153,6 @@ def check_dns(
     label: str,
     blocking: bool = True,
 ) -> None:
-    """Resolve each endpoint's host.
-
-    ``blocking=False`` reports a host that does not resolve without failing the
-    run, for a set of endpoints where any one will do - the TCP quorum check
-    that follows still fails the run when none is reachable.
-    """
     for host, _port in endpoints:
         def resolve(host: str = host) -> Tuple[bool, str, Dict[str, Any]]:
             addresses = sorted({info[4][0] for info in socket.getaddrinfo(host, None)})
@@ -174,12 +180,6 @@ def check_tcp(
     timeout: int,
     require_all: bool = False,
 ) -> None:
-    """Open a socket to each endpoint.
-
-    ``require_all`` is False for Kafka bootstrap servers: one reachable broker is
-    enough to bootstrap a cluster, and failing because a single broker is down
-    would be a self-inflicted outage. Unreachable brokers are still reported.
-    """
     reachable = 0
 
     for host, port in endpoints:
@@ -215,8 +215,6 @@ def check_tcp(
 
 
 def check_source(report: PreflightReport, *, table: str, probe: Callable[[], Any]) -> None:
-    """Confirm the trigger table is visible to this role before authenticating to BSP."""
-
     def run() -> Tuple[bool, str, Dict[str, Any]]:
         probe()
         return True, "", {"source_table": table}
@@ -257,9 +255,6 @@ def check_schema_registry(report: PreflightReport, *, resolve: Callable[[], Dict
 
     ok, detail, context, ms, raised = _timed(run)
 
-    # The registry client and the compatibility check raise errors that already
-    # name their scenario - an outage, a rejected token, a missing ACL or an
-    # incompatible schema - so the alert reaches the right team.
     report.add(
         CheckResult(
             name="schema_registry:subject",
@@ -272,7 +267,6 @@ def check_schema_registry(report: PreflightReport, *, resolve: Callable[[], Dict
     )
 
 
-#: What a failed metadata fetch can be reported as, besides the broker itself.
 _METADATA_SCENARIOS = (
     catalog.AUTHORISATION_FAILURE,
     catalog.AUTHENTICATION_FAILURE,
@@ -286,12 +280,6 @@ def check_topic_metadata(
     fetch: Callable[[str], Dict[str, Any]],
     topics: List[str],
 ) -> None:
-    """Fetch metadata with the real producer principal.
-
-    This is the check that separates 'topic does not exist' from 'no ACL for
-    this principal' - the two most common onboarding failures, which look
-    identical from a publish timeout.
-    """
     for topic in topics:
         def run(topic: str = topic) -> Tuple[bool, str, Dict[str, Any]]:
             return True, "", fetch(topic)
@@ -300,9 +288,6 @@ def check_topic_metadata(
 
         scenario = raised
         if not ok and scenario is None:
-            # librdkafka reports through the message text. The classifier keeps
-            # a missing ACL (authorisation) apart from a rejected login
-            # (authentication) and a missing topic; anything else is the broker.
             classified = classify(detail).scenario
             scenario = classified if classified in _METADATA_SCENARIOS else catalog.BROKER_UNAVAILABLE
 

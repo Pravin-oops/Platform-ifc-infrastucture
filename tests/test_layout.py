@@ -54,7 +54,8 @@ ENTRY_POINTS = ["main", "main_ecs"]
 #: its YAML, its .json schema and its requirements.txt inside utility/.
 UTILITY_ASSETS = [
     "requirements.txt",
-    "connector_config.yaml",
+    "connector_config_sit.yaml",
+    "connector_config_dev.yaml",
     "schema.json",
 ]
 

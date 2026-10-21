@@ -1,24 +1,10 @@
-# YAML file with configuration. Be mindful of data types and use '@' to declare callback functions.
-# Documentation for security, producer, and consumer properties can be referred from
-# https://docs.confluent.io/legacy/platform/5.1.4/clients/librdkafka/CONFIGURATION.md.html or
-# https://github.com/confluentinc/librdkafka/blob/master/CONFIGURATION.md
-
 ---
-# Provide comma seperated list of host/port pairs to use for establishing the initial connection to the Kafka cluster.
 servers:
-  # The brokers the SIT run of 7 October 2026 published through. The BSP
-  # toolkit gives the official list per environment: bin\windows\env.cmd -v icp\emea\uat
-  # 9095: the Barclays SASL_SSL listener (security.protocol below).
   bootstrap.servers: ldndsr000009480.intranet.barcapint.com:9095,ldndsr000009481.intranet.barcapint.com:9095,gbrdsr000011990.intranet.barcapint.com:9095,gbrdsr000011993.intranet.barcapint.com:9095,gbrdsr000013930.intranet.barcapint.com:9095
 
-# Provide protocol used to communicate with brokers, SASL mechanism used for client connections, SSL certificate and CA Locations (optional)
 security:
-  # SASL_SSL: the only protocol the Barclays brokers accept. TLS verified with
-  # ssl.ca.location below, then SASL OAUTHBEARER with the BAM token. Anything
-  # else is dropped by the broker: "Local broker transport failure" (_TRANSPORT).
   security.protocol: SASL_SSL
   sasl.mechanism: OAUTHBEARER
-  # Written from Secrets Manager at container start: ca_certificate.path in connector_config.yaml.
   ssl.ca.location: /tmp/ifc-certs/CARoot.pem
 
 credentials:
@@ -31,25 +17,17 @@ bam:
   bam_url: BAM_URL
   bam_name: BAM_NAME
 
-# When defining callback functions, please prefix them with '@' to indicate their nature
-# For properties, ensure to specify the appropriate data type to maintain consistency and clarity
-
-# Provide Kafka producer properties/configurations
 producer:
   properties:
     acks: all
     compression.type: gzip
-    #on_delivery: "@delivery_report"
-    # request.timeout.ms is set in connector_config.yaml (kafka.overrides).
-    #error_cb: "@error"
-    enable.idempotence: True             # MUST                      # MUST
-    retries: 2147483647                  # MUST
+    enable.idempotence: True
+    retries: 2147483647
     max.in.flight.requests.per.connection: 5
-
 
 consumer:
   properties:
     error_cb: "@error"
-    group.id: GROUP_ID_HERE # Must follow naming convention: https://confluence.barcapint.com/display/EDPRT/Naming+Conventions
+    group.id: GROUP_ID_HERE
     auto.offset.reset: earliest
-    enable.auto.commit: !!bool false # data type boolean Valid User Name format: systemAccountmock@intranet.barcapint.coms
+    enable.auto.commit: !!bool false
