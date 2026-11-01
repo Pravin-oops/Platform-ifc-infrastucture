@@ -114,8 +114,8 @@ Nothing else is touched on a skip: no Athena, no BSP, no Kafka.
 ### ③ Upstream reconciliation gate — did upstream produce this month?
 
 Queries the newest `batch_recon` row whose `target_table_name` is this trigger's
-([section 7](#7-the-upstream-reconciliation-gate)). It must be from the **current** month, status
-`SUCCESS`, with `source_count = target_count`.
+([section 7](#7-the-upstream-reconciliation-gate)). It must be from the **current** month (not
+checked when `IFC_RUN__FORCE=true`), status `SUCCESS`, with `source_count = target_count`.
 
 - Not ready, failed or untrusted → `NOT RAN`, RTB alert, non-zero exit.
 - `SUCCESS` with both counts zero → a delivered empty month: `SUCCESS` with 0 records, SNS
@@ -402,7 +402,7 @@ way in every environment.
 | Newest row | Outcome | Exit |
 |---|---|---|
 | none for the trigger | `UPSTREAM_DATA_NOT_RECEIVED` | 22 |
-| `last_modified_ts` not in the current month | `UPSTREAM_PROCESSING_NOT_DONE` | 22 |
+| `last_modified_ts` not in the current month (unforced runs only) | `UPSTREAM_PROCESSING_NOT_DONE` | 22 |
 | `status = FAILED` | `UPSTREAM_MODEL_FAILED` | 21 |
 | `status = RECON_FAILED` | `UPSTREAM_JOB_FAILED` | 21 |
 | `SUCCESS`, `source_count != target_count` | `UPSTREAM_COUNT_MISMATCH` | 21 |
@@ -412,9 +412,10 @@ way in every environment.
 | row missing `status` / `last_modified_ts`, bad counts or an unknown status | `UPSTREAM_RECON_UNREADABLE` | 20 |
 
 Every block raises the RTB alert and quotes the row (status, counts, `model_name`, `job_run_id`,
-`batch_id`, `last_modified_ts`) in the alert, run summary and manifest. The recon row must be from
-the **current** month even when reprocessing an earlier one, because upstream writes it when it
-runs.
+`batch_id`, `last_modified_ts`) in the alert, run summary and manifest. On a scheduled run the
+recon row must be from the **current** month, because upstream writes it when it runs. A forced run
+(`IFC_RUN__FORCE=true`) accepts the newest row from any month and logs
+`Forced run: accepting a reconciliation row from …` at WARNING; its status and counts still decide.
 
 ---
 
@@ -479,8 +480,9 @@ IFC_APP__ENVIRONMENT=SIT IFC_RUN__TRIGGER=TRIGGER_8 IFC_RUN__MONTH=2026-09 IFC_R
 
 `IFC_RUN__MONTH` is the **run** month (`2026-09` or `SEPTEMBER_2026`): the September run reads
 `business_date = 2026-08-31`, stamps the August business month and records its outcome against
-`2026-09`. `IFC_RUN__FORCE=true` is needed when that month is already `SUCCESS`. The weekend check
-and the recon check still use today's date, so the recon row must be from the current month.
+`2026-09`. `IFC_RUN__FORCE=true` is needed when that month is already `SUCCESS`; it also skips the
+weekend check and the recon gate's current-month check, so the newest recon row is accepted whatever
+month it is from. Without force, the recon row must be from the current month.
 
 ---
 

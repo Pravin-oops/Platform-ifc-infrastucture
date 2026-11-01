@@ -149,11 +149,11 @@ def recon():
     def replace(row):
         client.rows[:] = [row]
 
-    def evaluate(target=TARGET_8, match_column="target_table_name", **athena):
+    def evaluate(target=TARGET_8, match_column="target_table_name", check_month=True, **athena):
         settings = ReconSettings(table=TABLE, target_table=target, match_column=match_column)
         return recon_gate.evaluate(
             settings, AthenaSettings(**athena), execution_month=MONTH,
-            client=client, sleep=lambda _s: None,
+            check_month=check_month, client=client, sleep=lambda _s: None,
         )
 
     return type("Recon", (), {"write": staticmethod(write), "replace": staticmethod(replace),
@@ -738,6 +738,45 @@ class TestThroughTheEntryPoint:
         assert ecs.built, "the gate blocked a healthy month"
 
 
+class TestAForcedRunSkipsTheMonthCheck:
+    """IFC_RUN__FORCE=true accepts the newest recon row whatever month it is
+    from; its status and counts still decide."""
+
+    def test_last_months_success_proceeds(self, recon):
+        recon.write(a_row(last_modified_ts="2026-08-31 14:30:22.123"))
+        assert recon.evaluate(check_month=False).proceed
+
+    def test_it_says_so_in_the_log(self, recon, caplog):
+        recon.write(a_row(last_modified_ts="2026-08-31 14:30:22.123"))
+        recon.evaluate(check_month=False)
+        assert "Forced run: accepting a reconciliation row from 2026-08" in caplog.text
+
+    def test_last_months_failure_still_blocks(self, recon):
+        recon.write(a_row(status="FAILED", last_modified_ts="2026-08-31 14:30:22.123"))
+        assert recon.evaluate(check_month=False).outcome == "UPSTREAM_MODEL_FAILED"
+
+    def test_last_months_count_mismatch_still_blocks(self, recon):
+        recon.write(a_row(source_count=412, target_count=400,
+                          last_modified_ts="2026-08-31 14:30:22.123"))
+        assert recon.evaluate(check_month=False).outcome == "UPSTREAM_COUNT_MISMATCH"
+
+    def test_no_row_still_blocks(self, recon):
+        assert recon.evaluate(check_month=False).outcome == "UPSTREAM_DATA_NOT_RECEIVED"
+
+    def test_through_the_entry_point(self, ecs, monkeypatch):
+        """Today is 2026-09-18 in the ``ecs`` fixture; the newest row is August's."""
+        monkeypatch.setenv("IFC_RUN__FORCE", "true")
+        ecs.write(a_row(last_modified_ts="2026-08-31 14:30:22.123"))
+        ecs.run()
+        assert ecs.built
+
+    def test_an_unforced_run_still_checks_the_month(self, ecs):
+        ecs.write(a_row(last_modified_ts="2026-08-31 14:30:22.123"))
+        summary = ecs.run()
+        assert ecs.built == []
+        assert summary["outcome"] == "UPSTREAM_PROCESSING_NOT_DONE"
+
+
 class TestAReprocessChecksTheCurrentMonthsRecon:
     """Upstream writes its recon row when it runs, stamped with the current
     month, even when IFC_RUN__MONTH reprocesses an earlier one. Today is
@@ -756,6 +795,13 @@ class TestAReprocessChecksTheCurrentMonthsRecon:
 
         assert ecs.built == []
         assert summary["outcome"] == "UPSTREAM_PROCESSING_NOT_DONE"
+
+    def test_a_forced_reprocess_accepts_an_earlier_months_row(self, ecs, monkeypatch):
+        monkeypatch.setenv("IFC_RUN__MONTH", "2026-08")
+        monkeypatch.setenv("IFC_RUN__FORCE", "true")
+        ecs.write(a_row(last_modified_ts="2026-08-31 14:30:22.123"))
+        ecs.run()
+        assert ecs.built, "a forced run must not need a current-month recon row"
 
     def test_the_weekend_skip_still_wins(self, main_ecs_script, monkeypatch, tmp_path,
                                          clean_ifc_env):

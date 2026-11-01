@@ -140,6 +140,7 @@ def evaluate(
     athena,
     *,
     execution_month: str,
+    check_month: bool = True,
     client: Any = None,
     sleep: Callable[[float], None] = time.sleep,
 ) -> ReconDecision:
@@ -198,7 +199,16 @@ def evaluate(
         )
 
     recon_month = last_modified.strftime("%Y-%m")
-    if recon_month != execution_month:
+    if recon_month != execution_month and not check_month:
+        logger.warning(
+            "Forced run: accepting a reconciliation row from %s for %s, not the current month %s",
+            recon_month,
+            target,
+            execution_month,
+            extra={"recon_target": target, "recon_month": recon_month,
+                   "execution_month": execution_month},
+        )
+    elif recon_month != execution_month:
         return _blocked(
             "UPSTREAM_PROCESSING_NOT_DONE",
             catalog.TED_MISSING_SOURCE_DATA,

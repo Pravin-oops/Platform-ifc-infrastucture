@@ -128,7 +128,7 @@ def _record(gate: Optional[Gate], status: str, *, records: int = 0, reason: str 
 
 
 def _recon_gate(settings, config_path: str, task: Dict[str, Optional[str]],
-                invocation: Optional[Invocation] = None):
+                invocation: Optional[Invocation] = None, *, force: bool = False):
     if not settings.recon_active:
         logger.info(
             "Upstream reconciliation gate is not active",
@@ -140,7 +140,8 @@ def _recon_gate(settings, config_path: str, task: Dict[str, Optional[str]],
     recon_month = month_of(run_gate.today())
     try:
         decision = recon_gate.evaluate(
-            settings.recon, settings.source.athena, execution_month=recon_month
+            settings.recon, settings.source.athena, execution_month=recon_month,
+            check_month=not force,
         )
     except Exception as exc:
         logger.exception("Upstream reconciliation gate could not be evaluated")
@@ -315,7 +316,10 @@ def ecs_handler(event: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
             "ecs": task,
         }
 
-    blocked = _recon_gate(settings, config_path, task, invocation)
+    blocked = _recon_gate(
+        settings, config_path, task, invocation,
+        force=bool(event.get("force") or settings.run.force),
+    )
     if blocked is not None:
         if blocked.get("outcome") == recon_gate.OUTCOME_NO_DATA:
             _record(gate, run_gate.STATUS_SUCCESS, records=0, reason=recon_gate.OUTCOME_NO_DATA)

@@ -263,9 +263,9 @@ When the window has closed, or you cannot wait for the next date.
 | An earlier month's run | `IFC_RUN__TRIGGER`, `IFC_RUN__MONTH=YYYY-MM`, `IFC_RUN__FORCE=true` if that month is `SUCCESS` |
 
 `IFC_RUN__MONTH` is the **run** month: `2026-09` reads `business_date = 2026-08-31`
-([README §10](README.md#10-reprocessing-a-past-month)). The recon gate still needs a recon row
-from the **current** month: for an earlier month, ask EDP to re-run the recon job, or bypass the
-gate per [7.5](#75-bypassing-a-gate).
+([README §10](README.md#10-reprocessing-a-past-month)). With `IFC_RUN__FORCE=true` the recon gate
+accepts the newest recon row from any month, but still blocks on `FAILED`, `RECON_FAILED` or
+mismatched counts. Without force, the row must be from the current month.
 
 **Before forcing a month that is already `SUCCESS`, agree it with TBB RTB.** The connector does not
 de-duplicate: the month is republished with the same trigger IDs and TBB resolves the duplicates.
@@ -369,8 +369,11 @@ failure on that day leaves no automatic retry.
 
 ### 8.5 Recon gate and reprocessing
 
-The recon row must be from the current calendar month, even when `IFC_RUN__MONTH` reprocesses an
-earlier one, because EDP writes it when the job runs.
+On a scheduled run the recon row must be from the current calendar month, because EDP writes it
+when the job runs. `IFC_RUN__FORCE=true` drops that check and trusts the newest row, whatever month
+it is from: a forced run can therefore publish data that upstream has not refreshed this month.
+Check the `Forced run: accepting a reconciliation row from …` warning to see which month's row
+was used.
 
 ---
 
