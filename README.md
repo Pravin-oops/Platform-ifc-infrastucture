@@ -380,8 +380,9 @@ fails.
 
 ## 7. The upstream reconciliation gate
 
-The Databricks recon job appends one row per model run to `batch_recon`. The run reads the newest
-row for its own trigger (`recon.trigger_targets`, matched ignoring backticks and case):
+The Databricks recon job appends one row per model run to the recon table. The run reads the newest
+row for its own trigger: `recon.trigger_targets` gives the value, `recon.match_column` the column
+it is matched against, ignoring backticks and case:
 
 ```sql
 SELECT * FROM "bdb_ifc_synthetic_data_test"."batch_recon"
@@ -389,6 +390,14 @@ WHERE lower(replace(target_table_name, '`', '')) = ?
 ORDER BY last_modified_ts DESC
 LIMIT 1
 ```
+
+| Environment | `recon.table` | `recon.match_column` | Value for `TRIGGER_8` |
+|---|---|---|---|
+| SIT, DEV | `bdb_ifc_synthetic_data_test.batch_recon` | `target_table_name` | `` `sit_cds_snsvc0080860_prepared_db`.bdb_ifc_synthetic_data_test.BDP_Corp_IFC_Trigger_8 `` |
+| PROD | `dp_controls_operational_metadata_prod.audit_batch_recon` | `model_name` | `BDP_Corp_IFC_Trigger_8` (`_9`, `_21` likewise) |
+
+`last_modified_ts`, `status` (and its values), `source_count` and `target_count` are read the same
+way in every environment.
 
 | Newest row | Outcome | Exit |
 |---|---|---|
@@ -549,7 +558,7 @@ repository. The task definition's `stopTimeout` (120) must exceed `run.shutdown_
 
 | Item | Status |
 |---|---|
-| PROD configs | `connector_config_prod.yaml` has `REPLACE_ME_PROD_…` placeholders for the tables, buckets, topic, Schema Registry hosts and the CA / CyberArk secret ids; `bsp_prod_config.yaml` not yet added |
+| PROD configs | `connector_config_prod.yaml` has `REPLACE_ME_PROD_…` placeholders (the recon table and targets are real) for the trigger tables, buckets, topic, Schema Registry hosts and the CA / CyberArk secret ids; `bsp_prod_config.yaml` not yet added |
 | SNS topics | `sns_topic_arn` (RTB alerts) and `batch_sns_topic_arn` (TBB event) are null in SIT: both log only |
 | CyberArk | client certificate and key secrets exist but are empty; `cyberark.enabled` is `false` in the YAML |
 | Topic and subject | `tc01_fncmtrgrbb_ifc_tbb_kyc_refresh` to be confirmed |

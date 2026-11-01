@@ -31,11 +31,12 @@ source:
 
 recon:
   enabled: true
-  table: REPLACE_ME_PROD_DATABASE.REPLACE_ME_PROD_BATCH_RECON_TABLE
+  table: dp_controls_operational_metadata_prod.audit_batch_recon
+  match_column: model_name
   trigger_targets:
-    TRIGGER_8: REPLACE_ME_PROD_TRIGGER_8_RECON_TARGET
-    TRIGGER_9: REPLACE_ME_PROD_TRIGGER_9_RECON_TARGET
-    TRIGGER_21: REPLACE_ME_PROD_TRIGGER_21_RECON_TARGET
+    TRIGGER_8: BDP_Corp_IFC_Trigger_8
+    TRIGGER_9: BDP_Corp_IFC_Trigger_9
+    TRIGGER_21: BDP_Corp_IFC_Trigger_21
 
 kafka:
   topic: REPLACE_ME_PROD_TOPIC

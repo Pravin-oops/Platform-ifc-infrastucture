@@ -32,6 +32,7 @@ source:
 recon:
   enabled: true
   table: bdb_ifc_synthetic_data_test.batch_recon
+  match_column: target_table_name
   trigger_targets:
     TRIGGER_8: "`sit_cds_snsvc0080860_prepared_db`.bdb_ifc_synthetic_data_test.BDP_Corp_IFC_Trigger_8"
     TRIGGER_9: "`sit_cds_snsvc0080860_prepared_db`.bdb_ifc_synthetic_data_test.BDP_Corp_IFC_Trigger_9"

@@ -187,8 +187,15 @@ class ReconSettings(BaseModel):
 
     enabled: bool = True
     table: Optional[str] = None
+    match_column: str = "target_table_name"
     trigger_targets: Dict[str, str] = Field(default_factory=dict)
     target_table: Optional[str] = None
+
+    @field_validator("match_column")
+    @classmethod
+    def _match_column(cls, v: str) -> str:
+        sql_identifier(v, what="recon.match_column")
+        return v
 
     @field_validator("trigger_targets", mode="before")
     @classmethod

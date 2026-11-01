@@ -11,7 +11,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from utility import athena_query
 from utility import failure_catalog as catalog
-from utility.connector_config import athena_table
+from utility.connector_config import athena_table, sql_identifier
 from utility.connector_utility import SourceAccessError
 
 logger = logging.getLogger(__name__)
@@ -112,10 +112,11 @@ def normalise_target(name: str) -> str:
     return str(name).replace("`", "").strip().lower()
 
 
-def recon_query(table: str, target: str) -> Tuple[str, List[str]]:
+def recon_query(table: str, target: str, column: str = "target_table_name") -> Tuple[str, List[str]]:
+    sql_identifier(column, what="recon.match_column")
     sql = (
         f"SELECT * FROM {athena_table(table)} "
-        "WHERE lower(replace(target_table_name, '`', '')) = ? "
+        f"WHERE lower(replace({column}, '`', '')) = ? "
         "ORDER BY last_modified_ts DESC "
         "LIMIT 1"
     )
@@ -150,7 +151,7 @@ def evaluate(
 
     try:
         client = client or athena_query.athena_client()
-        sql, parameters = recon_query(table, target)
+        sql, parameters = recon_query(table, target, settings.match_column)
         query_id = athena_query.start(client, athena, sql, parameters, label=table)
         common["query_execution_id"] = query_id
         athena_query.wait(client, athena, query_id, label=table, sleep=sleep)

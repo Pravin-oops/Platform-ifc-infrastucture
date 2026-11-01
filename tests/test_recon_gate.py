@@ -16,6 +16,7 @@ limit, so nothing here needs AWS.
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime
 from typing import Any, Dict, List
 
@@ -115,10 +116,12 @@ class FakeReconAthena:
 
     def get_paginator(self, name):
         assert name == "get_query_results"
-        wanted = self.started[-1]["ExecutionParameters"][0][1:-1].replace("''", "'")
+        request = self.started[-1]
+        wanted = request["ExecutionParameters"][0][1:-1].replace("''", "'")
+        column = re.search(r"lower\(replace\((\w+),", request["QueryString"]).group(1)
         matching = [
             r for r in self.rows
-            if recon_gate.normalise_target(r.get("target_table_name") or "") == wanted
+            if recon_gate.normalise_target(r.get(column) or "") == wanted
         ]
         matching.sort(key=lambda r: str(r.get("last_modified_ts") or ""), reverse=True)
 
@@ -146,8 +149,8 @@ def recon():
     def replace(row):
         client.rows[:] = [row]
 
-    def evaluate(target=TARGET_8, **athena):
-        settings = ReconSettings(table=TABLE, target_table=target)
+    def evaluate(target=TARGET_8, match_column="target_table_name", **athena):
+        settings = ReconSettings(table=TABLE, target_table=target, match_column=match_column)
         return recon_gate.evaluate(
             settings, AthenaSettings(**athena), execution_month=MONTH,
             client=client, sleep=lambda _s: None,
@@ -199,6 +202,35 @@ class TestTheQuery:
     def test_a_quote_in_the_target_is_escaped(self):
         _, params = recon_gate.recon_query(TABLE, "a'b")
         assert params == ["'a''b'"]
+
+
+class TestTheMatchColumn:
+    """PROD's audit_batch_recon names the trigger in model_name, not target_table_name."""
+
+    def test_the_query_matches_on_the_configured_column(self, recon):
+        recon.write(a_row(model_name="BDP_Corp_IFC_Trigger_8", target_table_name=None))
+        recon.evaluate(target="BDP_Corp_IFC_Trigger_8", match_column="model_name")
+
+        (request,) = recon.client.started
+        assert "WHERE lower(replace(model_name, '`', '')) = ? " in request["QueryString"]
+        assert request["ExecutionParameters"] == ["'bdp_corp_ifc_trigger_8'"]
+
+    def test_a_model_name_row_decides_the_run(self, recon):
+        recon.write(a_row(model_name="BDP_Corp_IFC_Trigger_8", target_table_name=None))
+        assert recon.evaluate(target="BDP_Corp_IFC_Trigger_8", match_column="model_name").proceed
+
+    def test_another_triggers_model_name_is_not_read(self, recon):
+        recon.write(a_row(model_name="BDP_Corp_IFC_Trigger_9", target_table_name=None))
+        decision = recon.evaluate(target="BDP_Corp_IFC_Trigger_8", match_column="model_name")
+        assert decision.outcome == "UPSTREAM_DATA_NOT_RECEIVED"
+
+    def test_the_default_column_is_target_table_name(self):
+        assert ReconSettings().match_column == "target_table_name"
+
+    @pytest.mark.parametrize("column", ["model name", "model_name; DROP", "1model", ""])
+    def test_a_column_that_is_not_an_identifier_fails_at_load(self, column):
+        with pytest.raises(Exception, match="recon.match_column"):
+            ReconSettings(match_column=column)
 
 
 class TestTheNewestRowDecides:
@@ -819,6 +851,18 @@ class TestGateActivation:
             assert settings.recon.target_table == (
                 f"`sit_cds_snsvc0080860_prepared_db`.bdb_ifc_synthetic_data_test.BDP_Corp_IFC_Trigger_{suffix}"
             )
+            assert settings.recon.match_column == "target_table_name"
+
+    def test_the_prod_config_matches_each_trigger_by_model_name(self, clean_ifc_env):
+        from utility.connector_config import load_settings
+
+        for trigger, suffix in (("TRIGGER_8", "8"), ("TRIGGER_9", "9"), ("TRIGGER_21", "21")):
+            settings = load_settings("utility/connector_config_prod.yaml")
+            settings.select_trigger(trigger)
+            assert settings.recon_active
+            assert settings.recon.table == "dp_controls_operational_metadata_prod.audit_batch_recon"
+            assert settings.recon.match_column == "model_name"
+            assert settings.recon.target_table == f"BDP_Corp_IFC_Trigger_{suffix}"
 
 
 # ---------------------------------------------------------------------------
