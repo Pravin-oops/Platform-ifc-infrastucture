@@ -1,4 +1,4 @@
-"""Connectivity check mode: Secrets Manager, CyberArk and BSP are checked, nothing is published."""
+"""Connectivity check mode: Secrets Manager, CyberArk, BSP and the source table are checked, nothing is published."""
 
 from __future__ import annotations
 
@@ -13,8 +13,10 @@ from typing import Any, Dict
 
 import pytest
 import yaml
+from botocore.exceptions import ClientError
 
 from tests.conftest import APP_ROOT, use_config
+from utility import athena_query
 from utility import connectivity_check as cc
 from utility import cyberark_ccp_fetch as ccp
 from utility import failure_catalog as catalog
@@ -81,6 +83,38 @@ class FailingFactory(FakeFactory):
         return {"bootstrap.servers": "broker:9093"}
 
 
+class FakeAthena:
+    """Answers the table-metadata call and one COUNT query; anything else is a test failure."""
+
+    def __init__(self, *, row_count: str = "42", denied: bool = False):
+        self.row_count = row_count
+        self.denied = denied
+        self.queries = []
+
+    def get_table_metadata(self, **kwargs):
+        if self.denied:
+            raise ClientError(
+                {"Error": {"Code": "AccessDeniedException", "Message": "not authorized"}}, "GetTableMetadata"
+            )
+        return {"TableMetadata": {"Name": kwargs["TableName"]}}
+
+    def start_query_execution(self, **request):
+        self.queries.append(request)
+        return {"QueryExecutionId": "q-1"}
+
+    def get_query_execution(self, QueryExecutionId):
+        return {"QueryExecution": {"Status": {"State": "SUCCEEDED"}, "Statistics": {}}}
+
+    def get_paginator(self, name):
+        page = {
+            "ResultSet": {
+                "Rows": [{"Data": [{"VarCharValue": "row_count"}]}, {"Data": [{"VarCharValue": self.row_count}]}],
+                "ResultSetMetadata": {"ColumnInfo": [{"Name": "row_count", "Type": "bigint"}]},
+            }
+        }
+        return SimpleNamespace(paginate=lambda **_kwargs: iter([page]))
+
+
 def write_config(tmp_path, *, cyberark: bool = True) -> str:
     lines = [
         "app: {name: t, environment: TEST}",
@@ -110,6 +144,9 @@ def fakes(monkeypatch):
     monkeypatch.setattr(ccp, "_BACKOFF", BackoffPolicy(base_seconds=0.001, max_seconds=0.001))
     monkeypatch.setattr(cc, "KafkaStackFactory", FakeFactory)
     FakeFactory.instances = []
+    athena = FakeAthena()
+    monkeypatch.setattr(athena_query, "athena_client", lambda: athena)
+    return athena
 
 
 def settings_for(tmp_path, **kwargs):
@@ -171,7 +208,9 @@ class TestConnectivityCheck:
         assert summary["published"] == 0
 
         checks = by_check(summary)
-        assert [c["status"] for c in checks.values()] == [cc.PASSED] * 4
+        assert [c["status"] for c in checks.values()] == [cc.PASSED] * 5
+        assert checks["source:table"]["table"] == "ifc_trigger_db.trigger_8"
+        assert checks["source:table"]["row_count"] == 42
         assert checks["aws_secret:ca_certificate"]["certificates"] == 1
         assert checks["cyberark:credentials"]["username"] == "svcaccount"
         assert checks["cyberark:credentials"]["bsp_password"] == cc.mask(PASSWORD)
@@ -204,6 +243,38 @@ class TestConnectivityCheck:
         assert bsp["status"] == cc.FAILED
         assert "SASL authentication failed" in bsp["detail"]
         assert summary["exit_code"] == catalog.AUTHENTICATION_FAILURE.exit_code
+
+    def test_the_source_table_is_only_counted(self, fakes, tmp_path):
+        summary = cc.run(settings_for(tmp_path))
+
+        [query] = fakes.queries
+        sql = query["QueryString"]
+        assert sql.startswith("SELECT COUNT(*) AS row_count FROM ")
+        assert "ifc_trigger_db" in sql and "trigger_8" in sql
+        source = by_check(summary)["source:table"]
+        assert source["query_execution_id"] == "q-1"
+        assert "note" not in source
+
+    def test_an_empty_month_is_reported_but_does_not_fail(self, fakes, tmp_path):
+        fakes.row_count = "0"
+        summary = cc.run(settings_for(tmp_path))
+
+        source = by_check(summary)["source:table"]
+        assert source["status"] == cc.PASSED
+        assert source["row_count"] == 0
+        assert "no rows" in source["note"]
+        assert summary["exit_code"] == catalog.EXIT_OK
+
+    def test_no_access_to_the_source_table_fails_with_the_read_exit_code(self, fakes, tmp_path):
+        fakes.denied = True
+        summary = cc.run(settings_for(tmp_path))
+        checks = by_check(summary)
+
+        assert checks["source:table"]["status"] == cc.FAILED
+        assert "AccessDenied" in checks["source:table"]["detail"]
+        assert fakes.queries == []
+        assert checks["bsp:kafka"]["status"] == cc.PASSED
+        assert summary["exit_code"] == catalog.BDP_READ_FAILURE.exit_code
 
     def test_without_cyberark_or_bsp_the_cyberark_checks_are_skipped(self, fakes, tmp_path):
         summary = cc.run(settings_for(tmp_path, cyberark=False))

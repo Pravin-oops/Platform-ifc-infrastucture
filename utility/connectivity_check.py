@@ -8,16 +8,19 @@ import os
 import re
 from typing import Any, Callable, Dict, List, Optional
 
+from botocore.exceptions import BotoCoreError, ClientError
+
 from utility import ca_certificate
 from utility import failure_catalog as catalog
 from utility.auth_helper import BSPClient
 from utility.connector_config import ConnectorSettings
-from utility.connector_utility import materialise_local, package_resource
+from utility.connector_utility import SourceAccessError, materialise_local, package_resource
 from utility.cyberark_ccp_fetch import CyberArkAuthenticator
 from utility.error_classifier import ConnectorError, classify
 from utility.kafka_factory import KafkaStackFactory
 from utility.observability_utility import Metrics
 from utility.resilience_utility import ShutdownSignal
+from utility.trigger_source import make_source
 
 logger = logging.getLogger(__name__)
 
@@ -188,6 +191,34 @@ class ConnectivityCheck:
             "bsp_password": mask(os.environ.get("BSP_PASSWORD")),
         }
 
+    def _source_table(self) -> Dict[str, Any]:
+        settings = self._settings
+        athena = settings.source.athena
+        source = make_source(settings.source, trigger=settings.trigger)
+        details: Dict[str, Any] = {
+            "trigger": settings.trigger,
+            "table": source.table,
+            "catalog": athena.catalog,
+            "workgroup": athena.workgroup,
+            "output_location": athena.output_location,
+            "business_date": source.business_date.isoformat(),
+        }
+        try:
+            source.check_access()
+        except (ClientError, BotoCoreError) as exc:
+            raise SourceAccessError(
+                f"Athena table metadata for {source.table} could not be read: {exc}",
+                path=source.table,
+                operation="read",
+                cause=exc,
+            ) from exc
+
+        details["row_count"] = source.count()
+        details["query_execution_id"] = source.last_query_execution_id
+        if not details["row_count"]:
+            details["note"] = "the table is readable but has no rows for this business_date"
+        return details
+
     def _bsp(self) -> Dict[str, Any]:
         settings = self._settings
         factory = KafkaStackFactory(
@@ -229,7 +260,7 @@ class ConnectivityCheck:
         settings = self._settings
         logger.warning(
             "Connectivity check mode (run.connectivity_check=true): checking Secrets Manager, "
-            "CyberArk and BSP only. Nothing is read from the source table and nothing is "
+            "CyberArk, BSP and read access to the source table (a COUNT only). Nothing is "
             "published to %s",
             settings.kafka.topic,
         )
@@ -244,6 +275,7 @@ class ConnectivityCheck:
             )
         else:
             self._step("cyberark:credentials", self._cyberark_credentials)
+        self._step("source:table", self._source_table)
         self._step("bsp:kafka", self._bsp)
 
         failed = [r for r in self._results if r["status"] == FAILED]

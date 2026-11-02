@@ -56,13 +56,20 @@ class AthenaTriggerSource:
             self._client = athena_query.athena_client()
         return self._client
 
-    def query(self) -> Tuple[str, List[str]]:
+    def _month_filter(self) -> Tuple[str, List[str]]:
         column = sql_identifier(self._athena.business_date_column, what="business_date_column")
-        sql = f"SELECT * FROM {athena_table(self.table)} WHERE CAST({column} AS DATE) = CAST(? AS DATE)"
+        return (
+            f"FROM {athena_table(self.table)} WHERE CAST({column} AS DATE) = CAST(? AS DATE)",
+            [athena_query.string_literal(self.business_date.isoformat())],
+        )
+
+    def query(self) -> Tuple[str, List[str]]:
+        clause, parameters = self._month_filter()
+        sql = f"SELECT * {clause}"
         if self._athena.order_by:
             order = ", ".join(sql_identifier(c, what="order_by column") for c in self._athena.order_by)
             sql += f" ORDER BY {order}"
-        return sql, [athena_query.string_literal(self.business_date.isoformat())]
+        return sql, parameters
 
     def check_access(self) -> str:
         database, table = self.table.split(".")
@@ -70,6 +77,25 @@ class AthenaTriggerSource:
             CatalogName=self._athena.catalog, DatabaseName=database, TableName=table
         )
         return self.table
+
+    def count(self) -> int:
+        client = self._athena_client()
+        clause, parameters = self._month_filter()
+        try:
+            query_id = athena_query.start(
+                client, self._athena, f"SELECT COUNT(*) AS row_count {clause}", parameters, label=self.table
+            )
+            self.last_query_execution_id = query_id
+            athena_query.wait(client, self._athena, query_id, label=self.table, sleep=self._sleep)
+            row = next(athena_query.rows(client, query_id), {})
+        except (ClientError, BotoCoreError) as exc:
+            raise SourceAccessError(
+                f"Athena count on {self.table} failed: {exc}",
+                path=self.table,
+                operation="query",
+                cause=exc,
+            ) from exc
+        return int(row.get("row_count") or 0)
 
     def stream(self) -> Iterator[TriggerEvent]:
         client = self._athena_client()
