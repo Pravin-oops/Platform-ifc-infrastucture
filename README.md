@@ -7,12 +7,17 @@ that names what happened.
 
 > **Connectivity check branch.** On this branch the bundled DEV, SIT and PROD configs set
 > `run.connectivity_check: true`. A run reads the CA and CyberArk client certificate/key from
-> Secrets Manager, fetches the BSP system account from CyberArk CCP, checks read access to the
-> trigger's source table (Glue table metadata, then an Athena `SELECT COUNT(*)` for the business
-> date, logged as `row_count`; an empty month is reported but does not fail), then checks BSP:
+> Secrets Manager, fetches the BSP system account from CyberArk CCP, reads the run marker file
+> (a missing file passes: the first real run creates it; write access is not tested because the
+> check never writes it), runs the recon gate's `SELECT ... LIMIT 1` on the recon table, checks
+> read access to the trigger's source table (Glue table metadata, then an Athena
+> `SELECT COUNT(*)` for the business date, logged as `row_count`), then checks BSP:
 > DNS/TCP to the brokers and the Schema Registry, a BAM token, and the topic's metadata over SASL.
 > It logs each result (`Connectivity check <name>: PASSED|FAILED|SKIPPED`) and exits `0` if every
-> check passed, or with the first failure's exit code otherwise (no source access is exit `14`).
+> check passed, or with the first failure's exit code otherwise (no read access to the run marker,
+> recon table or source table is exit `14`). The run marker and recon checks also log what a real
+> run would do (`real_run_would=PROCEED|SKIP|STOP (...)`); an empty month, a missing recon row or
+> a recon STOP is reported but does not fail the check.
 > It does not read any trigger rows, run the run gate or the recon gate, write the run marker,
 > publish to Kafka or send SNS.
 > Passwords and private keys are never logged in clear. They are shown as

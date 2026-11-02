@@ -1,4 +1,4 @@
-"""Connectivity check mode: Secrets Manager, CyberArk, BSP and the source table are checked, nothing is published."""
+"""Connectivity check mode: secrets, CyberArk, BSP, run marker, recon and source are checked, nothing is written."""
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ from utility import athena_query
 from utility import connectivity_check as cc
 from utility import cyberark_ccp_fetch as ccp
 from utility import failure_catalog as catalog
+from utility import run_gate
 from utility import kafka_preflight as pf
 from utility.auth_helper import BSPTokenProvider
 from utility.connector_config import load_settings
@@ -83,13 +84,30 @@ class FailingFactory(FakeFactory):
         return {"bootstrap.servers": "broker:9093"}
 
 
-class FakeAthena:
-    """Answers the table-metadata call and one COUNT query; anything else is a test failure."""
+RECON_TABLE = "ops_db.batch_recon"
 
-    def __init__(self, *, row_count: str = "42", denied: bool = False):
-        self.row_count = row_count
-        self.denied = denied
-        self.queries = []
+
+def athena_page(columns, values):
+    return {
+        "ResultSet": {
+            "Rows": [{"Data": [{"VarCharValue": c} for c, _ in columns]}]
+            + [{"Data": [{"VarCharValue": v} for v in row]} for row in values],
+            "ResultSetMetadata": {"ColumnInfo": [{"Name": c, "Type": t} for c, t in columns]},
+        }
+    }
+
+
+class FakeAthena:
+    """Answers table metadata, the recon SELECT and the source COUNT; nothing else is expected."""
+
+    def __init__(self):
+        self.row_count = "42"
+        self.recon_rows = [[
+            "Model_8", "SUCCESS", "42", "42", run_gate.today().strftime("%Y-%m-01 06:00:00.000"),
+        ]]
+        self.denied = False
+        self.recon_denied = False
+        self.queries: Dict[str, str] = {}
 
     def get_table_metadata(self, **kwargs):
         if self.denied:
@@ -99,20 +117,27 @@ class FakeAthena:
         return {"TableMetadata": {"Name": kwargs["TableName"]}}
 
     def start_query_execution(self, **request):
-        self.queries.append(request)
-        return {"QueryExecutionId": "q-1"}
+        sql = request["QueryString"]
+        if self.recon_denied and "batch_recon" in sql:
+            raise ClientError(
+                {"Error": {"Code": "AccessDeniedException", "Message": "not authorized"}}, "StartQueryExecution"
+            )
+        query_id = f"q-{len(self.queries) + 1}"
+        self.queries[query_id] = sql
+        return {"QueryExecutionId": query_id}
 
     def get_query_execution(self, QueryExecutionId):
         return {"QueryExecution": {"Status": {"State": "SUCCEEDED"}, "Statistics": {}}}
 
     def get_paginator(self, name):
-        page = {
-            "ResultSet": {
-                "Rows": [{"Data": [{"VarCharValue": "row_count"}]}, {"Data": [{"VarCharValue": self.row_count}]}],
-                "ResultSetMetadata": {"ColumnInfo": [{"Name": "row_count", "Type": "bigint"}]},
-            }
-        }
-        return SimpleNamespace(paginate=lambda **_kwargs: iter([page]))
+        def paginate(QueryExecutionId):
+            if "batch_recon" in self.queries[QueryExecutionId]:
+                columns = [("model_name", "varchar"), ("status", "varchar"), ("source_count", "bigint"),
+                           ("target_count", "bigint"), ("last_modified_ts", "timestamp")]
+                return iter([athena_page(columns, self.recon_rows)])
+            return iter([athena_page([("row_count", "bigint")], [[self.row_count]])])
+
+        return SimpleNamespace(paginate=paginate)
 
 
 def write_config(tmp_path, *, cyberark: bool = True) -> str:
@@ -124,6 +149,8 @@ def write_config(tmp_path, *, cyberark: bool = True) -> str:
         "schema_registry: {mode: DEV, schema_path: utility/schema.json}",
         "health: {enabled: false}",
         f"ca_certificate: {{secret_id: ca-secret, path: '{(tmp_path / 'ca.pem').as_posix()}'}}",
+        f"run_marker: {{path: '{(tmp_path / 'run_markers.json').as_posix()}'}}",
+        f"recon: {{table: {RECON_TABLE}, match_column: model_name, trigger_targets: {{TRIGGER_8: Model_8}}}}",
     ]
     if cyberark:
         lines.append(
@@ -208,7 +235,7 @@ class TestConnectivityCheck:
         assert summary["published"] == 0
 
         checks = by_check(summary)
-        assert [c["status"] for c in checks.values()] == [cc.PASSED] * 5
+        assert [c["status"] for c in checks.values()] == [cc.PASSED] * 7
         assert checks["source:table"]["table"] == "ifc_trigger_db.trigger_8"
         assert checks["source:table"]["row_count"] == 42
         assert checks["aws_secret:ca_certificate"]["certificates"] == 1
@@ -244,15 +271,15 @@ class TestConnectivityCheck:
         assert "SASL authentication failed" in bsp["detail"]
         assert summary["exit_code"] == catalog.AUTHENTICATION_FAILURE.exit_code
 
-    def test_the_source_table_is_only_counted(self, fakes, tmp_path):
+    def test_only_the_recon_select_and_the_source_count_are_queried(self, fakes, tmp_path):
         summary = cc.run(settings_for(tmp_path))
 
-        [query] = fakes.queries
-        sql = query["QueryString"]
-        assert sql.startswith("SELECT COUNT(*) AS row_count FROM ")
-        assert "ifc_trigger_db" in sql and "trigger_8" in sql
+        recon_sql, count_sql = fakes.queries.values()
+        assert recon_sql.startswith("SELECT * FROM ") and "batch_recon" in recon_sql and "LIMIT 1" in recon_sql
+        assert count_sql.startswith("SELECT COUNT(*) AS row_count FROM ")
+        assert "ifc_trigger_db" in count_sql and "trigger_8" in count_sql
         source = by_check(summary)["source:table"]
-        assert source["query_execution_id"] == "q-1"
+        assert source["query_execution_id"] == "q-2"
         assert "note" not in source
 
     def test_an_empty_month_is_reported_but_does_not_fail(self, fakes, tmp_path):
@@ -272,7 +299,7 @@ class TestConnectivityCheck:
 
         assert checks["source:table"]["status"] == cc.FAILED
         assert "AccessDenied" in checks["source:table"]["detail"]
-        assert fakes.queries == []
+        assert not any("COUNT" in sql for sql in fakes.queries.values())
         assert checks["bsp:kafka"]["status"] == cc.PASSED
         assert summary["exit_code"] == catalog.BDP_READ_FAILURE.exit_code
 
@@ -284,6 +311,93 @@ class TestConnectivityCheck:
         assert checks["cyberark:credentials"]["status"] == cc.SKIPPED
         assert FakeFactory.instances[0].probed_with is None
         assert summary["exit_code"] == catalog.EXIT_OK
+
+
+class TestRunMarker:
+    def test_a_missing_run_marker_passes_and_is_not_created(self, fakes, tmp_path):
+        summary = cc.run(settings_for(tmp_path))
+
+        marker = by_check(summary)["s3:run_marker"]
+        assert marker["status"] == cc.PASSED
+        assert marker["exists"] is False
+        assert "first real run creates it" in marker["note"]
+        assert not (tmp_path / "run_markers.json").exists()
+
+    def test_an_existing_run_marker_shows_what_a_real_run_would_do(self, fakes, tmp_path):
+        settings = settings_for(tmp_path)
+        month = run_gate.month_of(run_gate.execution_date())
+        path = tmp_path / "run_markers.json"
+        path.write_text(
+            json.dumps({"trigger_id": "TRIGGER_8", "year_month": month, "run_status": "SUCCESS"}) + "\n",
+            encoding="utf-8",
+        )
+        before = path.read_text(encoding="utf-8")
+
+        marker = by_check(cc.run(settings))["s3:run_marker"]
+
+        assert marker["exists"] is True
+        assert marker["latest_status"] == "SUCCESS"
+        assert marker["real_run_would"] == "SKIP"
+        assert "already delivered" in marker["run_gate_reason"]
+        assert path.read_text(encoding="utf-8") == before
+
+    def test_an_unreadable_s3_run_marker_fails_with_the_read_exit_code(self, fakes, tmp_path, monkeypatch):
+        class DeniedS3:
+            def get_object(self, **_kwargs):
+                raise ClientError({"Error": {"Code": "AccessDenied", "Message": "denied"}}, "GetObject")
+
+            def put_object(self, **_kwargs):
+                raise AssertionError("the check must not write the run marker")
+
+        monkeypatch.setattr(run_gate, "s3", lambda: DeniedS3())
+        settings = settings_for(tmp_path)
+        settings.run_marker.path = "s3://bucket/run-markers/run_markers.json"
+
+        summary = cc.run(settings)
+        marker = by_check(summary)["s3:run_marker"]
+
+        assert marker["status"] == cc.FAILED
+        assert "s3:ListBucket" in marker["detail"]
+        assert summary["exit_code"] == catalog.BDP_READ_FAILURE.exit_code
+
+    def test_without_a_run_marker_path_it_is_skipped(self, fakes, tmp_path):
+        settings = settings_for(tmp_path)
+        settings.run_marker.path = None
+        assert by_check(cc.run(settings))["s3:run_marker"]["status"] == cc.SKIPPED
+
+
+class TestReconTable:
+    def test_a_good_recon_row_says_a_real_run_would_proceed(self, fakes, tmp_path):
+        recon = by_check(cc.run(settings_for(tmp_path)))["athena:recon_table"]
+
+        assert recon["status"] == cc.PASSED
+        assert recon["table"] == RECON_TABLE
+        assert recon["target"] == "Model_8"
+        assert recon["real_run_would"] == "PROCEED"
+        assert recon["recon_row"]["status"] == "SUCCESS"
+
+    def test_a_missing_recon_row_is_reported_but_does_not_fail(self, fakes, tmp_path):
+        fakes.recon_rows = []
+        summary = cc.run(settings_for(tmp_path))
+        recon = by_check(summary)["athena:recon_table"]
+
+        assert recon["status"] == cc.PASSED
+        assert recon["real_run_would"] == "STOP (UPSTREAM_DATA_NOT_RECEIVED)"
+        assert summary["exit_code"] == catalog.EXIT_OK
+
+    def test_no_access_to_the_recon_table_fails_with_the_read_exit_code(self, fakes, tmp_path):
+        fakes.recon_denied = True
+        summary = cc.run(settings_for(tmp_path))
+        checks = by_check(summary)
+
+        assert checks["athena:recon_table"]["status"] == cc.FAILED
+        assert checks["source:table"]["status"] == cc.PASSED
+        assert summary["exit_code"] == catalog.BDP_READ_FAILURE.exit_code
+
+    def test_with_recon_disabled_it_is_skipped(self, fakes, tmp_path):
+        settings = settings_for(tmp_path)
+        settings.recon.enabled = False
+        assert by_check(cc.run(settings))["athena:recon_table"]["status"] == cc.SKIPPED
 
 
 class TestProbe:

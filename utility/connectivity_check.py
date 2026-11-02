@@ -11,6 +11,7 @@ from typing import Any, Callable, Dict, List, Optional
 from botocore.exceptions import BotoCoreError, ClientError
 
 from utility import ca_certificate
+from utility import recon_gate, run_gate
 from utility import failure_catalog as catalog
 from utility.auth_helper import BSPClient
 from utility.connector_config import ConnectorSettings
@@ -191,6 +192,77 @@ class ConnectivityCheck:
             "bsp_password": mask(os.environ.get("BSP_PASSWORD")),
         }
 
+    def _run_marker(self) -> Dict[str, Any]:
+        settings = self._settings
+        if not settings.gate_active:
+            raise _Skipped("run_marker.path is not set, so a real run has no run gate")
+
+        marker = run_gate.RunMarker(settings.run_marker.path)
+        month = run_gate.month_of(run_gate.execution_date())
+        try:
+            text, etag = marker._read()
+        except Exception as exc:
+            code = run_gate._error_code(exc)
+            hint = (
+                " (S3 answers AccessDenied, not NoSuchKey, for a missing object when the role "
+                "has no s3:ListBucket on the bucket)"
+                if code in ("AccessDenied", "403")
+                else ""
+            )
+            raise SourceAccessError(
+                f"Run marker {marker.path} could not be read: {exc}{hint}",
+                path=marker.path,
+                operation="read",
+                cause=exc,
+            ) from exc
+
+        details: Dict[str, Any] = {
+            "path": marker.path,
+            "exists": bool(text) or etag is not None,
+            "trigger": settings.trigger,
+            "month": month,
+            "write_access": "not tested: the check never writes the run marker",
+        }
+        if not details["exists"]:
+            details["note"] = "the run marker file does not exist yet; the first real run creates it"
+            details["latest_status"] = None
+        else:
+            details["records"] = len(marker.history())
+            details["latest_status"] = marker.status(settings.trigger, month)
+
+        outcome = run_gate.should_run(
+            settings.trigger, marker, month=month, force=settings.run.force
+        )
+        details["real_run_would"] = "PROCEED" if outcome.proceed else "SKIP"
+        details["run_gate_reason"] = outcome.reason
+        return details
+
+    def _recon_table(self) -> Dict[str, Any]:
+        settings = self._settings
+        if not settings.recon_active:
+            raise _Skipped(
+                "the recon gate is not active (recon.enabled is false, or no recon.table/target)"
+            )
+
+        decision = recon_gate.evaluate(
+            settings.recon,
+            settings.source.athena,
+            execution_month=run_gate.month_of(run_gate.today()),
+            check_month=not settings.run.force,
+        )
+        details: Dict[str, Any] = {
+            "table": decision.table,
+            "match_column": settings.recon.match_column,
+            "target": decision.target,
+            "query_execution_id": decision.query_execution_id,
+            "real_run_would": "PROCEED" if decision.proceed else f"STOP ({decision.outcome})",
+            "recon_reason": decision.reason,
+            "recon_row": decision.document,
+        }
+        if decision.scenario_key == catalog.BDP_READ_FAILURE.key:
+            raise _Failed(decision.reason, catalog.BDP_READ_FAILURE, details)
+        return details
+
     def _source_table(self) -> Dict[str, Any]:
         settings = self._settings
         athena = settings.source.athena
@@ -260,8 +332,8 @@ class ConnectivityCheck:
         settings = self._settings
         logger.warning(
             "Connectivity check mode (run.connectivity_check=true): checking Secrets Manager, "
-            "CyberArk, BSP and read access to the source table (a COUNT only). Nothing is "
-            "published to %s",
+            "CyberArk, BSP and read access to the run marker, the recon table and the source "
+            "table (a COUNT only). Nothing is written and nothing is published to %s",
             settings.kafka.topic,
         )
 
@@ -275,6 +347,8 @@ class ConnectivityCheck:
             )
         else:
             self._step("cyberark:credentials", self._cyberark_credentials)
+        self._step("s3:run_marker", self._run_marker)
+        self._step("athena:recon_table", self._recon_table)
         self._step("source:table", self._source_table)
         self._step("bsp:kafka", self._bsp)
 
