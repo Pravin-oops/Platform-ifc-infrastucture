@@ -295,6 +295,11 @@ def ecs_handler(event: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         },
     )
 
+    if settings.run.connectivity_check:
+        from utility import connectivity_check
+
+        return {**connectivity_check.run(settings), "config_path": config_path, "ecs": task}
+
     try:
         gate, skip_reason = _gate(settings, event)
     except Exception as exc:

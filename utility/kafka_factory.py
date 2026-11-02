@@ -476,6 +476,30 @@ class KafkaStackFactory:
             topics=[self._settings.kafka.topic],
         )
 
+    def probe(self, bsp: Optional[BSPClient]) -> Dict[str, Any]:
+        settings = self._settings
+        config = self._producer_config(bsp)
+        self._network_checks(config)
+
+        if bsp is not None:
+            tokens = bsp.token_provider(
+                refresh_margin_seconds=settings.schema_registry.token_refresh_margin_seconds
+            )
+
+            def acquire_token() -> Dict[str, Any]:
+                token = tokens.get()
+                return {
+                    "token_seconds_remaining": round(tokens.seconds_remaining),
+                    "token_claims": _jwt_claims(token),
+                }
+
+            pf.check_authentication(self._report, acquire=acquire_token)
+
+        producer = self._producer_factory(config)
+        self._await_oauth_token(producer, config)
+        self._metadata_checks(producer)
+        return config
+
     def build(self) -> KafkaStack:
         settings = self._settings
 

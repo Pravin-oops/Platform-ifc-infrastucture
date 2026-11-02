@@ -23,6 +23,7 @@ UTILITY_MODULES = [
     "audit_utility",
     "auth_helper",
     "ca_certificate",
+    "connectivity_check",
     "connector_config",
     "connector_runner",
     "connector_utility",

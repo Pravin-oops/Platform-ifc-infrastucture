@@ -14,6 +14,7 @@ envelope:
 
 run:
   shutdown_grace_seconds: 90
+  connectivity_check: true
 
 source:
   trigger_tables:

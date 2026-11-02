@@ -65,6 +65,7 @@ class RunSettings(BaseModel):
     trigger: Optional[str] = None
     force: bool = False
     month: Optional[str] = None
+    connectivity_check: bool = False
 
     @field_validator("trigger", mode="before")
     @classmethod

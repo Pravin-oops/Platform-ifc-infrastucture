@@ -77,6 +77,11 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     configure_logging(args.log_level or settings.app.log_level)
 
+    if settings.run.connectivity_check:
+        from utility import connectivity_check
+
+        return int(connectivity_check.run(settings)["exit_code"])
+
     from utility.connector_runner import ConnectorRunner
 
     shutdown = ShutdownSignal().install()

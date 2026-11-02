@@ -5,6 +5,19 @@ Runs on **AWS ECS** once a month per trigger and publishes the **IFC CDD trigger
 Kafka topic. Each run reads one month, publishes it, records the outcome and exits with a code
 that names what happened.
 
+> **Connectivity check branch.** On this branch the bundled DEV, SIT and PROD configs set
+> `run.connectivity_check: true`. A run reads the CA and CyberArk client certificate/key from
+> Secrets Manager, fetches the BSP system account from CyberArk CCP, then checks BSP:
+> DNS/TCP to the brokers and the Schema Registry, a BAM token, and the topic's metadata over SASL.
+> It logs each result (`Connectivity check <name>: PASSED|FAILED|SKIPPED`) and exits `0` if every
+> check passed, or with the first failure's exit code otherwise. It does not read the source table,
+> run the run gate or the recon gate, write the run marker, publish to Kafka or send SNS.
+> Passwords and private keys are never logged in clear. They are shown as
+> `<N chars, sha256 xxxxxxxxxxxx>`, which you can compare with
+> `printf %s "$VALUE" | sha256sum | cut -c1-12`. Certificates are logged with their
+> `openssl x509 -fingerprint -sha256` fingerprint. `IFC_RUN__CONNECTIVITY_CHECK=false` restores
+> the normal publishing run.
+
 ## Contents
 
 1. [SIT run: ECS container values](#1-sit-run-ecs-container-values)
@@ -257,6 +270,7 @@ that need confirming are marked `CONFIRM` in the YAML.
 | `IFC_KAFKA__DEBUG` | librdkafka trace, e.g. `security,broker,protocol`; `all` and `conf` are refused |
 | `IFC_RESILIENCE__MAX_QUARANTINE_RATIO` | quality-gate tolerance (default `0.05`) |
 | `IFC_RECON__ENABLED` | `false` switches the recon gate off |
+| `IFC_RUN__CONNECTIVITY_CHECK` | `true` checks Secrets Manager, CyberArk and BSP, then exits without publishing |
 
 ### Secrets
 
