@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import base64
-import binascii
-import hashlib
 import logging
 import os
 import re
@@ -32,29 +29,18 @@ SKIPPED = "SKIPPED"
 OUTCOME_PASSED = "CONNECTIVITY_CHECK_PASSED"
 OUTCOME_FAILED = "CONNECTIVITY_CHECK_FAILED"
 
-_PEM_CERTIFICATE = re.compile(r"-----BEGIN CERTIFICATE-----(.+?)-----END CERTIFICATE-----", re.S)
+_PEM_CERTIFICATE = re.compile(r"-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----", re.S)
 _PEM_KEY_TYPE = re.compile(r"-----BEGIN ([A-Z ]*PRIVATE KEY)-----")
 _SENSITIVE_KEY = re.compile(r"password|secret|token|credential", re.IGNORECASE)
 _PLAIN = (str, int, float, bool, type(None))
 
 
 def mask(value: Optional[str]) -> str:
-    if not value:
-        return "<not set>"
-    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
-    return f"<{len(value)} chars, sha256 {digest}>"
+    return "<redacted>" if value else "<not set>"
 
 
-def certificate_fingerprints(pem: str) -> List[str]:
-    fingerprints = []
-    for body in _PEM_CERTIFICATE.findall(pem):
-        try:
-            der = base64.b64decode("".join(body.split()), validate=True)
-        except (binascii.Error, ValueError):
-            fingerprints.append("<unreadable>")
-            continue
-        fingerprints.append(":".join(f"{b:02X}" for b in hashlib.sha256(der).digest()))
-    return fingerprints
+def certificate_count(pem: str) -> int:
+    return len(_PEM_CERTIFICATE.findall(pem))
 
 
 def redacted(config: Dict[str, Any]) -> Dict[str, Any]:
@@ -145,8 +131,7 @@ class ConnectivityCheck:
             "region": ca.secret_region,
             "written_to": path,
             "bytes": len(pem),
-            "certificates": len(certificate_fingerprints(pem)),
-            "sha256_fingerprints": certificate_fingerprints(pem),
+            "certificates": certificate_count(pem),
         }
 
     def _cyberark_client_certificate(self) -> Dict[str, Any]:
@@ -159,7 +144,7 @@ class ConnectivityCheck:
         return {
             "region": cyberark.secret_region,
             "client_cert_secret_id": cyberark.client_cert_secret_id,
-            "client_cert_sha256_fingerprints": certificate_fingerprints(certificate.cert_pem),
+            "client_certificates": certificate_count(certificate.cert_pem),
             "client_key_secret_id": cyberark.client_key_secret_id,
             "client_key_type": key_type.group(1) if key_type else "<unknown>",
             "client_key": mask(certificate.key_pem),

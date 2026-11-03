@@ -20,10 +20,9 @@ that names what happened.
 > a recon STOP is reported but does not fail the check.
 > It does not read any trigger rows, run the run gate or the recon gate, write the run marker,
 > publish to Kafka or send SNS.
-> Passwords and private keys are never logged in clear. They are shown as
-> `<N chars, sha256 xxxxxxxxxxxx>`, which you can compare with
-> `printf %s "$VALUE" | sha256sum | cut -c1-12`. Certificates are logged with their
-> `openssl x509 -fingerprint -sha256` fingerprint. `IFC_RUN__CONNECTIVITY_CHECK=false` restores
+> Passwords and private keys are never logged, not even as a hash: they are shown as
+> `<redacted>` (or `<not set>`). Certificates are logged as a count only, with no SHA
+> fingerprints. `IFC_RUN__CONNECTIVITY_CHECK=false` restores
 > the normal publishing run.
 
 ## Contents

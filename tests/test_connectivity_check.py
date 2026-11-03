@@ -208,15 +208,15 @@ class TestMasking:
     def test_mask_never_contains_the_value(self):
         masked = cc.mask(PASSWORD)
         assert PASSWORD not in masked
-        assert str(len(PASSWORD)) in masked
-        assert hashlib.sha256(PASSWORD.encode()).hexdigest()[:12] in masked
+        assert hashlib.sha256(PASSWORD.encode()).hexdigest()[:12] not in masked
+        assert masked == "<redacted>"
 
     def test_an_unset_value_is_called_out(self):
         assert cc.mask(None) == "<not set>"
 
-    def test_fingerprints_match_openssl_format(self):
-        expected = ":".join(f"{b:02X}" for b in hashlib.sha256(DER).digest())
-        assert cc.certificate_fingerprints(CERT + CERT) == [expected, expected]
+    def test_certificates_are_counted_not_fingerprinted(self):
+        assert cc.certificate_count(CERT + CERT) == 2
+        assert cc.certificate_count("") == 0
 
     def test_producer_config_hides_secrets_and_callables(self):
         shown = cc.redacted({"sasl.password": "hunter2", "oauth_cb": print, "acks": "all"})
@@ -247,6 +247,8 @@ class TestConnectivityCheck:
         assert PASSWORD not in logged
         assert "hunter2" not in logged
         assert "MIIE" not in logged
+        assert "sha256" not in logged.lower()
+        assert ":".join(f"{b:02X}" for b in hashlib.sha256(DER).digest()) not in logged
 
     def test_an_unreadable_secret_fails_the_check_but_bsp_is_still_tried(
         self, fakes, tmp_path, monkeypatch
