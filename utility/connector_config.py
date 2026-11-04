@@ -341,6 +341,41 @@ class CyberArkSettings(BaseModel):
         return self
 
 
+BAM_ENV: Dict[str, str] = {
+    "BAM_URL": "url",
+    "BAM_NAME": "name",
+}
+
+# PROD is the default; SIT and DEV pass BAM_URL / BAM_NAME in the environment.
+BAM_PLACEHOLDER = "REPLACE_WITH_PROD_"
+PROD_BAM_URL = f"https://{BAM_PLACEHOLDER}BAM_HOST/authn/authenticate/sso/api"
+PROD_BAM_NAME = f"{BAM_PLACEHOLDER}BAM_NAME"
+
+
+class BamSettings(BaseModel):
+    url: str = PROD_BAM_URL
+    name: str = PROD_BAM_NAME
+
+    @field_validator("url", "name", mode="before")
+    @classmethod
+    def _strip(cls, v: Any) -> Any:
+        return v.strip() if isinstance(v, str) else v
+
+    @field_validator("url")
+    @classmethod
+    def _no_query_string(cls, v: str) -> str:
+        if "?" in v:
+            raise ValueError(
+                "bam.url (BAM_URL) must not contain a query string: the BSP client appends "
+                "?appName=<BAM_NAME>&redirectURL=http://localhost itself"
+            )
+        return v.rstrip("/")
+
+    @property
+    def placeholders(self) -> List[str]:
+        return [env for env, name in BAM_ENV.items() if BAM_PLACEHOLDER in getattr(self, name)]
+
+
 class AuditSettings(BaseModel):
     bucket: Optional[str] = None
     manifest_prefix: str = "triggerbackbone/ifc/manifests/"
@@ -399,6 +434,7 @@ class ConnectorSettings(BaseModel):
     schema_registry: SchemaRegistrySettings
     ca_certificate: CaCertificateSettings = Field(default_factory=CaCertificateSettings)
     cyberark: Optional[CyberArkSettings] = None
+    bam: BamSettings = Field(default_factory=BamSettings)
     run_marker: RunMarkerSettings = Field(default_factory=RunMarkerSettings)
     audit: AuditSettings = Field(default_factory=AuditSettings)
     resilience: ResilienceSettings = Field(default_factory=ResilienceSettings)
@@ -533,6 +569,15 @@ def _cyberark_env_overlay() -> Dict[str, Any]:
     return {"cyberark": section} if section else {}
 
 
+def _bam_env_overlay() -> Dict[str, Any]:
+    section = {
+        field: os.environ[env].strip()
+        for env, field in BAM_ENV.items()
+        if os.environ.get(env, "").strip()
+    }
+    return {"bam": section} if section else {}
+
+
 def _deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
     merged = dict(base)
     for key, value in overlay.items():
@@ -593,7 +638,9 @@ def load_settings(config_path: str, *, reader=None) -> ConnectorSettings:
     if not isinstance(document, dict):
         raise ValueError(f"Config at {config_path} is not a YAML mapping")
 
-    layered = _deep_merge(_deep_merge(document, _cyberark_env_overlay()), _env_overlay())
+    layered = document
+    for overlay in (_cyberark_env_overlay(), _bam_env_overlay(), _env_overlay()):
+        layered = _deep_merge(layered, overlay)
     _select_bsp_config(layered)
     settings = ConnectorSettings.model_validate(layered)
 

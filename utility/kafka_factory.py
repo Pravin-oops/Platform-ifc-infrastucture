@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Deque, Dict, List, Optional
 
 from utility import ca_certificate
-from utility.auth_helper import BSPClient, TokenProvider
+from utility.auth_helper import BSPClient, TokenProvider, export_bam_environment
 from utility.cyberark_ccp_fetch import CyberArkAuthenticator
 from utility import failure_catalog as catalog
 from utility.error_classifier import PreflightError
@@ -208,6 +208,7 @@ class KafkaStackFactory:
             logger.warning(
                 "CyberArk is not enabled; relying on BSP_USERNAME/BSP_PASSWORD already in the environment"
             )
+        export_bam_environment(settings.bam)
 
         logger.debug(
             "BSP client config: %s (environment %s)",
