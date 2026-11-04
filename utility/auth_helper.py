@@ -4,7 +4,6 @@ import base64
 import binascii
 import json
 import logging
-import os
 import threading
 import time
 from typing import Any, Callable, Dict, Optional, Protocol, runtime_checkable
@@ -112,32 +111,6 @@ class BSPTokenProvider:
     @property
     def seconds_remaining(self) -> float:
         return max(0.0, self._expires_at - time.time())
-
-
-def export_bam_environment(bam: Any) -> None:
-    # bsp_python_client reads BAM_URL / BAM_NAME from the environment (the bam: section of
-    # the BSP YAML), so the resolved values, PROD defaults included, are exported for it.
-    if bam.placeholders:
-        raise PreflightError(
-            f"{' and '.join(bam.placeholders)} not set and the PROD default is still a "
-            "placeholder: pass them in the environment, or set PROD_BAM_URL / PROD_BAM_NAME "
-            "in utility/connector_config.py",
-            catalog.AUTHENTICATION_FAILURE,
-            context={"bam_url": bam.url, "bam_name": bam.name},
-        )
-
-    source = {
-        env: "environment" if os.environ.get(env, "").strip() else "PROD default"
-        for env in ("BAM_URL", "BAM_NAME")
-    }
-    os.environ["BAM_URL"], os.environ["BAM_NAME"] = bam.url, bam.name
-    logger.info(
-        "BAM token URL %s?appName=%s (BAM_URL from %s, BAM_NAME from %s)",
-        bam.url,
-        bam.name,
-        source["BAM_URL"],
-        source["BAM_NAME"],
-    )
 
 
 class BSPClient:
