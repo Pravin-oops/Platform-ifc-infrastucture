@@ -7,4 +7,4 @@ confluent-kafka~=2.4
 pydantic~=2.7
 python-dotenv~=1.0
 tzdata~=2024.1
-bsp_python_client
+bsp_python_client==1.182.1

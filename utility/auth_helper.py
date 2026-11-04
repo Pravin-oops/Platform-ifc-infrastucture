@@ -4,11 +4,9 @@ import base64
 import binascii
 import json
 import logging
-import os
 import threading
 import time
 from typing import Any, Callable, Dict, Optional, Protocol, runtime_checkable
-from urllib.parse import urlsplit, urlunsplit
 
 from utility import failure_catalog as catalog
 from utility.error_classifier import PreflightError
@@ -115,41 +113,6 @@ class BSPTokenProvider:
         return max(0.0, self._expires_at - time.time())
 
 
-def bam_token_url(default: str, configured: Optional[str]) -> str:
-    if not configured:
-        return default
-    url = urlsplit(configured.strip())
-    if url.path not in ("", "/") or url.query:
-        return configured.strip()
-    # A bare host keeps the library's SSO path and appName.
-    return urlunsplit(urlsplit(default)._replace(scheme=url.scheme, netloc=url.netloc))
-
-
-def point_at_bam(authenticator: Any) -> Any:
-    # bsp_python_client hardcodes the UAT BAM URL in BSPAuthenticator.__init__ and never
-    # reads BAM_URL, so every environment would fetch its token from UAT.
-    default = getattr(authenticator, "_token_url", None)
-    configured = os.environ.get("BAM_URL")
-    if default is None:
-        if configured:
-            raise PreflightError(
-                "BAM_URL is set but this bsp_python_client has no _token_url to override",
-                catalog.CONTAINER_FAILURE,
-                context={"bam_url": configured},
-            )
-        return authenticator
-
-    if not configured:
-        logger.warning(
-            "BAM_URL is not set; using the bsp_python_client default BAM URL %s", default
-        )
-        return authenticator
-
-    authenticator._token_url = bam_token_url(default, configured)
-    logger.info("BAM token URL: %s", authenticator._token_url)
-    return authenticator
-
-
 class BSPClient:
     def __init__(self, config_path: str, *, authenticator: Any = None):
         self._config_path = config_path
@@ -168,7 +131,7 @@ class BSPClient:
                     catalog.CONTAINER_FAILURE,
                     cause=exc,
                 ) from exc
-            self._authenticator = point_at_bam(BSPAuthenticator())
+            self._authenticator = BSPAuthenticator()
         return self._authenticator
 
     def producer_config(self, overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
