@@ -224,6 +224,23 @@ class TestMasking:
         assert shown["oauth_cb"].startswith("<callable")
         assert shown["acks"] == "all"
 
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "sasl.oauthbearer.config",
+            "sasl.oauthbearer.client.secret",
+            "sasl.jaas.config",
+            "ssl.key.pem",
+            "ssl.certificate.pem",
+            "ssl.key.password",
+            "ssl.keystore.location",
+            "basic.auth.user.info",
+        ],
+    )
+    def test_producer_config_hides_secrets_under_other_key_names(self, key):
+        shown = cc.redacted({key: "hunter2"})
+        assert shown[key] == "<redacted>"
+
 
 class TestConnectivityCheck:
     def test_all_checks_pass_and_nothing_secret_is_logged(self, fakes, tmp_path, caplog):

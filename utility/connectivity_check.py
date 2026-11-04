@@ -31,7 +31,9 @@ OUTCOME_FAILED = "CONNECTIVITY_CHECK_FAILED"
 
 _PEM_CERTIFICATE = re.compile(r"-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----", re.S)
 _PEM_KEY_TYPE = re.compile(r"-----BEGIN ([A-Z ]*PRIVATE KEY)-----")
-_SENSITIVE_KEY = re.compile(r"password|secret|token|credential", re.IGNORECASE)
+_SENSITIVE_KEY = re.compile(
+    r"password|secret|token|credential|key|pem|jaas|oauthbearer|user\.info", re.IGNORECASE
+)
 _PLAIN = (str, int, float, bool, type(None))
 
 
