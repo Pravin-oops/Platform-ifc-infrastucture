@@ -33,7 +33,8 @@ environment picks it.
 | `IFC_APP__ENVIRONMENT` | **yes** | task definition | `SIT` — loads `utility/connector_config_sit.yaml`, which names `utility/bsp_sit_config.yaml` |
 | `IFC_RUN__TRIGGER` | **yes** | EventBridge Scheduler override | `TRIGGER_8`, `TRIGGER_9` or `TRIGGER_21` (also `trigger 9`, `T9`, `9`) |
 | `CYBERARK_ENABLED`, `CYBERARK_CCP_URL`, `CYBERARK_APP_ID` | for CyberArk | ECS product template | the CCP endpoint and app id for the BSP system account (the safe and account come from the connector config); with `CYBERARK_ENABLED` unset or `false`, `BSP_USERNAME` / `BSP_PASSWORD` must be set instead |
-| `BAM_URL`, `BAM_NAME` | **yes** (SECURE registry) | task definition | read by the BSP client to fetch the BAM token |
+| `BAM_URL` | **yes** outside UAT | task definition | the BAM token URL. `bsp_python_client` hardcodes the UAT URL and never reads `BAM_URL`, so `utility/auth_helper.py` overrides the authenticator's `_token_url` with it: a full URL is used as is, a bare host (`https://bam-auth.client.barclayscorp.com`) keeps the library's SSO path and `appName`. Logged at INFO as `BAM token URL: ...`; unset, the run warns and uses UAT |
+| `BAM_NAME` | no | task definition | not read by `bsp_python_client` 7 (the `bam:` section of the BSP YAML is ignored) |
 | `AWS_REGION` | **yes** | task definition | `eu-west-1` |
 | `IFC_RUN__MONTH`, `IFC_RUN__FORCE` | no | one-off RunTask | reprocess a past month — see [section 10](#10-reprocessing-a-past-month) |
 | `IFC_APP__LOG_LEVEL` | no | task definition | `INFO` (default) or `DEBUG` for per-endpoint and per-row detail |
