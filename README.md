@@ -33,15 +33,18 @@ environment picks it.
 | `IFC_APP__ENVIRONMENT` | **yes** | task definition | `SIT` — loads `utility/connector_config_sit.yaml`, which names `utility/bsp_sit_config.yaml` |
 | `IFC_RUN__TRIGGER` | **yes** | EventBridge Scheduler override | `TRIGGER_8`, `TRIGGER_9` or `TRIGGER_21` (also `trigger 9`, `T9`, `9`) |
 | `CYBERARK_ENABLED`, `CYBERARK_CCP_URL`, `CYBERARK_APP_ID` | for CyberArk | ECS product template | the CCP endpoint and app id for the BSP system account (the safe and account come from the connector config); with `CYBERARK_ENABLED` unset or `false`, `BSP_USERNAME` / `BSP_PASSWORD` must be set instead |
-| `BAM_URL`, `BAM_NAME` | **yes** (SECURE registry) | task definition | read by the BSP client (`bsp_python_client` 1.182.1, through the `bam:` section of the BSP YAML) to fetch the BAM token from `<BAM_URL>?appName=<BAM_NAME>&redirectURL=http://localhost`, so `BAM_URL` is the SSO API URL without a query string. Versions before 1.182 ignore both and always use UAT |
+| `BAM_URL`, `BAM_NAME` | SIT: **yes**. PROD: no (`.env`) | task definition | the PROD values are in `.env`, which the image ships; SIT sets its own in the task definition, which wins. Read by the BSP client (`bsp_python_client` 1.182.1, through the `bam:` section of the BSP YAML) to fetch the BAM token from `<BAM_URL>?appName=<BAM_NAME>&redirectURL=http://localhost`, so `BAM_URL` is the SSO API URL without a query string. Versions before 1.182 ignore both and always use UAT |
 | `AWS_REGION` | **yes** | task definition | `eu-west-1` |
 | `IFC_RUN__MONTH`, `IFC_RUN__FORCE` | no | one-off RunTask | reprocess a past month — see [section 10](#10-reprocessing-a-past-month) |
-| `IFC_APP__LOG_LEVEL` | no | task definition | `INFO` (default) or `DEBUG` for per-endpoint and per-row detail |
+| `IFC_APP__LOG_LEVEL` | **set it** | task definition | `INFO` or `DEBUG` for per-endpoint and per-row detail; unset, the image's `.env` makes it `DEBUG` |
 | `IFC_ENVELOPE__TOKENISED_ENVIRONMENTS` | no | task definition | e.g. `SIT` to declare the owner-name tokenisation policy in SIT |
 | `IFC_<SECTION>__<KEY>` | no | task definition | overrides any other config value, e.g. `IFC_SCHEMA_REGISTRY__SECURE__URL` |
 
-`.env` is not copied into the image (`.dockerignore`). Where an `.env` is present (local runs) it
-only fills variables that are not already set, so a task value always wins.
+`.env` is copied into the image (`/app/ifc_trigger_connector/.env`). It only fills variables that
+are not already set (`load_dotenv(override=False)`), so a task value always wins. Its values are
+the image's fallbacks: `IFC_APP__ENVIRONMENT=DEV`, `IFC_APP__LOG_LEVEL=DEBUG` and the PROD
+`BAM_URL` / `BAM_NAME`, so every task definition must set `IFC_APP__ENVIRONMENT` and
+`IFC_APP__LOG_LEVEL`, and SIT must also set `BAM_URL` / `BAM_NAME`.
 
 With `IFC_APP__ENVIRONMENT=SIT` the run resolves to:
 
@@ -515,7 +518,7 @@ Tests:
 ## 12. Repository layout
 
 ```
-├── .env                         # local settings (IFC_APP__ENVIRONMENT=DEV), not in the image
+├── .env                         # fallback settings (DEV, DEBUG, PROD BAM_URL/BAM_NAME), shipped in the image
 ├── Docker/Dockerfile            # ENTRYPOINT scripts/main_ecs.py
 ├── scripts/
 │   ├── main_ecs.py              # ECS entry: config → run gate → recon gate → runner → SNS → marker

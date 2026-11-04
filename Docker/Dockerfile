@@ -24,6 +24,9 @@ RUN pip install -r /tmp/requirements.txt \
 
 COPY --chown=connector:connector utility/ /app/ifc_trigger_connector/utility/
 COPY --chown=connector:connector scripts/ /app/ifc_trigger_connector/scripts/
+# Defaults only (PROD BAM_URL/BAM_NAME among them): load_dotenv(override=False) lets the
+# ECS task definition override every value, so SIT sets its own BAM_URL/BAM_NAME there.
+COPY --chown=connector:connector .env /app/ifc_trigger_connector/.env
 
 USER connector
 
