@@ -492,12 +492,32 @@ month it is from. Without force, the recon row must be from the current month.
 ## 11. Build, run and test
 
 ```bash
-docker build -f Docker/Dockerfile -t ifc-trigger-connector:0.0.4 .
+docker build -f Docker/Dockerfile -t ifc-trigger-connector:0.0.5 .
 ```
 
 The build context is the repository root. The image is built on the Barclays RHEL 8 Python 3.12
 builder; `bsp_python_client` installs from the internal package index like any other requirement,
 so the build must reach that index.
+
+Current versions (`Docker/Dockerfile`, `utility/requirements.txt`):
+
+| Component | Version |
+|---|---|
+| Image (`ifc-trigger-connector`) | `0.0.5` |
+| Base image | `barclays/devtooling/builders/rhel8/python312:2026-08-21-21379287` |
+| Python | 3.12 |
+| `bsp_python_client` | `==1.182.1` |
+| `boto3`, `botocore` | `~=1.35.69` |
+| `confluent-kafka` | `~=2.4` |
+| `fastavro` | `~=1.9` |
+| `pydantic` | `~=2.7` |
+| `PyYAML` | `~=6.0` |
+| `requests` | `~=2.31` |
+| `python-dotenv` | `~=1.0` |
+| `tzdata` | `~=2024.1` |
+
+Only `bsp_python_client` is pinned exactly; the others take the newest compatible release at build
+time.
 
 Run locally (AWS credentials needed for Athena, S3 and Secrets Manager):
 

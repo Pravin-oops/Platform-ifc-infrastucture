@@ -1,11 +1,11 @@
-# docker build -f Docker/Dockerfile -t ifc-trigger-connector:0.0.4 .
+# docker build -f Docker/Dockerfile -t ifc-trigger-connector:0.0.5 .
 
 ARG BASE_IMAGE=container-base.container-registry-prod.barcapint.com/barclays/devtooling/builders/rhel8/python312:2026-08-21-21379287
 
 FROM ${BASE_IMAGE}
 
 LABEL application="ifc-bsp-event-processor"
-LABEL version="0.0.4"
+LABEL version="0.0.5"
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
