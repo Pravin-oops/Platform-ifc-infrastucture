@@ -37,9 +37,12 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # the pip install above has finished.
 #
 # Step 1 (dnf remove): build, debug, container and desktop packages, plus
-#   anything that only they needed.
+#   anything that only they needed. If dnf refuses the whole list because a
+#   package is still needed by dnf itself, it falls back to one at a time and
+#   keeps the blocked ones.
 # Step 2 (rpm -e --nodeps): the package manager itself (dnf/yum), the system
-#   Python 3.6 it runs on, and the libraries only it uses (curl, glib2).
+#   Python it runs on (3.6 on RHEL 8, 3.9 on RHEL 9), and the libraries only it
+#   uses (rpm-build-libs, libgomp, curl, glib2).
 #   Set --build-arg STRIP_PKG_MANAGER=false if anything layered on top of this
 #   image still needs to run dnf.
 # Before step 1, UPDATE_PACKAGES (ca-certificates) is updated from the repos.
@@ -50,9 +53,10 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # out something the app needs.
 # ---------------------------------------------------------------------------
 ARG REMOVE_PACKAGES="\
-    gcc gcc-c++ cpp gcc-gdb-plugin gcc-plugin-annobin libstdc++-devel libgomp \
+    gcc gcc-c++ cpp gcc-gdb-plugin gcc-plugin-annobin libstdc++-devel \
     gdb gdb-headless gdb-gdbserver \
     runc skopeo criu fuse-overlayfs slirp4netns libslirp containers-common container-selinux git-lfs \
+    crun podman buildah conmon netavark aardvark-dns passt \
     emacs-filesystem libXi libXrender librsvg2 libgs libsoup perl-URI openssh openssh-clients \
     pcre2-devel pcre2-utf16 pcre2-utf32 python3.12-devel python3.12-pip \
     azure-cli helm terraform kubectl openshift-clients vim-enhanced vim-common"
@@ -60,6 +64,7 @@ ARG REMOVE_PACKAGES="\
 ARG REMOVE_BINARIES="az helm terraform kubectl oc"
 ARG REMOVE_PKG_MANAGER_PACKAGES="\
     dnf dnf-data yum dnf-plugins-core libdnf librepo libsolv libmodulemd \
+    rpm-build-libs rpm-sign-libs libgomp \
     curl curl-minimal libcurl libcurl-minimal glib2 openssl"
 ARG STRIP_PKG_MANAGER=true
 # OS packages to update from the Red Hat repos before dnf is removed (needs repo
@@ -76,7 +81,15 @@ RUN set -eu; \
     pkgs="$(installed ${REMOVE_PACKAGES})"; \
     if [ -n "$pkgs" ]; then \
         echo "Removing: $pkgs"; \
-        dnf -y --disablerepo='*' remove $pkgs; \
+        if ! dnf -y --disablerepo='*' remove $pkgs; then \
+            echo "Bulk removal refused by dnf; removing packages one at a time"; \
+            for p in $pkgs; do \
+                if rpm -q "$p" >/dev/null 2>&1; then \
+                    if dnf -y -q --disablerepo='*' remove "$p" >/dev/null 2>&1; then echo "  removed $p"; \
+                    else echo "  kept $p (dnf still needs it; step 2 may remove it)"; fi; \
+                fi; \
+            done; \
+        fi; \
     fi; \
     rm -rf /var/cache/dnf /var/cache/yum; \
     for b in ${REMOVE_BINARIES}; do \
