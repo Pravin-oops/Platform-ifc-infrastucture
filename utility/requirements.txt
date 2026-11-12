@@ -14,3 +14,5 @@ bsp_python_client==1.182.1
 # above, so an older pin inside bsp_python_client cannot block the fix.
 PyJWT>=2.15.0  # security: CVE-2026-102268 (Critical, fixed 2.14.0) + finding fixed 2.15.0
 certifi>=2026.10.19  # security: CA bundle with compromised intermediate roots
+cryptography>=50.0.0  # security: certificate/TLS processing DoS and data exposure (46.0.7 flagged)
+urllib3>=2.8.0  # security: HTTPS proxy/TLS weakness, decompression and memory DoS (1.26.20 flagged)
