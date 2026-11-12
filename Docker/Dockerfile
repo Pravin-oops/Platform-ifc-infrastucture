@@ -19,9 +19,16 @@ WORKDIR /app/platform-ifc-infrastructure
 # *after* the rest, so a pin inside bsp_python_client cannot block the fix: pip
 # prints a dependency warning (shown by `pip check`) and installs it anyway.
 # The Required-by lines show which package pulled each one in.
+# Red Hat's own RPM copies of those packages are removed first: pip will not
+# uninstall an RPM-owned package, so an old RPM copy would otherwise stay in
+# /usr/lib*/python3.12 beside the upgraded one and keep the scan finding open.
+ARG REMOVE_PYTHON_RPMS="python3.12-urllib3 python3.12-cryptography python3.12-jwt python3.12-pyjwt python3.12-certifi"
 COPY utility/requirements.txt /tmp/requirements.txt
 RUN --mount=type=cache,target=/root/.cache/pip \
     set -eu; \
+    for p in ${REMOVE_PYTHON_RPMS}; do \
+        if rpm -q "$p" >/dev/null 2>&1; then echo "Removing RPM copy: $(rpm -q "$p")"; rpm -e --nodeps --noscripts "$p"; fi; \
+    done; \
     grep -v '# security' /tmp/requirements.txt > /tmp/base-requirements.txt; \
     pip install -r /tmp/base-requirements.txt; \
     security="$(grep '# security' /tmp/requirements.txt | sed 's/#.*//' | xargs)"; \
@@ -47,8 +54,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # 2. dnf upgrade: apply every OS update the repos have (openssl, pcre2, expat,
 #    python3.12, util-linux, libstdc++, ca-certificates, ...). Needs repo access
 #    during the build; --build-arg OS_UPGRADE=false skips it.
-# 3. Delete tools shipped outside RPM: CLIs (az, helm, terraform, kubectl, oc,
-#    dotnet, pwsh), every Go binary (Go crypto/tls CVEs), and every copy of pip
+# 3. Delete tools shipped outside RPM: CLIs (az, aws, helm, terraform, kubectl,
+#    oc, dotnet, pwsh), every Go binary (Go crypto/tls CVEs), and every copy of pip
 #    including the bundled pip wheels (pip is only needed at build time).
 # 4. rpm -e --nodeps: the package manager itself (dnf/yum, libcomps), the system
 #    Python it runs on (3.6 on RHEL 8, 3.9 on RHEL 9), and the libraries only it
@@ -70,8 +77,8 @@ ARG REMOVE_PACKAGES="\
 # RPM name patterns (rpm -qa globs) removed in step 1 as well.
 ARG REMOVE_PATTERNS="dotnet* aspnetcore* netstandard-targeting-pack* powershell*"
 # Tools the builder image may ship as plain binaries or folders rather than RPMs.
-ARG REMOVE_BINARIES="az helm terraform kubectl oc dotnet pwsh"
-ARG REMOVE_DIRS="/opt/az /usr/lib64/az /root/.azure \
+ARG REMOVE_BINARIES="az aws aws_completer helm terraform kubectl oc dotnet pwsh"
+ARG REMOVE_DIRS="/opt/az /usr/lib64/az /root/.azure /usr/local/aws-cli \
     /usr/lib64/dotnet /usr/share/dotnet /usr/local/share/dotnet /opt/microsoft /root/.dotnet /root/.nuget"
 ARG REMOVE_PKG_MANAGER_PACKAGES="\
     dnf dnf-data yum dnf-plugins-core libdnf librepo libsolv libmodulemd libcomps \
@@ -129,6 +136,9 @@ RUN set -eu; \
             rpm -e --nodeps --noscripts $pm; \
         fi; \
     fi; \
+    echo "Copies of the security-pinned Python packages left in the image:"; \
+    find / -xdev -type d \( -iname 'urllib3-*.*-info' -o -iname 'cryptography-*.*-info' \
+        -o -iname 'pyjwt-*.*-info' -o -iname 'certifi-*.*-info' \) 2>/dev/null | sed 's/^/  /' || true; \
     python3.12 -c "import importlib.util, ssl, decimal, zoneinfo, http.server, xml.etree.ElementTree, \
         boto3, botocore, bsp_python_client, certifi, confluent_kafka, cryptography, dotenv, fastavro, jwt, \
         pydantic, requests, urllib3, yaml; \
