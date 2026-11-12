@@ -14,8 +14,8 @@ credentials:
 
 bam:
   method: env
-  bam_url: BAM_URL
-  bam_name: BAM_NAME
+  bam_url: BAM_URL_SIT
+  bam_name: BAM_NAME_SIT
 
 producer:
   properties:

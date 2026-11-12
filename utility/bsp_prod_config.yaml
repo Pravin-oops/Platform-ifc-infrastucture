@@ -1,0 +1,33 @@
+---
+servers:
+  bootstrap.servers: REPLACE_ME_PROD_BROKER_1:9095,REPLACE_ME_PROD_BROKER_2:9095
+
+security:
+  security.protocol: SASL_SSL
+  sasl.mechanism: OAUTHBEARER
+  ssl.ca.location: /tmp/ifc-certs/CARoot.pem
+
+credentials:
+  method: env
+  username_variable: BSP_USERNAME
+  password_variable: BSP_PASSWORD
+
+bam:
+  method: env
+  bam_url: BAM_URL_PROD
+  bam_name: BAM_NAME_PROD
+
+producer:
+  properties:
+    acks: all
+    compression.type: gzip
+    enable.idempotence: True
+    retries: 2147483647
+    max.in.flight.requests.per.connection: 5
+
+consumer:
+  properties:
+    error_cb: "@error"
+    group.id: GROUP_ID_HERE
+    auto.offset.reset: earliest
+    enable.auto.commit: !!bool false

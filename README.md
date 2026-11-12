@@ -33,7 +33,7 @@ environment picks it.
 | `IFC_APP__ENVIRONMENT` | **yes** | task definition | `SIT` — loads `utility/connector_config_sit.yaml`, which names `utility/bsp_sit_config.yaml` |
 | `IFC_RUN__TRIGGER` | **yes** | EventBridge Scheduler override | `TRIGGER_8`, `TRIGGER_9` or `TRIGGER_21` (also `trigger 9`, `T9`, `9`) |
 | `CYBERARK_ENABLED`, `CYBERARK_CCP_URL`, `CYBERARK_APP_ID` | for CyberArk | ECS product template | the CCP endpoint and app id for the BSP system account (the safe and account come from the connector config); with `CYBERARK_ENABLED` unset or `false`, `BSP_USERNAME` / `BSP_PASSWORD` must be set instead |
-| `BAM_URL`, `BAM_NAME` | SIT: **yes**. PROD: no (`.env`) | task definition | the PROD values are in `.env`, which the image ships; SIT sets its own in the task definition, which wins. Read by the BSP client (`bsp_python_client` 1.182.1, through the `bam:` section of the BSP YAML) to fetch the BAM token from `<BAM_URL>?appName=<BAM_NAME>&redirectURL=http://localhost`, so `BAM_URL` is the SSO API URL without a query string. Versions before 1.182 ignore both and always use UAT |
+| `BAM_URL_SIT`, `BAM_NAME_SIT` / `BAM_URL_PROD`, `BAM_NAME_PROD` | no (`.env`) | `.env`; the task definition can override | each BSP YAML names its own pair in its `bam:` section: `bsp_sit_config.yaml` (and `bsp_dev_config.yaml`) reads the `_SIT` pair, `bsp_prod_config.yaml` the `_PROD` pair; a plain `BAM_URL` / `BAM_NAME` is no longer read. The BSP client (`bsp_python_client` 1.182.1) fetches the BAM token from `<url>?appName=<name>&redirectURL=http://localhost`, so the URL is the SSO API URL without a query string. Versions before 1.182 ignore both and always use UAT |
 | `AWS_REGION` | **yes** | task definition | `eu-west-1` |
 | `IFC_RUN__MONTH`, `IFC_RUN__FORCE` | no | one-off RunTask | reprocess a past month — see [section 10](#10-reprocessing-a-past-month) |
 | `IFC_APP__LOG_LEVEL` | **set it** | task definition | `INFO` or `DEBUG` for per-endpoint and per-row detail; unset, the image's `.env` makes it `DEBUG` |
@@ -42,9 +42,9 @@ environment picks it.
 
 `.env` is copied into the image (`/app/ifc_trigger_connector/.env`). It only fills variables that
 are not already set (`load_dotenv(override=False)`), so a task value always wins. Its values are
-the image's fallbacks: `IFC_APP__ENVIRONMENT=DEV`, `IFC_APP__LOG_LEVEL=DEBUG` and the PROD
-`BAM_URL` / `BAM_NAME`, so every task definition must set `IFC_APP__ENVIRONMENT` and
-`IFC_APP__LOG_LEVEL`, and SIT must also set `BAM_URL` / `BAM_NAME`.
+the image's fallbacks: `IFC_APP__ENVIRONMENT=DEV`, `IFC_APP__LOG_LEVEL=DEBUG` and both BAM
+pairs (`BAM_URL_SIT` / `BAM_NAME_SIT`, `BAM_URL_PROD` / `BAM_NAME_PROD`), so every task
+definition must set `IFC_APP__ENVIRONMENT` and `IFC_APP__LOG_LEVEL`.
 
 With `IFC_APP__ENVIRONMENT=SIT` the run resolves to:
 
@@ -240,7 +240,7 @@ counters are running totals re-emitted during the run.
 |---|---|---|---|---|
 | `DEV` | `utility/connector_config_dev.yaml` | `utility/bsp_dev_config.yaml` | `PLAINTEXT` `:9092`, DEV-only listener, no token | `DEV`, schema id `1299` pinned, no token |
 | `SIT` | `utility/connector_config_sit.yaml` | `utility/bsp_sit_config.yaml` | `SASL_SSL` `:9095`, BAM token | `SECURE` `:8095`, BAM token |
-| `PROD` | `utility/connector_config_prod.yaml` (placeholders) | `utility/bsp_prod_config.yaml` (not yet in the repository) | | `SECURE` `:8095`, BAM token |
+| `PROD` | `utility/connector_config_prod.yaml` (placeholders) | `utility/bsp_prod_config.yaml` (placeholder brokers) | | `SECURE` `:8095`, BAM token |
 
 Each connector config fixes its `app.environment`, its `kafka.bsp_config_path` and its
 `schema_registry.mode`. The DEV file uses SIT's AWS locations until DEV has its own. The PROD
@@ -538,7 +538,7 @@ Tests:
 ## 12. Repository layout
 
 ```
-├── .env                         # fallback settings (DEV, DEBUG, PROD BAM_URL/BAM_NAME), shipped in the image
+├── .env                         # fallback settings (DEV, DEBUG, SIT and PROD BAM pairs), shipped in the image
 ├── Docker/Dockerfile            # ENTRYPOINT scripts/main_ecs.py
 ├── scripts/
 │   ├── main_ecs.py              # ECS entry: config → run gate → recon gate → runner → SNS → marker
@@ -583,7 +583,7 @@ repository. The task definition's `stopTimeout` (120) must exceed `run.shutdown_
 
 | Item | Status |
 |---|---|
-| PROD configs | `connector_config_prod.yaml` has `REPLACE_ME_PROD_…` placeholders (the recon table and targets are real) for the trigger tables, buckets, topic, Schema Registry hosts and the CA / CyberArk secret ids; `bsp_prod_config.yaml` not yet added |
+| PROD configs | `connector_config_prod.yaml` has `REPLACE_ME_PROD_…` placeholders (the recon table and targets are real) for the trigger tables, buckets, topic, Schema Registry hosts and the CA / CyberArk secret ids; `bsp_prod_config.yaml` has `REPLACE_ME_PROD_BROKER_…` bootstrap servers; `.env` has `REPLACE_WITH_…` BAM values for SIT and PROD |
 | SNS topics | `sns_topic_arn` (RTB alerts) and `batch_sns_topic_arn` (TBB event) are null in SIT: both log only |
 | CyberArk | client certificate and key secrets exist but are empty; `cyberark.enabled` is `false` in the YAML |
 | Topic and subject | `tc01_fncmtrgrbb_ifc_tbb_kyc_refresh` to be confirmed |
