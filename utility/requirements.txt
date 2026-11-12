@@ -8,3 +8,9 @@ pydantic~=2.7
 python-dotenv~=1.0
 tzdata~=2024.1
 bsp_python_client==1.182.1
+
+# Security minimums for packages pulled in by bsp_python_client. Lines tagged
+# "# security" are installed by the Dockerfile as an upgrade *after* everything
+# above, so an older pin inside bsp_python_client cannot block the fix.
+PyJWT>=2.15.0  # security: CVE-2026-102268 (Critical, fixed 2.14.0) + finding fixed 2.15.0
+certifi>=2026.10.19  # security: CA bundle with compromised intermediate roots
