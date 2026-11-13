@@ -203,7 +203,7 @@ A row that fails steps 1–4 is **quarantined** to S3 and the run continues. At 
 of each problem is logged once (the rest at DEBUG):
 
 ```
-Record rejected: column=Date of Request (date_of_request) check=not a valid DATE row=12 … reason=…
+Record rejected: column=Client Region (region) check=missing row=12 … reason=…
 ```
 
 Every 500 rows the run reports progress (health heartbeat, EMF metrics, memory use).
@@ -218,7 +218,7 @@ Every 500 rows the run reports progress (health heartbeat, EMF metrics, memory u
    `QUALITY_GATE_FAILED`, exit `20`, with the breakdown by column and check:
 
    ```
-   Quarantine summary: 3 of 150 records rejected: Date of Request (date_of_request) not a valid DATE x2; Client Region (region) missing x1
+   Quarantine summary: 3 of 150 records rejected: Client Relationship Owner BRID (client_relationship_owner_brid) longer than 10 characters x2; Client Region (region) missing x1
    ```
 4. **Manifest** written to the audit bucket; on any failure, an **RTB alert** to
    `notifications.sns_topic_arn`; final EMF metrics.
@@ -386,7 +386,7 @@ every trigger, defined once in `_payload_fields()` in `utility/trigger_definitio
 
 | # | `fieldName` | Type | Source column | Max length | Notes |
 |---|---|---|---|---|---|
-| 1 | `Date of Request` | `DATE` | `date_of_request` | 10 | sent as `YY-MM-DD` (`2026-09-10…` → `26-09-10`); must start with an ISO date |
+| 1 | `Date of Request` | `DATE` | — (stamped at publish time) | 10 | the date the run publishes, as `YYYY-MM-DD` (`2026-09-10`), today in UTC (the same clock as the envelope timestamps); the table's `date_of_request` is **not** published |
 | 2 | `Counterparty Full Legal Entity Name` | `STRING` | `counterparty_full_legal_entity_name` | 100 | |
 | 3 | `Counterparty SDS ID / CSID` | `STRING` | `counterparty_csid_sds` | 11 | also the envelope's `idValue`; a whole-number float is sent as an integer |
 | 4 | `Client Relationship Owner Name` | `STRING` | `client_relationship_owner_name` | 50 | policy `UK_TOK_AC_L0R0_UNC_DE` only in tokenised environments (PROD) |
@@ -732,6 +732,5 @@ right date.
 | Topic and subject | `tc01_fncmtrgrbb_ifc_tbb_kyc_refresh` to be confirmed |
 | Kafka ACLs | producer principal needs write on the topic |
 | Athena workgroup and permissions | `primary` is a placeholder; the role needs Athena, Glue, S3 (table data and results) and Lake Formation `SELECT` where it applies |
-| `date_of_request` format | must start with an ISO date; confirm upstream writes ISO |
 | Tokenisation | confirm with the consumer that `UK_TOK_AC_L0R0_UNC_DE` is the policy, and whether PROD-ANALYTICS / PROD-PARALLEL are tokenised |
 | Field renames | `Counterparty SDS ID / CSID` and `Client Region` to be agreed with Trigger Backbone |

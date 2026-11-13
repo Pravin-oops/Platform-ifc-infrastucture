@@ -366,9 +366,11 @@ class TestQuarantine:
 class TestRejectionReporting:
     """At INFO a rejected row names its column and check, once per kind, plus a summary."""
 
+    #: Date of Request is stamped by the publisher, so a bad source date cannot
+    #: reject a row any more; an over-long BRID is the stand-in repeated problem.
     ROWS = [
-        row(date_of_request="10/06/2026"),
-        row(date_of_request="not a date"),
+        row(client_relationship_owner_brid="B0412775000"),
+        row(client_relationship_owner_brid="B0412775111"),
         row(region=None),
         VALID_ROW,
     ]
@@ -386,8 +388,11 @@ class TestRejectionReporting:
 
         lines = [r.getMessage() for r in self.warnings(caplog, "Record rejected:")]
         assert len(lines) == 2
-        assert "column=Date of Request (date_of_request) check=not a valid DATE" in lines[0]
-        assert "row=1 " in lines[0] and "'10/06/2026'" in lines[0]
+        assert (
+            "column=Client Relationship Owner BRID (client_relationship_owner_brid) "
+            "check=longer than 10 characters" in lines[0]
+        )
+        assert "row=1 " in lines[0] and "11 characters" in lines[0]
         assert "column=Client Region (region) check=missing" in lines[1]
 
     def test_the_summary_counts_each_problem(self, runner_factory, caplog):
@@ -398,7 +403,8 @@ class TestRejectionReporting:
         [summary] = self.warnings(caplog, "Quarantine summary:")
         assert summary.getMessage() == (
             "Quarantine summary: 3 of 4 records rejected: "
-            "Date of Request (date_of_request) not a valid DATE x2; Client Region (region) missing x1"
+            "Client Relationship Owner BRID (client_relationship_owner_brid) "
+            "longer than 10 characters x2; Client Region (region) missing x1"
         )
         assert summary.rejections[0]["count"] == 2
 
@@ -408,7 +414,8 @@ class TestRejectionReporting:
 
         assert result.outcome == "QUALITY_GATE_FAILED"
         assert result.classification.raw_error.endswith(
-            "tolerance: Date of Request (date_of_request) not a valid DATE x2; Client Region (region) missing x1"
+            "tolerance: Client Relationship Owner BRID (client_relationship_owner_brid) "
+            "longer than 10 characters x2; Client Region (region) missing x1"
         )
         assert result.classification.context["rejections"][1]["column"] == "Client Region (region)"
 

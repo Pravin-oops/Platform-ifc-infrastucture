@@ -15,6 +15,7 @@ from botocore.exceptions import ClientError
 
 from utility import failure_catalog as catalog
 from utility import run_gate
+from utility import trigger_definitions as definitions
 from utility.connector_config import SourceSettings, load_settings
 from utility.error_classifier import classify
 from utility.connector_utility import load_schema_document
@@ -358,8 +359,8 @@ class TestEndToEnd:
         assert built.record["triggerSubType"] == "NewHRCRelationship"
         assert built.record["idValue"] == "9912345678"
         assert built.record["upstreamTriggerID"] is None
-        # date_of_request is a string column; the payload publishes its date part, YY-MM-DD.
-        assert fields["Date of Request"] == "26-08-10"
+        # Date of Request is stamped by the publisher, not taken from the row.
+        assert fields["Date of Request"] == definitions.publication_date().isoformat()
         assert fields["Counterparty SDS ID / CSID"] == "9912345678"
 
     @pytest.mark.parametrize(
