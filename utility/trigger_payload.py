@@ -17,7 +17,7 @@ class DataType(str, Enum):
     BOOLEAN = "BOOLEAN"
 
 
-DATE_FORMAT = "%y-%m-%d"
+DATE_FORMAT = "%Y-%m-%d"
 
 
 POLICY_NONE = ""
@@ -42,6 +42,11 @@ class FieldSpec:
     transform: Optional[Callable[[Any], Any]] = None
     default: Any = None
     max_length: Optional[int] = None
+    #: When set, the value is produced at build time by this callable instead of
+    #: being read from ``source``.  Used for fields the publisher stamps itself
+    #: (for example the publication date) rather than carrying over from the
+    #: source table.
+    generator: Optional[Callable[[], Any]] = None
 
 
 def normalise_identifier(value: Any) -> Any:
@@ -100,7 +105,7 @@ def build_fields(
     fields: List[Dict[str, str]] = []
 
     for spec in specs:
-        value = attributes.get(spec.source)
+        value = spec.generator() if spec.generator is not None else attributes.get(spec.source)
         if value is None or (isinstance(value, str) and not value.strip()):
             value = spec.default
 

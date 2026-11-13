@@ -117,10 +117,28 @@ class TestEnvelope:
             "Client Region",
         ]
 
-    def test_date_of_request_is_published_as_a_date_not_a_timestamp(self, builder):
+    def test_date_of_request_is_the_publication_date_as_yyyy_mm_dd(self, builder, monkeypatch):
+        """The field no longer carries the table's own date: every record in a
+        run is stamped with the date the run publishes it."""
+        monkeypatch.setattr(run_gate, "today", lambda tz=run_gate.TIMEZONE: date(2026, 11, 13))
         fields = {f["fieldName"]: f for f in builder.build(trigger_8_event()).payload_fields}
-        assert fields["Date of Request"]["fieldValue"] == "26-06-10"
+        assert fields["Date of Request"]["fieldValue"] == "2026-11-13"
         assert fields["Date of Request"]["fieldDataType"] == "DATE"
+
+    def test_date_of_request_ignores_the_rows_own_date(self, builder):
+        """The source column is still selected and ordered on, but it is not what
+        the payload publishes."""
+        row = trigger_8_row(date_of_request="2019-01-01T00:00:00.000Z")
+        fields = {f["fieldName"]: f for f in builder.build(trigger_8_event(attributes=row)).payload_fields}
+        assert fields["Date of Request"]["fieldValue"] == definitions.publication_date().isoformat()
+
+    def test_a_row_with_no_date_of_request_still_publishes(self, builder):
+        """The publisher stamps the date, so a missing or unparseable source
+        value no longer quarantines the record."""
+        row = trigger_8_row()
+        del row["date_of_request"]
+        fields = {f["fieldName"]: f for f in builder.build(trigger_8_event(attributes=row)).payload_fields}
+        assert fields["Date of Request"]["fieldValue"] == definitions.publication_date().isoformat()
 
     def test_id_type_is_customer_and_id_value_is_the_csid(self, builder):
         record = builder.build(trigger_8_event()).record
@@ -286,7 +304,6 @@ class TestRejection:
     @pytest.mark.parametrize(
         "source",
         [
-            "date_of_request",
             "counterparty_full_legal_entity_name",
             "client_relationship_owner_name",
             "client_relationship_owner_brid",
@@ -295,8 +312,9 @@ class TestRejection:
     )
     def test_a_row_missing_a_mandatory_field_is_rejected(self, builder, source):
         """All eight payload fields are mandatory; the two with contract defaults
-        are covered separately below. A row missing any of the rest is
-        quarantined rather than published with a hole."""
+        and Date of Request (stamped by the publisher) are covered separately. A
+        row missing any of the rest is quarantined rather than published with a
+        hole."""
         row = trigger_8_row()
         del row[source]
         with pytest.raises(RecordRejected) as exc:

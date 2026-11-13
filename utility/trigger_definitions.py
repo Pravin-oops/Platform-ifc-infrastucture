@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from typing import Any, Dict, List, Optional, Sequence
 
+from utility import run_gate
 from utility.trigger_payload import (
     POLICY_NAME,
     DataType,
@@ -35,6 +37,17 @@ MAX_LENGTHS = {
 OUT_OF_SCOPE_SYMBOLS = {"UBOChanges", "SigChanges"}
 
 
+def publication_date() -> date:
+    """The date the message is published, in the bank's business timezone.
+
+    ``Date of Request`` is stamped by the publisher rather than carried over
+    from the source table, so every record in a run carries the date the run
+    published it.
+    """
+
+    return run_gate.today()
+
+
 @dataclass(frozen=True)
 class TriggerDefinition:
     sub_type: str
@@ -47,7 +60,11 @@ class TriggerDefinition:
         return [spec.name for spec in self.fields]
 
     def required_sources(self) -> List[str]:
-        return [spec.source for spec in self.fields if spec.required and spec.default is None]
+        return [
+            spec.source
+            for spec in self.fields
+            if spec.required and spec.default is None and spec.generator is None
+        ]
 
 
 def _payload_fields() -> List[FieldSpec]:
@@ -57,6 +74,7 @@ def _payload_fields() -> List[FieldSpec]:
             "date_of_request",
             DataType.DATE,
             max_length=MAX_LENGTHS["date_of_request"],
+            generator=publication_date,
         ),
         FieldSpec(
             "Counterparty Full Legal Entity Name",

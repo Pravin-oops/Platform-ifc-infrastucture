@@ -7,6 +7,7 @@ from datetime import date, datetime
 
 import pytest
 
+from utility import run_gate
 from utility import trigger_definitions as definitions
 from utility.trigger_payload import (
     DataType,
@@ -108,16 +109,18 @@ class TestFieldLength:
             build_fields(specs, {"kept": "yes", "long": "abcd"})
 
     def test_the_length_is_measured_on_the_rendered_value(self):
-        """A date arrives as a full timestamp and renders to eight characters, so
+        """A date arrives as a full timestamp and renders to ten characters, so
         the limit applies to what goes on the wire, not to the source string."""
         spec = FieldSpec(
             name="Date of Request", source="d", data_type=DataType.DATE, max_length=10
         )
-        assert build_fields([spec], {"d": "2026-06-10T02:15:04.221Z"})[0]["fieldValue"] == "26-06-10"
+        assert (
+            build_fields([spec], {"d": "2026-06-10T02:15:04.221Z"})[0]["fieldValue"] == "2026-06-10"
+        )
 
 
 class TestDateFormat:
-    """DATE fields go out as YY-MM-DD, per the payload specification."""
+    """DATE fields go out as YYYY-MM-DD, per the payload specification."""
 
     SPEC = FieldSpec(name="Date of Request", source="d", data_type=DataType.DATE, max_length=10)
 
@@ -131,8 +134,8 @@ class TestDateFormat:
             datetime(2026, 6, 10, 2, 15, 4),
         ],
     )
-    def test_every_source_shape_renders_yy_mm_dd(self, value):
-        assert build_fields([self.SPEC], {"d": value})[0]["fieldValue"] == "26-06-10"
+    def test_every_source_shape_renders_yyyy_mm_dd(self, value):
+        assert build_fields([self.SPEC], {"d": value})[0]["fieldValue"] == "2026-06-10"
 
     @pytest.mark.parametrize("value", ["10/06/2026", "not a date", "2026-13-01"])
     def test_a_value_that_is_not_a_date_is_rejected(self, value):
@@ -143,6 +146,64 @@ class TestDateFormat:
         spec = FieldSpec(name="Location", source="loc", default="United Kingdom", max_length=5)
         with pytest.raises(PayloadBuildError):
             build_fields([spec], {})
+
+
+class TestGeneratedValues:
+    """A field with a generator is stamped at build time, whatever the row holds."""
+
+    SPEC = FieldSpec(
+        name="Date of Request",
+        source="d",
+        data_type=DataType.DATE,
+        max_length=10,
+        generator=lambda: date(2026, 11, 13),
+    )
+
+    def test_the_generated_value_is_published(self):
+        assert build_fields([self.SPEC], {})[0]["fieldValue"] == "2026-11-13"
+
+    def test_the_source_value_is_ignored(self):
+        fields = build_fields([self.SPEC], {"d": "2019-01-01"})
+        assert fields[0]["fieldValue"] == "2026-11-13"
+
+    def test_a_generated_source_is_not_a_required_source(self):
+        """Nothing upstream has to supply it, so it is not demanded of the row."""
+        for definition in definitions.DEFINITIONS.values():
+            assert "date_of_request" not in definition.required_sources()
+
+
+class TestPublicationDate:
+    """Date of Request carries the date the run publishes, not the table's."""
+
+    def test_it_is_todays_date_in_the_business_timezone(self, monkeypatch):
+        monkeypatch.setattr(
+            run_gate, "today", lambda tz=run_gate.TIMEZONE: date(2026, 11, 13)
+        )
+        assert definitions.publication_date() == date(2026, 11, 13)
+
+    def test_a_backfill_month_does_not_rewind_it(self, monkeypatch):
+        """set_execution_month steers which month is read; the publication date
+        is still the day the run goes out."""
+        monkeypatch.setattr(run_gate, "_execution_month", date(2026, 1, 1))
+        assert definitions.publication_date() == run_gate.today()
+
+    @pytest.mark.parametrize(
+        "sub_type", [definitions.TRIGGER_8, definitions.TRIGGER_9, definitions.TRIGGER_21]
+    )
+    def test_every_trigger_stamps_it(self, sub_type):
+        spec = next(
+            s for s in definitions.DEFINITIONS[sub_type].fields if s.name == "Date of Request"
+        )
+        assert spec.generator is definitions.publication_date
+
+    @pytest.mark.parametrize(
+        "sub_type", [definitions.TRIGGER_8, definitions.TRIGGER_9, definitions.TRIGGER_21]
+    )
+    def test_no_other_field_is_generated(self, sub_type):
+        for spec in definitions.DEFINITIONS[sub_type].fields:
+            if spec.name == "Date of Request":
+                continue
+            assert spec.generator is None, spec.name
 
 
 class TestContractLengths:

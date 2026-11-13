@@ -73,7 +73,8 @@ All must be true before enabling the PROD schedules. Owner in brackets.
 - [ ] Tokenisation agreed with the consumer: PROD declares `UK_TOK_AC_L0R0_UNC_DE` on the owner
       name, and the owner name arrives already tokenised from upstream.
 - [ ] `fieldName` renames (`Counterparty SDS ID / CSID`, `Client Region`) agreed with TBB.
-- [ ] `date_of_request` confirmed ISO-formatted in PROD data.
+- [ ] Consumer confirmed that `Date of Request` carries the publication date (`YYYY-MM-DD`),
+      not the source table's `date_of_request`.
 
 **Platform (Producer RTB / BSP)**
 
