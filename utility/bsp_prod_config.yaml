@@ -1,7 +1,7 @@
 ---
 servers:
-  bootstrap.servers: REPLACE_ME_PROD_BROKER_1:9095,REPLACE_ME_PROD_BROKER_2:9095
-
+  bootstrap.servers: PLACEHOLDER_FOR_BSP_SERVERS
+  
 security:
   security.protocol: SASL_SSL
   sasl.mechanism: OAUTHBEARER
@@ -14,8 +14,8 @@ credentials:
 
 bam:
   method: env
-  bam_url: BAM_URL_PROD
-  bam_name: BAM_NAME_PROD
+  bam_url: BAM_URL
+  bam_name: BAM_NAME
 
 producer:
   properties:

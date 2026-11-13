@@ -1,6 +1,3 @@
-# docker build -f Docker/Dockerfile --build-arg APP_VERSION=0.0.72 -t ifc-bsp-event-processor:0.0.72 .
-# Requires BuildKit (default in Docker 23+) for the pip cache mount.
-
 ARG BASE_IMAGE=container-base.container-registry-prod.barcapint.com/barclays/devtooling/builders/rhel8/python312:2026-08-21-21379287
 FROM ${BASE_IMAGE}
 
@@ -13,15 +10,6 @@ RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin connector
 
 WORKDIR /app/platform-ifc-infrastructure
 
-# Dependency layer: re-runs only when requirements.txt changes; pip's download
-# cache persists across builds via the cache mount and never lands in the image.
-# Lines tagged "# security" in requirements.txt are installed as an upgrade
-# *after* the rest, so a pin inside bsp_python_client cannot block the fix: pip
-# prints a dependency warning (shown by `pip check`) and installs it anyway.
-# The Required-by lines show which package pulled each one in.
-# Red Hat's own RPM copies of those packages are removed first: pip will not
-# uninstall an RPM-owned package, so an old RPM copy would otherwise stay in
-# /usr/lib*/python3.12 beside the upgraded one and keep the scan finding open.
 ARG REMOVE_PYTHON_RPMS="python3.12-urllib3 python3.12-cryptography python3.12-jwt python3.12-pyjwt python3.12-certifi"
 COPY utility/requirements.txt /tmp/requirements.txt
 RUN --mount=type=cache,target=/root/.cache/pip \
@@ -39,32 +27,6 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     done; \
     rm -f /tmp/requirements.txt /tmp/base-requirements.txt
 
-# ---------------------------------------------------------------------------
-# Strip the builder image down to what the app needs at runtime.
-#
-# The base is a *builder* image: compilers, debuggers, container and .NET
-# tooling and desktop libraries that the app never uses but that the image
-# scanner reports. Every dependency ships as a pre-built wheel, so none of this
-# is needed once the pip install above has finished.
-#
-# 1. dnf remove: build, debug, container, .NET and desktop packages, plus
-#    anything that only they needed. If dnf refuses the whole list because a
-#    package is still needed by dnf itself, it falls back to one at a time and
-#    keeps the blocked ones.
-# 2. dnf upgrade: apply every OS update the repos have (openssl, pcre2, expat,
-#    python3.12, util-linux, libstdc++, ca-certificates, ...). Needs repo access
-#    during the build; --build-arg OS_UPGRADE=false skips it.
-# 3. Delete tools shipped outside RPM: CLIs (az, aws, helm, terraform, kubectl,
-#    oc, dotnet, pwsh), every Go binary (Go crypto/tls CVEs), and every copy of pip
-#    including the bundled pip wheels (pip is only needed at build time).
-# 4. rpm -e --nodeps: the package manager itself (dnf/yum, libcomps), the system
-#    Python it runs on (3.6 on RHEL 8, 3.9 on RHEL 9), and the libraries only it
-#    uses (rpm-build-libs, libgomp, curl, glib2). --build-arg
-#    STRIP_PKG_MANAGER=false skips this if anything layered on top needs dnf.
-# Packages that are not installed are skipped, so a new base tag will not
-# break the build. The final check fails the build if a removal took out
-# something the app needs.
-# ---------------------------------------------------------------------------
 ARG REMOVE_PACKAGES="\
     gcc gcc-c++ cpp gcc-gdb-plugin gcc-plugin-annobin libstdc++-devel \
     gdb gdb-headless gdb-gdbserver \
@@ -74,9 +36,7 @@ ARG REMOVE_PACKAGES="\
     openssh openssh-clients \
     pcre2-devel pcre2-utf16 pcre2-utf32 python3.12-devel python3.12-pip \
     azure-cli helm terraform kubectl openshift-clients vim-enhanced vim-common"
-# RPM name patterns (rpm -qa globs) removed in step 1 as well.
 ARG REMOVE_PATTERNS="dotnet* aspnetcore* netstandard-targeting-pack* powershell*"
-# Tools the builder image may ship as plain binaries or folders rather than RPMs.
 ARG REMOVE_BINARIES="az aws aws_completer helm terraform kubectl oc dotnet pwsh"
 ARG REMOVE_DIRS="/opt/az /usr/lib64/az /root/.azure /usr/local/aws-cli \
     /usr/lib64/dotnet /usr/share/dotnet /usr/local/share/dotnet /opt/microsoft /root/.dotnet /root/.nuget"
@@ -85,8 +45,12 @@ ARG REMOVE_PKG_MANAGER_PACKAGES="\
     rpm-build-libs rpm-sign-libs libgomp \
     curl curl-minimal libcurl libcurl-minimal glib2 openssl \
     python3 python3.12-pip-wheel"
+ARG REMOVE_UNUSED_OS_LIBS="\
+    libxml2 util-linux util-linux-core libfdisk libsmartcols libmount libblkid libuuid"
 ARG STRIP_PKG_MANAGER=true
 ARG OS_UPGRADE=true
+ARG DNF_RELEASEVER=""
+ARG DNF_EXTRA_OPTS=""
 
 RUN set -eu; \
     installed() { for p in "$@"; do if rpm -q "$p" >/dev/null 2>&1; then echo "$p"; fi; done; }; \
@@ -107,8 +71,13 @@ RUN set -eu; \
         fi; \
     fi; \
     if [ "${OS_UPGRADE}" = "true" ]; then \
-        echo "Applying OS updates"; \
-        dnf -y upgrade --refresh; \
+        echo "dnf releasever: $(cat /etc/dnf/vars/releasever 2>/dev/null || echo 'not pinned')"; \
+        echo "dnf repositories (id / metadata date):"; \
+        dnf -q repolist -v 2>/dev/null | grep -E '^Repo-(id|updated)' | sed 's/^/  /' || true; \
+        echo "Applying OS updates ${DNF_RELEASEVER:+(releasever=$DNF_RELEASEVER) }${DNF_EXTRA_OPTS}"; \
+        dnf -y upgrade --refresh ${DNF_RELEASEVER:+--releasever=$DNF_RELEASEVER} ${DNF_EXTRA_OPTS}; \
+        echo "Core OS package versions now in the image:"; \
+        rpm -q glibc openssl-libs expat libgcc libstdc++ xz-libs | sed 's/^/  /' || true; \
     fi; \
     rm -rf /var/cache/dnf /var/cache/yum; \
     for b in ${REMOVE_BINARIES}; do \
@@ -136,13 +105,18 @@ RUN set -eu; \
             rpm -e --nodeps --noscripts $pm; \
         fi; \
     fi; \
+    libs="$(installed ${REMOVE_UNUSED_OS_LIBS})"; \
+    libs="$(echo $libs)"; \
+    if [ -n "$libs" ]; then echo "Removing unused OS libraries (no deps): $libs"; rpm -e --nodeps --noscripts $libs; fi; \
+    find / -xdev -type f -perm /6000 2>/dev/null | while read -r f; do echo "Dropping setuid/setgid: $f"; chmod u-s,g-s "$f"; done; \
     echo "Copies of the security-pinned Python packages left in the image:"; \
     find / -xdev -type d \( -iname 'urllib3-*.*-info' -o -iname 'cryptography-*.*-info' \
         -o -iname 'pyjwt-*.*-info' -o -iname 'certifi-*.*-info' \) 2>/dev/null | sed 's/^/  /' || true; \
     python3.12 -c "import importlib.util, ssl, decimal, zoneinfo, http.server, xml.etree.ElementTree, \
         boto3, botocore, bsp_python_client, certifi, confluent_kafka, cryptography, dotenv, fastavro, jwt, \
-        pydantic, requests, urllib3, yaml; \
+        pydantic, requests, urllib3, uuid, yaml; \
         assert importlib.util.find_spec('pip') is None, 'pip is still installed'; \
+        uuid.uuid4(); xml.etree.ElementTree.fromstring('<ok/>'); \
         print('runtime check OK:', ssl.OPENSSL_VERSION, '| PyJWT', jwt.__version__, '| certifi', certifi.__version__, \
               '| cryptography', cryptography.__version__, '| urllib3', urllib3.__version__)"
 
@@ -150,15 +124,11 @@ COPY --chown=connector:connector .env .env
 COPY --chown=connector:connector scripts/ scripts/
 COPY --chown=connector:connector utility/ utility/
 
-# Changes every release, so it sits last to keep the layers above cached.
-ARG APP_VERSION=0.0.72
-LABEL application="ifc-bsp-event-processor" \
-      version="${APP_VERSION}"
+LABEL application="ifc-bsp-event-processor"
+LABEL version="0.0.72"
 
 USER connector
 
 EXPOSE 8080
 
-# python3.12 explicitly: the unversioned python/python3 links belong to the
-# system Python, which the cleanup above removes.
 ENTRYPOINT ["python3.12", "scripts/main_ecs.py"]

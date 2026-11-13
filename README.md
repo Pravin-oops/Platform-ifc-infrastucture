@@ -5,10 +5,12 @@ Runs on **AWS ECS** once a month per trigger and publishes the **IFC CDD trigger
 Kafka topic. Each run reads one month, publishes it, records the outcome and exits with a code
 that names what happened.
 
+Operating procedures for PROD (triage, recovery, release) are in [RUNBOOK.md](RUNBOOK.md).
+
 ## Contents
 
-1. [SIT run: ECS container values](#1-sit-run-ecs-container-values)
-2. [SIT run: end-to-end flow](#2-sit-run-end-to-end-flow)
+1. [ECS container values](#1-ecs-container-values)
+2. [End-to-end flow](#2-end-to-end-flow)
 3. [What a run leaves behind](#3-what-a-run-leaves-behind)
 4. [Configuration](#4-configuration)
 5. [Message contract](#5-message-contract)
@@ -16,61 +18,76 @@ that names what happened.
 7. [The upstream reconciliation gate](#7-the-upstream-reconciliation-gate)
 8. [Failure handling and exit codes](#8-failure-handling-and-exit-codes)
 9. [Batch completion notification (SNS)](#9-batch-completion-notification-sns)
-10. [Reprocessing a past month](#10-reprocessing-a-past-month)
-11. [Build, run and test](#11-build-run-and-test)
-12. [Repository layout](#12-repository-layout)
-13. [Open items](#13-open-items)
+10. [Health, logs and metrics](#10-health-logs-and-metrics)
+11. [Reprocessing a past month](#11-reprocessing-a-past-month)
+12. [Build and run](#12-build-and-run)
+13. [Repository layout](#13-repository-layout)
+14. [Open items](#14-open-items)
 
 ---
 
-## 1. SIT run: ECS container values
+## 1. ECS container values
 
-The image's `ENTRYPOINT` is `scripts/main_ecs.py`. No config file name is passed in: the
-environment picks it.
+The image's `ENTRYPOINT` is `python3.12 scripts/main_ecs.py`. No config file name is passed in:
+`IFC_APP__ENVIRONMENT` picks it.
 
-| Variable | Required | Set by | SIT value / purpose |
+| Variable | Required | Set by | Value / purpose |
 |---|---|---|---|
-| `IFC_APP__ENVIRONMENT` | **yes** | task definition | `SIT` — loads `utility/connector_config_sit.yaml`, which names `utility/bsp_sit_config.yaml` |
-| `IFC_RUN__TRIGGER` | **yes** | EventBridge Scheduler override | `TRIGGER_8`, `TRIGGER_9` or `TRIGGER_21` (also `trigger 9`, `T9`, `9`) |
-| `CYBERARK_ENABLED`, `CYBERARK_CCP_URL`, `CYBERARK_APP_ID` | for CyberArk | ECS product template | the CCP endpoint and app id for the BSP system account (the safe and account come from the connector config); with `CYBERARK_ENABLED` unset or `false`, `BSP_USERNAME` / `BSP_PASSWORD` must be set instead |
-| `BAM_URL_SIT`, `BAM_NAME_SIT` / `BAM_URL_PROD`, `BAM_NAME_PROD` | no (`.env`) | `.env`; the task definition can override | each BSP YAML names its own pair in its `bam:` section: `bsp_sit_config.yaml` (and `bsp_dev_config.yaml`) reads the `_SIT` pair, `bsp_prod_config.yaml` the `_PROD` pair; a plain `BAM_URL` / `BAM_NAME` is no longer read. The BSP client (`bsp_python_client` 1.182.1) fetches the BAM token from `<url>?appName=<name>&redirectURL=http://localhost`, so the URL is the SSO API URL without a query string. Versions before 1.182 ignore both and always use UAT |
+| `IFC_APP__ENVIRONMENT` | **yes** | task definition | `DEV`, `SIT` or `PROD`; loads `utility/connector_config_<env>.yaml`, which names its BSP client YAML |
+| `IFC_RUN__TRIGGER` | **yes** | EventBridge Scheduler override | `TRIGGER_8`, `TRIGGER_9` or `TRIGGER_21` (aliases: `T9`, `9`, `TRIG_9`, `trigger 9`, or the published sub-type, e.g. `AccountInactivity`) |
+| `BAM_URL`, `BAM_NAME` | SIT: **yes**. PROD: from `.env` | task definition | read by `bsp_python_client` 1.182.1 through the `bam:` section of every BSP YAML to fetch the BAM token from `<BAM_URL>?appName=<BAM_NAME>&redirectURL=http://localhost`, so `BAM_URL` is the SSO API URL without a query string. `.env` holds the PROD values; SIT sets its own in the task definition, which wins. Client versions before 1.182 ignore both and always use UAT |
+| `CYBERARK_ENABLED`, `CYBERARK_CCP_URL`, `CYBERARK_APP_ID` | for CyberArk | ECS product template | CCP endpoint and app id for the BSP system account (safe and account come from the connector config). With CyberArk off, `BSP_USERNAME` / `BSP_PASSWORD` must already be in the environment |
 | `AWS_REGION` | **yes** | task definition | `eu-west-1` |
-| `IFC_RUN__MONTH`, `IFC_RUN__FORCE` | no | one-off RunTask | reprocess a past month — see [section 10](#10-reprocessing-a-past-month) |
-| `IFC_APP__LOG_LEVEL` | **set it** | task definition | `INFO` or `DEBUG` for per-endpoint and per-row detail; unset, the image's `.env` makes it `DEBUG` |
-| `IFC_ENVELOPE__TOKENISED_ENVIRONMENTS` | no | task definition | e.g. `SIT` to declare the owner-name tokenisation policy in SIT |
+| `IFC_APP__LOG_LEVEL` | **set it** | task definition | `INFO`, or `DEBUG` for per-endpoint and per-row detail; unset, `.env` makes it `DEBUG`. `IFC_LOG_LEVEL`, if set, wins over both |
+| `IFC_RUN__MONTH`, `IFC_RUN__FORCE` | no | one-off RunTask | reprocess a past month — see [section 11](#11-reprocessing-a-past-month) |
+| `IFC_ENVELOPE__TOKENISED_ENVIRONMENTS` | no | task definition | e.g. `SIT` to declare the owner-name tokenisation policy outside PROD |
 | `IFC_<SECTION>__<KEY>` | no | task definition | overrides any other config value, e.g. `IFC_SCHEMA_REGISTRY__SECURE__URL` |
+| `IMAGE_TAG` / `IFC_IMAGE_TAG` | no | task definition | recorded in the run summary / manifest |
+| `IFC_EMF_ENABLED` | no | task definition | `false` stops CloudWatch EMF metric lines |
 
-`.env` is copied into the image (`/app/ifc_trigger_connector/.env`). It only fills variables that
-are not already set (`load_dotenv(override=False)`), so a task value always wins. Its values are
-the image's fallbacks: `IFC_APP__ENVIRONMENT=DEV`, `IFC_APP__LOG_LEVEL=DEBUG` and both BAM
-pairs (`BAM_URL_SIT` / `BAM_NAME_SIT`, `BAM_URL_PROD` / `BAM_NAME_PROD`), so every task
-definition must set `IFC_APP__ENVIRONMENT` and `IFC_APP__LOG_LEVEL`.
+### `.env`
 
-With `IFC_APP__ENVIRONMENT=SIT` the run resolves to:
+`.env` is copied into the image (`/app/platform-ifc-infrastructure/.env`) and loaded with
+`load_dotenv()`, which never overwrites a variable that is already set, so a task value always
+wins. It provides the image's fallbacks:
+
+| Variable | Value in `.env` |
+|---|---|
+| `IFC_APP__ENVIRONMENT` | `DEV` |
+| `IFC_APP__LOG_LEVEL` | `DEBUG` |
+| `AWS_REGION`, `AWS_DEFAULT_REGION` | `eu-west-1` |
+| `BAM_URL`, `BAM_NAME` | PROD values (currently `REPLACE_WITH_…` placeholders) |
+
+Every task definition must therefore set `IFC_APP__ENVIRONMENT` and `IFC_APP__LOG_LEVEL`, and SIT
+must also set `BAM_URL` / `BAM_NAME`.
+
+### What `IFC_APP__ENVIRONMENT=SIT` resolves to
 
 | Setting | SIT value |
 |---|---|
 | Kafka | `tc01_fncmtrgrbb_ifc_tbb_kyc_refresh`, 5 brokers on `:9095`, `SASL_SSL` + `OAUTHBEARER` (BAM token through the BSP `oauth_cb`) |
 | Schema Registry | `SECURE`: `ldndsr000010177…:8095` and `gbrdsr000014551…:8095`, BAM bearer token, subject `<topic>-value` |
 | Trigger tables | `bdb_ifc_synthetic_data_test.bdp_corp_ifc_trigger_8`, `_9`, `_21` |
-| Recon table | `bdb_ifc_synthetic_data_test.batch_recon` |
-| Athena | workgroup `primary`, results `s3://sit1-logs-corpdeng-509153454187-eu-west-1/athena_output/` |
+| Recon table | `bdb_ifc_synthetic_data_test.batch_recon`, matched on `target_table_name` |
+| Athena | workgroup `primary`, catalog `AwsDataCatalog`, results `s3://sit1-logs-corpdeng-509153454187-eu-west-1/athena_output/` |
 | Run marker file | `s3://sit1-pre-cds01-…/ifc-bdp-audit-recon-json/run-markers/run_markers.json` |
 | Audit bucket | `s3://sit1-pre-cds01-…/ifc-bdp-audit-recon-json/audit-bucket` (manifests, quarantine, payloads) |
 | Root CA | Secrets Manager `/ifc/bsp-event-processor/kafka/ca-bundle` → `/tmp/ifc-certs/CARoot.pem` |
+| CyberArk | safe `Unx_corpdla`, object `INTRANET-sysEUWdjfnsljdnf`; `enabled: false` in the YAML |
 | Service number | `SNSVC0084378` (`triggerOriginatingSystem`, first part of every trigger ID) |
 | Tokenisation policy | not declared (only `PROD` is in `tokenised_environments`) |
+| SNS | both topic ARNs null: alerts and batch events are logged, not sent |
 
 ---
 
-## 2. SIT run: end-to-end flow
+## 2. End-to-end flow
 
 ```
  ECS RunTask (EventBridge Scheduler)
    IFC_APP__ENVIRONMENT=SIT, IFC_RUN__TRIGGER=TRIGGER_8
                  │
                  ▼
- ① Load config ─── connector_config_sit.yaml + CYBERARK_* + IFC_ overlay ──✗──► exit 10
+ ① Load config ─── connector_config_<env>.yaml + CYBERARK_* + IFC_ overlay ──✗──► exit 10
                  │
                  ▼
  ② Run gate ────── run marker file (S3) ── month delivered / weekend ──────────► NOT RAN, exit 0
@@ -96,17 +113,19 @@ With `IFC_APP__ENVIRONMENT=SIT` the run resolves to:
 
 ### ① Load the configuration
 
-- `IFC_APP__ENVIRONMENT=SIT` selects `utility/connector_config_sit.yaml` (map:
-  `ENVIRONMENT_CONFIGS` in `utility/connector_config.py`). Unset, unknown (anything but `DEV`,
-  `SIT`, `PROD`) or missing from the image → the container stops, exit `10`.
+- `IFC_APP__ENVIRONMENT` selects the connector YAML (`ENVIRONMENT_CONFIGS` in
+  `utility/connector_config.py`). Unset, anything other than `DEV` / `SIT` / `PROD`, or missing
+  from the image → the container stops, exit `10`.
 - Layers, lowest first: model defaults → the YAML → `CYBERARK_*` → `IFC_` variables.
-- `IFC_RUN__TRIGGER` is resolved: it picks the trigger table, the recon target and the published
-  sub-type. Missing or unmapped → stops, exit `10`.
-- Logs `Connector starting on ECS: trigger=… table=… topic=… schema_registry_mode=SECURE … environment=SIT`.
+- `IFC_RUN__TRIGGER` is resolved to its canonical name; it picks the trigger table, the recon
+  target and the published sub-type. Missing or unmapped → exit `10`.
+- `IFC_RUN__MONTH`, if set, replaces "today" as the run month for the rest of the run.
+- Logs `Connector starting on ECS: trigger=… table=… topic=… schema_registry_mode=… environment=…`.
 
 ### ② Run gate — should this date run at all?
 
-Reads the run marker file, in this order ([section 6](#6-the-run-gate)):
+Active whenever `run_marker.path` is set. Reads the run marker file, in this order
+([section 6](#6-the-run-gate)):
 
 1. `IFC_RUN__FORCE=true` → proceed.
 2. This trigger's run month already has `SUCCESS` → append `NOT RAN`, exit `0`.
@@ -116,9 +135,9 @@ Nothing else is touched on a skip: no Athena, no BSP, no Kafka.
 
 ### ③ Upstream reconciliation gate — did upstream produce this month?
 
-Queries the newest `batch_recon` row whose `target_table_name` is this trigger's
-([section 7](#7-the-upstream-reconciliation-gate)). It must be from the **current** month (not
-checked when `IFC_RUN__FORCE=true`), status `SUCCESS`, with `source_count = target_count`.
+Queries the newest recon row for this trigger ([section 7](#7-the-upstream-reconciliation-gate)).
+It must be from the **current** month (not checked when `IFC_RUN__FORCE=true`), status
+`SUCCESS`, with `source_count = target_count`.
 
 - Not ready, failed or untrusted → `NOT RAN`, RTB alert, non-zero exit.
 - `SUCCESS` with both counts zero → a delivered empty month: `SUCCESS` with 0 records, SNS
@@ -133,14 +152,18 @@ first blocking failure:
 | Step | What happens | Fails as |
 |---|---|---|
 | Trigger table | Glue `GetTableMetadata` on the trigger's table (no data scanned) | `14` Trigger BDP read |
-| Root CA | read from Secrets Manager, written to `/tmp/ifc-certs/CARoot.pem` | `40` / `12` |
-| CyberArk | when enabled: client cert + key from Secrets Manager → CCP → `BSP_USERNAME` / `BSP_PASSWORD` | `40` / `12` |
-| BSP client | loads `utility/bsp_sit_config.yaml`, applies `kafka.overrides` and the connector's delivery settings | `40` / `10` |
-| Network | DNS + TCP to every broker (`:9095`) and registry node (`:8095`); one reachable broker and one registry node are enough | `12` network |
-| BAM token | fetched for the SECURE registry; `exp` tracked and refreshed before expiry | `40` authentication |
+| Root CA | read from Secrets Manager (must be a PEM certificate, no private key), written atomically to `/tmp/ifc-certs/CARoot.pem` | `40` / `12` / `10` |
+| CyberArk | when enabled: client cert + key from Secrets Manager (unencrypted PEM) → mutual-TLS call to CCP → `BSP_USERNAME` (with `principal_realm` appended) / `BSP_PASSWORD` | `40` / `12` |
+| BSP client | loads the environment's BSP YAML, then applies the connector's producer settings and `kafka.overrides` | `40` / `10` |
+| Network | DNS + TCP to every broker and registry node; one reachable broker is enough, and with several registry nodes one reachable node is enough | `12` network |
+| BAM token | fetched for the SECURE registry; JWT shape checked, `exp` tracked and refreshed `token_refresh_margin_seconds` (300) before expiry | `40` authentication |
 | Schema | latest version of `<topic>-value`, tried node by node; the bundled `utility/schema.json` must not drift in a blocking way | `34` registry / `20` schema |
-| Producer | created, then waits until the BSP `oauth_cb` has supplied a SASL token | logged at ERROR; the publishes then fail |
-| Topic metadata | off by default; `IFC_RESILIENCE__PREFLIGHT_METADATA_ENABLED=true` fails fast on a missing topic or ACL | `33` / `41` |
+| Producer | created, then waits up to 15 s for the BSP `oauth_cb` to supply a SASL token | logged at ERROR; the publishes then fail |
+| Topic metadata | off by default; `IFC_RESILIENCE__PREFLIGHT_METADATA_ENABLED=true` fails fast on a missing topic or ACL | `33` / `40` / `41` / `32` |
+
+The producer always runs with `enable.idempotence=true`, `acks=all`, `compression.type=gzip`,
+`message.timeout.ms=300000`, a queue capped at `kafka.local_queue_max_messages` and
+`message.max.bytes` just above `kafka.max_message_bytes`.
 
 At INFO this is two lines:
 
@@ -159,36 +182,40 @@ WHERE CAST("business_date" AS DATE) = CAST('2026-09-30' AS DATE)
 ORDER BY "date_of_request", "counterparty_csid_sds"
 ```
 
-Results are paged (1,000 rows a page) and typed back (`bigint` → int, `date` → date), so memory
-stays flat. A query that cannot run → `SOURCE_UNREADABLE`, exit `14`. No rows → `ZERO_RECORDS`,
-exit `22`.
+The query is parameterised, all identifiers are validated as plain SQL names, and it is polled
+every `poll_interval_seconds` up to `query_timeout_seconds` (300, then cancelled). Results are
+paged and typed back (`bigint` → int, `date` → date, `timestamp` → datetime, …), so memory stays
+flat. A query that cannot run → `SOURCE_UNREADABLE`, exit `14`. No rows → `ZERO_RECORDS`, exit
+`22`.
 
 ### ⑥ Each row
 
 1. **Build the envelope** ([section 5](#5-message-contract)): eight payload fields, sequence number,
    trigger ID.
 2. **Validate** against the bundled Avro schema.
-3. **Serialise** in Confluent wire format (`0x00` + schema id + Avro body).
+3. **Serialise** in Confluent wire format (`0x00` + 4-byte schema id + Avro body).
 4. **Size guard**: key + value must fit `kafka.max_message_bytes` (819,200).
-5. **Publish** with the trigger ID as key; retried with jittered backoff up to 5 times, behind a
-   circuit breaker (20 consecutive failures).
+5. **Publish** with the trigger ID as key; retried with jittered backoff up to
+   `max_publish_attempts` (5), behind a circuit breaker (20 consecutive failures). A full local
+   queue applies back-pressure for up to 60 s.
 
-A row that fails steps 1–4 is **quarantined** to S3 and the run continues. At INFO the first row
-of each problem is logged once:
+A row that fails steps 1–4 is **quarantined** to S3 and the run continues. At WARNING the first row
+of each problem is logged once (the rest at DEBUG):
 
 ```
 Record rejected: column=Date of Request (date_of_request) check=not a valid DATE row=12 … reason=…
 ```
 
-Every 500 rows the run reports progress (health heartbeat, EMF metrics).
+Every 500 rows the run reports progress (health heartbeat, EMF metrics, memory use).
 
 ### ⑦ Close the batch
 
-1. **Flush** the producer (`kafka.flush_timeout_seconds`, 120).
-2. **Reconcile**: `rows read = published + quarantined`, and every publish acknowledged. If not →
-   `RECONCILIATION_FAILED`, exit `23`.
-3. **Quality gate**: more than 5% of rows quarantined → `QUALITY_GATE_FAILED`, exit `20`, with the
-   breakdown by column and check:
+1. **Flush** the producer (`kafka.flush_timeout_seconds`, 120; capped at
+   `run.shutdown_grace_seconds` after a SIGTERM).
+2. **Reconcile**: `rows read = published + quarantined`, every publish acknowledged, nothing
+   failed or left unflushed. If not → `RECONCILIATION_FAILED`, exit `23`.
+3. **Quality gate**: more than `max_quarantine_ratio` (5%) of rows quarantined →
+   `QUALITY_GATE_FAILED`, exit `20`, with the breakdown by column and check:
 
    ```
    Quarantine summary: 3 of 150 records rejected: Date of Request (date_of_request) not a valid DATE x2; Client Region (region) missing x1
@@ -217,18 +244,18 @@ A SIGTERM at any point stops intake, flushes what is in flight within
 | Where | What |
 |---|---|
 | Run marker file (S3, JSON Lines) | one line per invocation: `SUCCESS`, `FAILURE` or `NOT RAN`, with the reason |
-| `<audit.bucket>/manifests/run_date=YYYYMMDD/<run_id>.json` | run identity, config in force, counters, offsets, preflight report, what was read (table, business date, query id), quarantine keys, classified failure |
-| `<audit.bucket>/quarantine/run_id=…/scenario=…/<trigger_id>.json` | each rejected row with the reason and enough to replay it |
+| `<audit.bucket>/manifests/run_date=YYYYMMDD/<run_id>.json` | run identity, stage, config in force, counters, reconciliation, delivery stats and partition/offset ranges, preflight report, what was read (table, business date, query id), quarantine keys, classified failure |
+| `<audit.bucket>/quarantine/run_id=…/scenario=…/<trigger_id>.json` | each rejected row with the reason, the check that failed and enough to replay it |
 | `<audit.bucket>/payloads/event_date=…/trigger_id=…/payload.avro` | every published record's bytes (`audit.write_payloads`) |
 | Kafka topic | the month's trigger events |
 | SNS `batch_sns_topic_arn` | the batch completion event for TBB |
-| SNS `sns_topic_arn` | the RTB failure alert (subject routes by scenario) |
-| CloudWatch Logs / EMF | JSON log lines and run metrics (`MessagesAcked`, `RecordsQuarantined`, `QueueDepth`, …) |
+| SNS `sns_topic_arn` | the RTB failure alert |
+| CloudWatch Logs / EMF | JSON log lines and run metrics |
 | ECS stopped-task record | the exit code ([section 8](#8-failure-handling-and-exit-codes)) |
 
-Gate stops (run gate, recon gate) and start-up failures still write a manifest, stage `RUN_GATE`,
-`RECON_GATE` or `STARTUP`. Alarms on the EMF counters should use the `Maximum` statistic: the
-counters are running totals re-emitted during the run.
+Run ids look like `20261005T030411Z-1a2b3c4d`. Gate stops (run gate, recon gate) and start-up
+failures still write a manifest, with stage `RUN_GATE`, `RECON_GATE` or `STARTUP`. With no
+`audit.bucket`, the manifest is logged as `RUN_MANIFEST {…}` instead.
 
 ---
 
@@ -238,44 +265,76 @@ counters are running totals re-emitted during the run.
 
 | `IFC_APP__ENVIRONMENT` | Connector config | BSP client config | Kafka | Schema Registry |
 |---|---|---|---|---|
-| `DEV` | `utility/connector_config_dev.yaml` | `utility/bsp_dev_config.yaml` | `PLAINTEXT` `:9092`, DEV-only listener, no token | `DEV`, schema id `1299` pinned, no token |
-| `SIT` | `utility/connector_config_sit.yaml` | `utility/bsp_sit_config.yaml` | `SASL_SSL` `:9095`, BAM token | `SECURE` `:8095`, BAM token |
-| `PROD` | `utility/connector_config_prod.yaml` (placeholders) | `utility/bsp_prod_config.yaml` (placeholder brokers) | | `SECURE` `:8095`, BAM token |
+| `DEV` | `utility/connector_config_dev.yaml` | `utility/bsp_dev_config.yaml` | `PLAINTEXT` `:9092`, 3 brokers, no token | `DEV`, schema id `1299` pinned, no token |
+| `SIT` | `utility/connector_config_sit.yaml` | `utility/bsp_sit_config.yaml` | `SASL_SSL` `:9095`, 5 brokers, BAM token | `SECURE` `:8095`, BAM token |
+| `PROD` | `utility/connector_config_prod.yaml` (placeholders) | `utility/bsp_prod_config.yaml` (placeholder brokers) | `SASL_SSL` + `OAUTHBEARER`, BAM token | `SECURE` `:8095`, BAM token |
 
 Each connector config fixes its `app.environment`, its `kafka.bsp_config_path` and its
 `schema_registry.mode`. The DEV file uses SIT's AWS locations until DEV has its own. The PROD
-file is the SIT layout with every PROD location still a `REPLACE_ME_PROD_…` placeholder; only its
-CyberArk safe and account are real.
+file is the SIT layout with PROD locations still `REPLACE_ME_PROD_…` placeholders; its recon table
+and targets and its CyberArk safe and account are real. All three BSP YAMLs read the same
+`BSP_USERNAME` / `BSP_PASSWORD` and `BAM_URL` / `BAM_NAME` variables and point
+`ssl.ca.location` at `/tmp/ifc-certs/CARoot.pem`.
+
+Instead of a single `kafka.bsp_config_path`, a connector config may give
+`kafka.bsp_config_paths` keyed by environment; the one matching `app.environment` is used.
+
+### Main settings
+
+| Section | Keys worth knowing |
+|---|---|
+| `app` | `name`, `environment`, `log_level` |
+| `envelope` | `originating_systems` (service number per environment), `tokenised_environments` |
+| `run` | `shutdown_grace_seconds` (90), `trigger`, `force`, `month` |
+| `source` | `trigger_tables` (`database.table` per trigger); `athena`: `workgroup`, `catalog`, `output_location`, `business_date_column`, `order_by`, `poll_interval_seconds`, `query_timeout_seconds` |
+| `recon` | `enabled`, `table`, `match_column`, `trigger_targets` |
+| `kafka` | `topic`, `bsp_config_path`, `max_message_bytes` (819,200), `flush_timeout_seconds` (120), `local_queue_max_messages` (20,000), `overrides` (librdkafka properties), `debug` |
+| `schema_registry` | `mode` (`DEV` / `SECURE`), `ca_location`, `timeout_seconds`, `max_attempts`, `schema_path`, and a `dev:` / `secure:` block whose values apply in that mode (`url`, `schema_id`, `token_refresh_margin_seconds`, …) |
+| `ca_certificate` | `secret_id`, `secret_region`, `path` |
+| `cyberark` | `enabled`, `safe`, `folder`, `object`, `client_cert_secret_id`, `client_key_secret_id`, `ca_bundle_path`, `ssl_verify`, `request_timeout`, `max_attempts`, `principal_realm` |
+| `run_marker` | `path` (`s3://…` or a local file); unset switches the run gate off |
+| `audit` | `bucket`, `manifest_prefix`, `quarantine_prefix`, `payload_prefix`, `write_payloads` |
+| `resilience` | `max_publish_attempts`, `backoff_base_seconds`, `backoff_max_seconds`, `circuit_breaker_threshold`, `circuit_breaker_reset_seconds`, `preflight_enabled`, `preflight_timeout_seconds`, `preflight_metadata_enabled`, `preflight_metadata_timeout_seconds`, `max_quarantine_ratio` |
+| `health` | `enabled`, `port` (8080), `bind_host` |
+| `notifications` | `sns_topic_arn`, `application_label`, `batch_sns_topic_arn`, `trigger_originating_bu`, `batch_notifications_enabled` |
+
+The config is validated at load: table and column names must be plain SQL identifiers, `SECURE`
+mode needs at least one `http(s)` registry URL and a BSP config, `write_payloads` needs a bucket,
+and an enabled CyberArk block needs its URL, app id, safe and object.
 
 ### Overrides
 
-Any setting can be overridden per task with `IFC_<SECTION>__<KEY>` (`true`/`false`, numbers and
-JSON are coerced; nested blocks use more `__`, e.g. `IFC_SCHEMA_REGISTRY__SECURE__URL`). Values
-that need confirming are marked `CONFIRM` in the YAML.
+Any setting can be overridden per task with `IFC_<SECTION>__<KEY>` (`true`/`false`, `null`,
+numbers and JSON are coerced; nested blocks use more `__`). An empty value for
+`IFC_APP__ENVIRONMENT`, `IFC_SCHEMA_REGISTRY__MODE` or `IFC_ENVELOPE__TOKENISED_ENVIRONMENTS` is
+ignored rather than clearing the setting.
 
 | Variable | Effect |
 |---|---|
 | `IFC_SCHEMA_REGISTRY__SECURE__URL` | registry nodes, comma-separated (`https://a:8095,https://b:8095`) or a JSON list; tried in order, failing over to the next |
-| `IFC_ENVELOPE__TOKENISED_ENVIRONMENTS` | `SIT`, `DEV,PROD`, …; replaces the file's list; empty leaves it to the file |
-| `IFC_KAFKA__DEBUG` | librdkafka trace, e.g. `security,broker,protocol`; `all` and `conf` are refused |
+| `IFC_KAFKA__BSP_CONFIG_PATH` | a different BSP YAML (wins over `bsp_config_paths`) |
+| `IFC_ENVELOPE__TOKENISED_ENVIRONMENTS` | `SIT`, `DEV,PROD`, …; replaces the file's list |
+| `IFC_KAFKA__DEBUG` | librdkafka trace, e.g. `security,broker,protocol`; `all` and `conf` are refused because they print the client config |
 | `IFC_RESILIENCE__MAX_QUARANTINE_RATIO` | quality-gate tolerance (default `0.05`) |
+| `IFC_RESILIENCE__PREFLIGHT_METADATA_ENABLED` | `true` checks topic metadata before publishing |
 | `IFC_RECON__ENABLED` | `false` switches the recon gate off |
 
 ### Secrets
 
 None are configuration. The BSP system-account credential comes from **CyberArk CCP** at runtime,
 authenticated with a client certificate and key read from Secrets Manager
-(`/ifc/bsp-event-processor/cyberark/client-cert`, `…/private-key`). The ECS product template sets
+(`/ifc/bsp-event-processor/cyberark/client-cert`, `…/private-key` in DEV/SIT). They are written to
+a private temporary directory only for the duration of the CCP call. The ECS product template sets
 the CCP endpoint:
 
 | Variable | Fills |
 |---|---|
-| `CYBERARK_ENABLED` | `cyberark.enabled` (`false` in the YAML; then `BSP_USERNAME` / `BSP_PASSWORD` come from the environment) |
-| `CYBERARK_CCP_URL` | `cyberark.base_url`, the full `…/AIMWebService_certs/api/Accounts` URL |
-| `CYBERARK_APP_ID` | `app_id` |
+| `CYBERARK_ENABLED` | `cyberark.enabled` (`false` in every YAML; then `BSP_USERNAME` / `BSP_PASSWORD` come from the environment) |
+| `CYBERARK_CCP_URL` | `cyberark.base_url`; `/AIMWebService_certs/api/Accounts` is appended if missing |
+| `CYBERARK_APP_ID` | `cyberark.app_id` |
 
 The safe and account differ by environment, so each connector config names its own
-(`cyberark.safe`, `cyberark.object`); `CYBERARK_SAFE` / `CYBERARK_ACCOUNT` are not read.
+(`cyberark.safe`, `cyberark.object`):
 
 | Environment | `cyberark.safe` | `cyberark.object` |
 |---|---|---|
@@ -286,7 +345,8 @@ DEV does not use CyberArk.
 
 The Barclays root CA is never committed or baked into the image: it is read from Secrets Manager at
 start (`ca_certificate.secret_id`) and written to `/tmp/ifc-certs/CARoot.pem`, which both
-`ssl.ca.location` (BSP config) and `schema_registry.ca_location` point at.
+`ssl.ca.location` (BSP config) and `schema_registry.ca_location` point at. `*.pem`, `*.crt` and
+`*.cer` files are git-ignored.
 
 ---
 
@@ -302,7 +362,7 @@ start (`ca_certificate.secret_id`) and written to `/tmp/ifc-certs/CARoot.pem`, w
 | `timestamp` | last instant of the business month, e.g. `2026-09-30T23:59:59.999999999Z` |
 | `triggerPostingTimestamp` | when the record is built, RFC 3339 UTC with nanoseconds |
 | `sequenceNumber` | position in the batch, `1, 2, 3…` across all customers |
-| `triggerOriginatingSystem` | service number by environment: DEV `SNSVC0084379`, SIT `SNSVC0084378`, PROD `SNSVC0084373` |
+| `triggerOriginatingSystem` | service number by environment: DEV `SNSVC0084379`, SIT `SNSVC0084378`, PROD `SNSVC0084373` (PROD-ANALYTICS `SNSVC0084375`, PROD-PARALLEL `SNSVC0084371`) |
 | `triggerOriginatingBU` | `UK-C` |
 | `idType` / `idSystem` | `Customer` / `UK-C CRIME` |
 | `idValue` | `counterparty_csid_sds` as a string; a row without one is quarantined |
@@ -314,6 +374,10 @@ The `order_by` columns fix the row order, so a re-run of the same data reproduce
 The connector does not de-duplicate: a re-run republishes the month. Records carry no Kafka
 headers.
 
+The schema's `triggerSubType` enum also carries `UBOChanges` and `SigChanges`; this connector does
+not produce them and refuses them as a trigger. If the bundled schema ever loses one of the three
+symbols the connector publishes, the run fails at start-up.
+
 ### Payload
 
 The `payload` is a JSON array of
@@ -324,7 +388,7 @@ every trigger, defined once in `_payload_fields()` in `utility/trigger_definitio
 |---|---|---|---|---|---|
 | 1 | `Date of Request` | `DATE` | `date_of_request` | 10 | sent as `YY-MM-DD` (`2026-09-10…` → `26-09-10`); must start with an ISO date |
 | 2 | `Counterparty Full Legal Entity Name` | `STRING` | `counterparty_full_legal_entity_name` | 100 | |
-| 3 | `Counterparty SDS ID / CSID` | `STRING` | `counterparty_csid_sds` | 11 | also the envelope's `idValue` |
+| 3 | `Counterparty SDS ID / CSID` | `STRING` | `counterparty_csid_sds` | 11 | also the envelope's `idValue`; a whole-number float is sent as an integer |
 | 4 | `Client Relationship Owner Name` | `STRING` | `client_relationship_owner_name` | 50 | policy `UK_TOK_AC_L0R0_UNC_DE` only in tokenised environments (PROD) |
 | 5 | `Client Relationship Owner BRID` | `STRING` | `client_relationship_owner_brid` | 10 | |
 | 6 | `Client Relationship Owner Business Unit` | `STRING` | `client_relationship_owner_business_unit` | 20 | defaults to `UK Corporate` |
@@ -341,18 +405,24 @@ change: agree it with Trigger Backbone first.
 
 ### Schema Registry
 
-| | SECURE (SIT) | DEV |
+| | SECURE (SIT, PROD) | DEV |
 |---|---|---|
-| Registry | `secure.url` nodes, `:8095` | not contacted while `dev.schema_id` is pinned; otherwise `dev.url`, `:8082` |
-| Authentication | BAM bearer token | none |
-| Schema id | looked up; the bundled schema is checked for blocking drift | `1299` |
+| Registry | `secure.url` nodes, `:8095` | not contacted while `dev.schema_id` is pinned; otherwise `dev.url` nodes, `:8082` |
+| Authentication | BAM bearer token; on 401/403 the token is refreshed and the call retried once | none |
+| Schema id | latest version of `<topic>-value` | `1299` |
+| Drift check | the bundled schema is compared with the registered one | not checked |
+
+The drift check blocks the run when a field exists only locally, a mandatory registered field is
+not produced, a field type differs, or the local enum has a symbol the registry does not. Optional
+registered fields, extra registered enum symbols and name differences are logged only. The schema
+id is resolved once at start and cached, so a mid-run registry outage does not stop publishing.
 
 ---
 
 ## 6. The run gate
 
 EventBridge fires each trigger on **three consecutive dates**; the container decides whether to
-work. Three consecutive dates always include a weekday.
+work. Three consecutive dates always include a weekday. Dates are taken in **Europe/London**.
 
 | Trigger | Dates fired | Published as |
 |---|---|---|
@@ -374,10 +444,11 @@ invocation and shared by all three triggers:
 | `FAILURE` | the connector ran and did not deliver — the next date retries |
 | `NOT RAN` | weekend, already delivered, or the recon gate blocked — never changes the month's outcome |
 
-`year_month` is the **run** month; the records it publishes belong to the month before. Appends use
-a conditional S3 PUT (`If-Match` on the ETag) with retry, so two triggers finishing together do not
-lose a line; keep bucket versioning on. Writing the marker is best-effort and logged loudly if it
-fails.
+A month's status is its latest line that is not `NOT RAN`. `year_month` is the **run** month; the
+records it publishes belong to the month before. Appends use a conditional S3 PUT (`If-Match` on
+the ETag, or `If-None-Match: *` for a new file) with up to 5 attempts, so two triggers finishing
+together do not lose a line; keep bucket versioning on. Writing the marker is best-effort and
+logged loudly if it fails.
 
 ---
 
@@ -410,9 +481,9 @@ way in every environment.
 | `status = RECON_FAILED` | `UPSTREAM_JOB_FAILED` | 21 |
 | `SUCCESS`, `source_count != target_count` | `UPSTREAM_COUNT_MISMATCH` | 21 |
 | `SUCCESS`, both counts zero | `NO_DATA_THIS_MONTH` — delivered, SNS with 0 messages | 0 |
-| `SUCCESS`, counts equal and non-zero | proceeds | — |
+| `SUCCESS`, counts equal and non-zero | proceeds (a non-zero `error_record_count` is logged at WARNING) | — |
 | recon table cannot be queried | `UPSTREAM_RECON_UNREADABLE` | 14 |
-| row missing `status` / `last_modified_ts`, bad counts or an unknown status | `UPSTREAM_RECON_UNREADABLE` | 20 |
+| row missing `status` / `last_modified_ts`, unreadable timestamp, non-numeric counts or an unknown status | `UPSTREAM_RECON_UNREADABLE` | 20 |
 
 Every block raises the RTB alert and quotes the row (status, counts, `model_name`, `job_run_id`,
 `batch_id`, `last_modified_ts`) in the alert, run summary and manifest. On a scheduled run the
@@ -420,28 +491,33 @@ recon row must be from the **current** month, because upstream writes it when it
 (`IFC_RUN__FORCE=true`) accepts the newest row from any month and logs
 `Forced run: accepting a reconciliation row from …` at WARNING; its status and counts still decide.
 
+The gate is active when `recon.enabled` is true and both `recon.table` and the trigger's target
+are set.
+
 ---
 
 ## 8. Failure handling and exit codes
 
 | Situation | Handling |
 |---|---|
-| Bad row (missing field, bad date, too long, Avro mismatch, too large) | quarantined to S3; first of each column/check logged at WARNING; run continues |
+| Bad row (missing field, bad date, too long, no CSID, Avro mismatch, too large) | quarantined to S3; first of each column/check logged at WARNING; run continues |
 | More than 5% of rows quarantined | `QUALITY_GATE_FAILED`, exit 20, with the per-column breakdown |
 | Counts do not balance, or a publish was never acknowledged | `RECONCILIATION_FAILED`, exit 23 |
-| Broker or registry error mid-run | retry with jittered backoff; circuit breaker after 20 consecutive failures |
+| Broker or registry error mid-run | retry with jittered backoff; circuit breaker after 20 consecutive failures (`ABORTED`) |
 | One broker or registry node down | the others are used; reported at preflight |
 | BAM token expiring mid-run | refreshed `token_refresh_margin_seconds` (300) before `exp` |
-| SIGTERM (deployment, scale-in) | stop intake, flush within 90 s, exit 75 |
-| Memory | streamed reads and a capped producer queue (`local_queue_max_messages`) |
+| SIGTERM (deployment, scale-in, `stop-task`) | stop intake, flush within 90 s, exit 75 |
+| Memory | streamed reads, a capped producer queue (`local_queue_max_messages`) with back-pressure, RSS published as a metric |
 
-The exit code names the scenario, so the stopped-task record routes the incident.
-`python scripts/main.py catalogue` prints the full catalogue (owner, action, handling) as JSON.
+Errors are mapped to a scenario by `utility/error_classifier.py` (the connector's own errors carry
+their scenario; anything else is matched on known error text). The exit code names the scenario, so the stopped-task record routes the incident.
+`python scripts/main.py catalogue` prints the full catalogue (layer, severity, owner, handling,
+actions) as JSON; the source is `utility/failure_catalog.py`.
 
 | Code | Scenario | Code | Scenario |
 |---|---|---|---|
 | 0 | success (also gate skips and an empty month) | 23 | producer reconciliation failure |
-| 75 | drained on SIGTERM, work remaining | 24 | message too large |
+| 1 | unclassified | 24 | message too large |
 | 10 | container failure (config, start-up) | 30 | high Kafka publish latency |
 | 11 | out of memory | 31 | partition leader failure |
 | 12 | network connectivity | 32 | broker unavailable |
@@ -449,14 +525,19 @@ The exit code names the scenario, so the stopped-task record routes the incident
 | 15 / 16 | FRED processing / audit store | 34 | Schema Registry unavailable |
 | 20 | schema validation (incl. quality gate) | 40 | authentication failure |
 | 21 / 22 | TED job failure / missing source data | 41 | authorisation failure |
+| 75 | drained on SIGTERM, work remaining | | |
+
+The RTB alert subject is `[<ENV>] <SEVERITY> - IFC Trigger Connector - <error type>`. With
+`sns_topic_arn` null the alert is logged in full instead of sent.
 
 ---
 
 ## 9. Batch completion notification (SNS)
 
 A business event for the Trigger Backbone (not an alert), published to
-`notifications.batch_sns_topic_arn` when a batch finishes with outcome `SUCCESS` and at least one
-acknowledged message, or when upstream confirms an empty month.
+`notifications.batch_sns_topic_arn` with subject `TBB Batch Complete - <sub-type>` when a batch
+finishes with outcome `SUCCESS` and at least one acknowledged message, or when upstream confirms an
+empty month.
 
 | Field | Value |
 |---|---|
@@ -475,36 +556,77 @@ publish is logged and does not fail the run.
 
 ---
 
-## 10. Reprocessing a past month
+## 10. Health, logs and metrics
 
-```bash
-IFC_APP__ENVIRONMENT=SIT IFC_RUN__TRIGGER=TRIGGER_8 IFC_RUN__MONTH=2026-09 IFC_RUN__FORCE=true python scripts/main_ecs.py
-```
+| | |
+|---|---|
+| Health server | `:8080` (`health.*`), started once the gates pass. `GET /health/live`, `/healthz` or `/` → `200`, or `503` after 300 s without a heartbeat; `GET /metrics` → health snapshot and current metric values |
+| Logs | one JSON object per line on stdout, with `run_id` and `environment` attached to every line |
+| Metrics | CloudWatch EMF, namespace `IFC/TriggerConnector`, dimensions `Environment`, `Application`, `Topic`: `MessagesProduced`, `MessagesAcked`, `MessagesFailed`, `RecordsQuarantined`, `BackpressureWaits`, `QueueDepth`, `QueueDepthAfterFlush`, `AckLatencyMsMax`, `TokenSecondsRemaining`, `MemoryUsedMB`, `MemoryUtilisation`, `RunsCompleted`, `RunExitCode` |
 
-`IFC_RUN__MONTH` is the **run** month (`2026-09` or `SEPTEMBER_2026`): the September run reads
-`business_date = 2026-08-31`, stamps the August business month and records its outcome against
-`2026-09`. `IFC_RUN__FORCE=true` is needed when that month is already `SUCCESS`; it also skips the
-weekend check and the recon gate's current-month check, so the newest recon row is accepted whatever
-month it is from. Without force, the recon row must be from the current month.
+Counters are running totals re-emitted during the run: alarms on them should use the `Maximum`
+statistic, never `Sum`.
 
 ---
 
-## 11. Build, run and test
+## 11. Reprocessing a past month
 
 ```bash
-docker build -f Docker/Dockerfile -t ifc-trigger-connector:0.0.5 .
+IFC_APP__ENVIRONMENT=SIT IFC_RUN__TRIGGER=TRIGGER_8 IFC_RUN__MONTH=2026-09 IFC_RUN__FORCE=true python3.12 scripts/main_ecs.py
 ```
 
-The build context is the repository root. The image is built on the Barclays RHEL 8 Python 3.12
-builder; `bsp_python_client` installs from the internal package index like any other requirement,
-so the build must reach that index.
+`IFC_RUN__MONTH` is the **run** month (`2026-09`, `SEPTEMBER_2026` or `September 2026`): the
+September run reads `business_date = 2026-08-31`, stamps the August business month and records its
+outcome against `2026-09`. `IFC_RUN__FORCE=true` is needed when that month is already `SUCCESS`;
+it also skips the weekend check and the recon gate's current-month check, so the newest recon row
+is accepted whatever month it is from. Without force, the recon row must be from the current
+month. The connector does not de-duplicate, so agree a re-delivery with TBB first.
 
-Current versions (`Docker/Dockerfile`, `utility/requirements.txt`):
+---
+
+## 12. Build and run
+
+### Build the image
+
+```bash
+docker build -f Docker/Dockerfile -t ifc-bsp-event-processor:0.0.72 .
+```
+
+The build context is the repository root, and BuildKit is needed (the pip cache mount). The base
+is the Barclays RHEL 8 Python 3.12 **builder** image; `bsp_python_client` installs from the
+internal package index like any other requirement, so the build must reach that index (and the
+OS repositories, for the OS upgrade).
+
+The Dockerfile:
+
+1. Removes Red Hat's RPM copies of `urllib3`, `cryptography`, PyJWT and `certifi`, installs
+   `utility/requirements.txt`, then installs the lines tagged `# security` as an upgrade so a pin
+   inside `bsp_python_client` cannot block the fix (`pip check` reports the override).
+2. Strips the builder image down to what the app needs: compilers, debuggers, container, .NET,
+   cloud CLIs and desktop packages; every Go binary; every copy of pip; the package manager and
+   the system Python; unused OS libraries (`libxml2`, `util-linux`, …); setuid/setgid bits.
+3. Applies all available OS updates (`dnf upgrade`), logging the repositories and the core package
+   versions that end up in the image.
+4. Fails the build if any runtime import the app needs is broken, or if pip is still present.
+5. Copies `.env`, `scripts/` and `utility/` into `/app/platform-ifc-infrastructure` (`IFC_HOME`),
+   runs as user `connector` (uid `10001`), exposes `8080`.
+
+| Build arg | Default | Effect |
+|---|---|---|
+| `BASE_IMAGE` | `…/builders/rhel8/python312:2026-08-21-21379287` | the base image |
+| `OS_UPGRADE` | `true` | `false` skips `dnf upgrade` |
+| `DNF_RELEASEVER` | empty | pins `--releasever` for the upgrade |
+| `DNF_EXTRA_OPTS` | empty | extra `dnf upgrade` options |
+| `STRIP_PKG_MANAGER` | `true` | `false` keeps dnf/rpm and the system Python |
+| `REMOVE_PACKAGES`, `REMOVE_PATTERNS`, `REMOVE_BINARIES`, `REMOVE_DIRS`, `REMOVE_PKG_MANAGER_PACKAGES`, `REMOVE_UNUSED_OS_LIBS`, `REMOVE_PYTHON_RPMS` | see the Dockerfile | what is removed |
+
+Bump `LABEL version` in `Docker/Dockerfile` for each release; never reuse a tag.
+
+### Versions
 
 | Component | Version |
 |---|---|
-| Image (`ifc-trigger-connector`) | `0.0.5` |
-| Base image | `barclays/devtooling/builders/rhel8/python312:2026-08-21-21379287` |
+| Image label (`application` / `version`) | `ifc-bsp-event-processor` / `0.0.72` |
 | Python | 3.12 |
 | `bsp_python_client` | `==1.182.1` |
 | `boto3`, `botocore` | `~=1.35.69` |
@@ -515,77 +637,98 @@ Current versions (`Docker/Dockerfile`, `utility/requirements.txt`):
 | `requests` | `~=2.31` |
 | `python-dotenv` | `~=1.0` |
 | `tzdata` | `~=2024.1` |
+| Security minimums | `PyJWT>=2.15.0`, `certifi>=2026.10.19`, `cryptography>=50.0.0`, `urllib3>=2.8.0` |
 
 Only `bsp_python_client` is pinned exactly; the others take the newest compatible release at build
 time.
 
-Run locally (AWS credentials needed for Athena, S3 and Secrets Manager):
+### Run locally
+
+AWS credentials are needed for Athena, S3 and Secrets Manager, and the network must reach the
+brokers and registry:
 
 ```bash
-IFC_APP__ENVIRONMENT=SIT IFC_RUN__TRIGGER=TRIGGER_8 python scripts/main_ecs.py
+IFC_APP__ENVIRONMENT=SIT IFC_RUN__TRIGGER=TRIGGER_8 python3.12 scripts/main_ecs.py
 ```
 
-Tests:
+`scripts/main_ecs.py` also takes the trigger and force flag on the command line:
 
 ```bash
-./run_tests.sh
+python3.12 scripts/main_ecs.py TRIGGER_8 --force
 ```
 
-(`run_tests.ps1` on Windows.) The tests need no AWS, BSP or Kafka.
+`scripts/main.py` runs the connector once **without** the run gate, the recon gate or the SNS
+batch event (the trigger still comes from `IFC_RUN__TRIGGER`), and prints the failure catalogue:
+
+```bash
+python3.12 scripts/main.py --log-level DEBUG
+```
+
+```bash
+python3.12 scripts/main.py catalogue
+```
 
 ---
 
-## 12. Repository layout
+## 13. Repository layout
 
 ```
-├── .env                         # fallback settings (DEV, DEBUG, SIT and PROD BAM pairs), shipped in the image
-├── Docker/Dockerfile            # ENTRYPOINT scripts/main_ecs.py
+├── .env                          # fallback settings (DEV, DEBUG, eu-west-1, PROD BAM_URL/BAM_NAME), shipped in the image
+├── .dockerignore                 # keeps docs, tooling and local files out of the build context
+├── Docker/Dockerfile             # hardened RHEL 8 / Python 3.12 image, ENTRYPOINT scripts/main_ecs.py
+├── RUNBOOK.md                    # PROD operations: readiness, release, triage, recovery
+├── info/                         # incident write-ups (TRIGGER_9 Kafka metadata failure)
 ├── scripts/
-│   ├── main_ecs.py              # ECS entry: config → run gate → recon gate → runner → SNS → marker
-│   └── main.py                  # CLI: one-off run, `catalogue`
-├── utility/
-│   ├── connector_config.py      # typed config, environment → file, IFC_ overlay
-│   ├── connector_config_dev.yaml / _sit.yaml / _prod.yaml
-│   ├── bsp_dev_config.yaml / bsp_sit_config.yaml
-│   ├── schema.json              # TriggerBackboneTopicSchema (Avro)
-│   ├── run_gate.py              # weekend / delivered checks, run marker file
-│   ├── recon_gate.py            # upstream batch_recon check
-│   ├── connector_runner.py      # preflight, read, publish, reconcile, report
-│   ├── kafka_factory.py         # BSP client, preflight, producer, registry
-│   ├── kafka_preflight.py       # DNS/TCP/auth/registry/metadata checks
-│   ├── kafka_publisher.py       # produce, delivery reports, back-pressure
-│   ├── kafka_serializers.py     # Confluent wire format, size guard
-│   ├── schema_registry_client.py# registry lookup with failover, drift check
-│   ├── trigger_source.py        # Athena trigger-table reader
-│   ├── athena_query.py          # run an Athena query, typed rows
-│   ├── trigger_definitions.py   # the eight payload fields, triggers 8/9/21
-│   ├── trigger_payload.py       # payload rules (types, lengths, defaults)
-│   ├── tb_outcome_schema.py     # envelope and trigger ID
-│   ├── auth_helper.py           # BSP client wrapper, BAM token
-│   ├── cyberark_ccp_fetch.py    # CyberArk CCP credential
-│   ├── ca_certificate.py        # root CA from Secrets Manager
-│   ├── audit_utility.py         # manifest, quarantine, reconciliation
-│   ├── failure_catalog.py       # scenarios and exit codes
-│   ├── error_classifier.py      # error → scenario
-│   ├── failure_notifier.py      # RTB alert
-│   ├── trigger_batch_notifier.py# TBB batch completion event
-│   └── health_utility.py, observability_utility.py, resilience_utility.py, …
-└── tests/
+│   ├── main_ecs.py               # ECS entry: config → run gate → recon gate → runner → SNS → marker
+│   └── main.py                   # CLI: ungated one-off run, `catalogue`
+└── utility/
+    ├── requirements.txt          # runtime dependencies and security minimums
+    ├── schema.json               # TriggerBackboneTopicSchema (Avro)
+    ├── connector_config.py       # typed config, environment → file, IFC_ / CYBERARK_ overlay
+    ├── connector_config_dev.yaml / _sit.yaml / _prod.yaml
+    ├── bsp_dev_config.yaml / bsp_sit_config.yaml / bsp_prod_config.yaml
+    ├── run_gate.py               # weekend / delivered checks, run marker file, run month
+    ├── recon_gate.py             # upstream batch_recon check
+    ├── connector_runner.py       # preflight, read, publish, reconcile, quality gate, report
+    ├── kafka_factory.py          # BSP client, CA, CyberArk, preflight, producer, registry
+    ├── kafka_preflight.py        # DNS/TCP/auth/registry/metadata checks and report
+    ├── kafka_publisher.py        # produce, delivery reports, back-pressure, offsets
+    ├── kafka_serializers.py      # Confluent wire format, size guard
+    ├── schema_registry_client.py # registry lookup with failover, drift check
+    ├── trigger_source.py         # Athena trigger-table reader
+    ├── athena_query.py           # run an Athena query, typed rows
+    ├── trigger_definitions.py    # the eight payload fields, triggers 8/9/21, aliases
+    ├── trigger_payload.py        # payload rules (types, lengths, defaults, policies)
+    ├── tb_outcome_schema.py      # envelope, trigger ID, business month
+    ├── sequence_allocator.py     # batch sequence numbers
+    ├── auth_helper.py            # BSP client wrapper, BAM token provider
+    ├── cyberark_ccp_fetch.py     # CyberArk CCP credential
+    ├── ca_certificate.py         # root CA from Secrets Manager
+    ├── audit_utility.py          # manifest, quarantine, payloads, reconciliation
+    ├── failure_catalog.py        # scenarios, owners and exit codes
+    ├── error_classifier.py       # error → scenario
+    ├── failure_notifier.py       # RTB alert (SNS)
+    ├── trigger_batch_notifier.py # TBB batch completion event (SNS)
+    ├── health_utility.py         # /health/live and /metrics server
+    ├── observability_utility.py  # JSON logging, EMF metrics, memory readings
+    ├── resilience_utility.py     # SIGTERM drain, backoff, retry, circuit breaker
+    └── connector_utility.py      # S3/local I/O, package paths
 ```
 
 Deployment artefacts (task definition, IAM policy, schedules, alarms, Athena DDL) live outside this
 repository. The task definition's `stopTimeout` (120) must exceed `run.shutdown_grace_seconds`
-(90).
+(90), and the EventBridge schedules should use the `Europe/London` time zone so the gates see the
+right date.
 
 ---
 
-## 13. Open items
+## 14. Open items
 
 | Item | Status |
 |---|---|
-| PROD configs | `connector_config_prod.yaml` has `REPLACE_ME_PROD_…` placeholders (the recon table and targets are real) for the trigger tables, buckets, topic, Schema Registry hosts and the CA / CyberArk secret ids; `bsp_prod_config.yaml` has `REPLACE_ME_PROD_BROKER_…` bootstrap servers; `.env` has `REPLACE_WITH_…` BAM values for SIT and PROD |
-| SNS topics | `sns_topic_arn` (RTB alerts) and `batch_sns_topic_arn` (TBB event) are null in SIT: both log only |
-| CyberArk | client certificate and key secrets exist but are empty; `cyberark.enabled` is `false` in the YAML |
+| PROD configs | `connector_config_prod.yaml` has `REPLACE_ME_PROD_…` placeholders for the trigger tables, Athena output bucket, topic, Schema Registry hosts, CA / CyberArk secret ids, run marker path and audit bucket; `bsp_prod_config.yaml` has `PLACEHOLDER_FOR_BSP_SERVERS` as its bootstrap servers; `.env` has `REPLACE_WITH_…` PROD BAM values |
+| SNS topics | `sns_topic_arn` (RTB alerts) and `batch_sns_topic_arn` (TBB event) are null in every environment: both log only |
+| CyberArk | client certificate and key secrets exist but are empty; `cyberark.enabled` is `false` in every YAML |
 | Topic and subject | `tc01_fncmtrgrbb_ifc_tbb_kyc_refresh` to be confirmed |
 | Kafka ACLs | producer principal needs write on the topic |
 | Athena workgroup and permissions | `primary` is a placeholder; the role needs Athena, Glue, S3 (table data and results) and Lake Formation `SELECT` where it applies |
