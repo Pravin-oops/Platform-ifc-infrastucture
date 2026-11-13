@@ -386,7 +386,7 @@ every trigger, defined once in `_payload_fields()` in `utility/trigger_definitio
 
 | # | `fieldName` | Type | Source column | Max length | Notes |
 |---|---|---|---|---|---|
-| 1 | `Date of Request` | `DATE` | — (stamped at publish time) | 10 | the date the run publishes, as `YYYY-MM-DD` (`2026-09-10`), today in `Europe/London`; the table's `date_of_request` is **not** published |
+| 1 | `Date of Request` | `DATE` | — (stamped at publish time) | 10 | the date the run publishes, as `YYYY-MM-DD` (`2026-09-10`), today in UTC (the same clock as the envelope timestamps); the table's `date_of_request` is **not** published |
 | 2 | `Counterparty Full Legal Entity Name` | `STRING` | `counterparty_full_legal_entity_name` | 100 | |
 | 3 | `Counterparty SDS ID / CSID` | `STRING` | `counterparty_csid_sds` | 11 | also the envelope's `idValue`; a whole-number float is sent as an integer |
 | 4 | `Client Relationship Owner Name` | `STRING` | `client_relationship_owner_name` | 50 | policy `UK_TOK_AC_L0R0_UNC_DE` only in tokenised environments (PROD) |

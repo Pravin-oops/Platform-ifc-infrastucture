@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import date
+from datetime import date, datetime, timezone
 
 import pytest
 
@@ -117,13 +117,20 @@ class TestEnvelope:
             "Client Region",
         ]
 
-    def test_date_of_request_is_the_publication_date_as_yyyy_mm_dd(self, builder, monkeypatch):
+    def test_date_of_request_is_the_publication_date_as_yyyy_mm_dd(self, builder):
         """The field no longer carries the table's own date: every record in a
-        run is stamped with the date the run publishes it."""
-        monkeypatch.setattr(run_gate, "today", lambda tz=run_gate.TIMEZONE: date(2026, 11, 13))
+        run is stamped with the UTC date the run publishes it."""
         fields = {f["fieldName"]: f for f in builder.build(trigger_8_event()).payload_fields}
-        assert fields["Date of Request"]["fieldValue"] == "2026-11-13"
+        today = datetime.now(timezone.utc).date()
+        assert fields["Date of Request"]["fieldValue"] == today.strftime("%Y-%m-%d")
         assert fields["Date of Request"]["fieldDataType"] == "DATE"
+
+    def test_date_of_request_shares_the_envelopes_utc_day(self, builder):
+        """Both envelope timestamps are RFC 3339 UTC; the payload date agrees
+        with them rather than drifting by an hour in British Summer Time."""
+        record = builder.build(trigger_8_event()).record
+        fields = {f["fieldName"]: f for f in builder.build(trigger_8_event()).payload_fields}
+        assert fields["Date of Request"]["fieldValue"] == record["triggerPostingTimestamp"][:10]
 
     def test_date_of_request_ignores_the_rows_own_date(self, builder):
         """The source column is still selected and ordered on, but it is not what

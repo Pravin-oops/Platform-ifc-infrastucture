@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 import pytest
 
@@ -175,17 +175,20 @@ class TestGeneratedValues:
 class TestPublicationDate:
     """Date of Request carries the date the run publishes, not the table's."""
 
-    def test_it_is_todays_date_in_the_business_timezone(self, monkeypatch):
-        monkeypatch.setattr(
-            run_gate, "today", lambda tz=run_gate.TIMEZONE: date(2026, 11, 13)
-        )
-        assert definitions.publication_date() == date(2026, 11, 13)
+    def test_it_is_todays_utc_date(self):
+        assert definitions.publication_date() == datetime.now(timezone.utc).date()
+
+    def test_it_follows_utc_not_the_business_timezone(self, monkeypatch):
+        """London is an hour ahead of UTC in summer, so late in the evening the
+        two disagree; the field follows the envelope's clock, which is UTC."""
+        monkeypatch.setattr(run_gate, "today", lambda tz=run_gate.TIMEZONE: date(2026, 7, 16))
+        assert definitions.publication_date() == datetime.now(timezone.utc).date()
 
     def test_a_backfill_month_does_not_rewind_it(self, monkeypatch):
         """set_execution_month steers which month is read; the publication date
         is still the day the run goes out."""
         monkeypatch.setattr(run_gate, "_execution_month", date(2026, 1, 1))
-        assert definitions.publication_date() == run_gate.today()
+        assert definitions.publication_date() == datetime.now(timezone.utc).date()
 
     @pytest.mark.parametrize(
         "sub_type", [definitions.TRIGGER_8, definitions.TRIGGER_9, definitions.TRIGGER_21]

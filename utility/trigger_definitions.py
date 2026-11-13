@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence
 
-from utility import run_gate
 from utility.trigger_payload import (
     POLICY_NAME,
     DataType,
@@ -38,14 +37,15 @@ OUT_OF_SCOPE_SYMBOLS = {"UBOChanges", "SigChanges"}
 
 
 def publication_date() -> date:
-    """The date the message is published, in the bank's business timezone.
+    """The UTC date the message is published.
 
     ``Date of Request`` is stamped by the publisher rather than carried over
     from the source table, so every record in a run carries the date the run
-    published it.
+    published it.  UTC, so the field agrees with the envelope's own
+    ``timestamp`` and ``triggerPostingTimestamp``, which are RFC 3339 UTC.
     """
 
-    return run_gate.today()
+    return datetime.now(timezone.utc).date()
 
 
 @dataclass(frozen=True)
