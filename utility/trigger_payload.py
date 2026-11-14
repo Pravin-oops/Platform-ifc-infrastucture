@@ -25,11 +25,14 @@ POLICY_NAME = "UK_TOK_AC_L0R0_UNC_DE"
 
 
 class PayloadBuildError(ValueError):
-    def __init__(self, message: str, *, field_name: str, source_key: str, check: str):
+    def __init__(
+        self, message: str, *, field_name: str, source_key: str, check: str, blocking: bool = False
+    ):
         super().__init__(message)
         self.field_name = field_name
         self.source_key = source_key
         self.check = check
+        self.blocking = blocking
 
 
 @dataclass(frozen=True)
@@ -42,6 +45,8 @@ class FieldSpec:
     transform: Optional[Callable[[Any], Any]] = None
     default: Any = None
     max_length: Optional[int] = None
+    #: A row without this value stops the run instead of being quarantined.
+    blocking: bool = False
 
 
 def normalise_identifier(value: Any) -> Any:
@@ -115,6 +120,7 @@ def build_fields(
                     field_name=spec.name,
                     source_key=spec.source,
                     check="missing",
+                    blocking=spec.blocking,
                 )
             continue
 
@@ -136,6 +142,7 @@ def build_fields(
                     field_name=spec.name,
                     source_key=spec.source,
                     check="empty",
+                    blocking=spec.blocking,
                 )
             continue
 

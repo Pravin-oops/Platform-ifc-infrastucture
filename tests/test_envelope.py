@@ -57,6 +57,7 @@ def trigger_8_row(**overrides):
         "client_relationship_owner_name": "XyZwVu67890",
         "client_relationship_owner_business_unit": "UK Corporate",
         "client_relationship_owner_location": "UK",
+        "country_code": "GB",
         "region": "EMEA",
         "business_date": "2026-06-30",
     }
@@ -104,7 +105,7 @@ class TestEnvelope:
         assert policies.pop("Client Relationship Owner Name") == "UK_TOK_AC_L0R0_UNC_DE"
         assert set(policies.values()) == {""}
 
-    def test_the_payload_is_the_eight_contract_fields_in_order(self, builder):
+    def test_the_trigger_8_payload_is_the_nine_contract_fields_in_order(self, builder):
         fields = builder.build(trigger_8_event()).payload_fields
         assert [f["fieldName"] for f in fields] == [
             "Date of Request",
@@ -114,6 +115,7 @@ class TestEnvelope:
             "Client Relationship Owner BRID",
             "Client Relationship Owner Business Unit",
             "Client Relationship Owner Location",
+            "Country Code",
             "Client Region",
         ]
 
@@ -290,11 +292,12 @@ class TestRejection:
             "counterparty_full_legal_entity_name",
             "client_relationship_owner_name",
             "client_relationship_owner_brid",
+            "country_code",
             "region",
         ],
     )
     def test_a_row_missing_a_mandatory_field_is_rejected(self, builder, source):
-        """All eight payload fields are mandatory; the two with contract defaults
+        """All nine trigger 8 payload fields are mandatory; the two with contract defaults
         are covered separately below. A row missing any of the rest is
         quarantined rather than published with a hole."""
         row = trigger_8_row()
@@ -302,6 +305,25 @@ class TestRejection:
         with pytest.raises(RecordRejected) as exc:
             builder.build(trigger_8_event(attributes=row))
         assert exc.value.detail["source_key"] == source
+
+    def test_a_missing_country_code_is_marked_as_stopping_the_run(self, builder):
+        row = trigger_8_row()
+        del row["country_code"]
+        with pytest.raises(RecordRejected) as exc:
+            builder.build(trigger_8_event(attributes=row))
+        assert exc.value.detail["blocking"] is True
+
+    def test_another_missing_field_is_only_quarantined(self, builder):
+        row = trigger_8_row()
+        del row["region"]
+        with pytest.raises(RecordRejected) as exc:
+            builder.build(trigger_8_event(attributes=row))
+        assert exc.value.detail["blocking"] is False
+
+    def test_country_code_has_no_length_limit(self, builder):
+        event = trigger_8_event(attributes=trigger_8_row(country_code="C" * 500))
+        fields = {f["fieldName"]: f["fieldValue"] for f in builder.build(event).payload_fields}
+        assert fields["Country Code"] == "C" * 500
 
     @pytest.mark.parametrize(
         "source, expected",
@@ -389,7 +411,7 @@ class TestAllTriggers:
         built = builder.build(event)
         fields = {f["fieldName"]: f["fieldValue"] for f in built.payload_fields}
         assert built.record["idValue"] == "8812774001"
-        # Trigger 21 publishes the same eight fields as Triggers 8 and 9.
+        # Trigger 21 publishes the eight shared fields; Country Code is Trigger 8 only.
         assert fields["Counterparty SDS ID / CSID"] == "8812774001"
         assert fields["Client Relationship Owner Location"] == "UK"
         assert len(fields) == 8

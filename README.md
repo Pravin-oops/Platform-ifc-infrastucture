@@ -190,7 +190,10 @@ flat. A query that cannot run → `SOURCE_UNREADABLE`, exit `14`. No rows → `Z
 
 ### ⑥ Each row
 
-1. **Build the envelope** ([section 5](#5-message-contract)): eight payload fields, sequence number,
+Trigger 8 only: the `country_code` check in [section 5](#5-message-contract) runs first and
+fails the run before any row is published.
+
+1. **Build the envelope** ([section 5](#5-message-contract)): the payload fields, sequence number,
    trigger ID.
 2. **Validate** against the bundled Avro schema.
 3. **Serialise** in Confluent wire format (`0x00` + 4-byte schema id + Avro body).
@@ -367,7 +370,7 @@ start (`ca_certificate.secret_id`) and written to `/tmp/ifc-certs/CARoot.pem`, w
 | `idType` / `idSystem` | `Customer` / `UK-C CRIME` |
 | `idValue` | `counterparty_csid_sds` as a string; a row without one is quarantined |
 | `upstreamTriggerID` | null |
-| `payload` | JSON string: the eight fields below |
+| `payload` | JSON string: the fields below (nine for Trigger 8, eight for Triggers 9 and 21) |
 
 Example trigger ID: `SNSVC0084378_KYCRefresh_NewHRCRelationship_2026-09-30T23:59:59.999999999Z_1`.
 The `order_by` columns fix the row order, so a re-run of the same data reproduces the same IDs.
@@ -382,7 +385,8 @@ symbols the connector publishes, the run fails at start-up.
 
 The `payload` is a JSON array of
 `{"fieldName", "fieldValue", "fieldEncryptionPolicy", "fieldDataType"}`, the same eight fields for
-every trigger, defined once in `_payload_fields()` in `utility/trigger_definitions.py`:
+every trigger plus `Country Code` for Trigger 8 only, defined once in `_payload_fields()` in
+`utility/trigger_definitions.py`:
 
 | # | `fieldName` | Type | Source column | Max length | Notes |
 |---|---|---|---|---|---|
@@ -393,11 +397,18 @@ every trigger, defined once in `_payload_fields()` in `utility/trigger_definitio
 | 5 | `Client Relationship Owner BRID` | `STRING` | `client_relationship_owner_brid` | 10 | |
 | 6 | `Client Relationship Owner Business Unit` | `STRING` | `client_relationship_owner_business_unit` | 20 | defaults to `UK Corporate` |
 | 7 | `Client Relationship Owner Location` | `STRING` | `client_relationship_owner_location` | 5 | defaults to `UK` |
-| 8 | `Client Region` | `STRING` | `region` | 50 | |
+| 8 | `Country Code` | `STRING` | `country_code` | none yet | **Trigger 8 only**; Triggers 9 and 21 do not send it. No width agreed, so no length check. A row without it stops the run (below) |
+| 8 / 9 | `Client Region` | `STRING` | `region` | 50 | row 9 for Trigger 8, row 8 for Triggers 9 and 21 |
 
-All eight are mandatory: a missing or blank value (after the two defaults) or a value over its
-length is quarantined, never truncated or sent empty. Every other field's
-`fieldEncryptionPolicy` is `""`. The connector never tokenises; the owner name must arrive
+All of a trigger's fields are mandatory: a missing or blank value (after the two defaults) or a value over its
+length is quarantined, never truncated or sent empty.
+
+`Country Code` is the exception: Trigger 8 is not published without it. Before the rows are read,
+one Athena query counts the month's rows whose `country_code` is null or blank; if there are any,
+the run ends `FAILED`, exit `20`, with nothing published and nothing quarantined. A row that turns
+up without it during the read stops the publish at that row. Triggers 9 and 21 run no such check.
+
+Every other field's `fieldEncryptionPolicy` is `""`. The connector never tokenises; the owner name must arrive
 already tokenised where a policy is declared.
 
 Renaming a `fieldName` is one line in `trigger_definitions.py`, but it is a consumer-visible
@@ -697,7 +708,7 @@ python3.12 scripts/main.py catalogue
     ├── schema_registry_client.py # registry lookup with failover, drift check
     ├── trigger_source.py         # Athena trigger-table reader
     ├── athena_query.py           # run an Athena query, typed rows
-    ├── trigger_definitions.py    # the eight payload fields, triggers 8/9/21, aliases
+    ├── trigger_definitions.py    # the payload fields, triggers 8/9/21, aliases
     ├── trigger_payload.py        # payload rules (types, lengths, defaults, policies)
     ├── tb_outcome_schema.py      # envelope, trigger ID, business month
     ├── sequence_allocator.py     # batch sequence numbers

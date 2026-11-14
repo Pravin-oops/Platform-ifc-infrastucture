@@ -23,6 +23,7 @@ from utility.observability_utility import Metrics, memory_limit_mb, process_rss_
 from utility.resilience_utility import BackoffPolicy, CircuitBreaker, CircuitOpen, ShutdownSignal, retry
 from utility.connector_config import ConnectorSettings
 from utility.connector_utility import SourceAccessError
+from utility import trigger_definitions as definitions
 from utility.trigger_source import make_source
 from utility.run_gate import execution_date
 from utility.sequence_allocator import SequenceAllocator
@@ -378,6 +379,23 @@ class ConnectorRunner:
 
         return outcome, exit_code, classification
 
+    def _check_blocking_fields(self) -> None:
+        """Fail the run before the first publish if any row of the month lacks a
+        value the trigger cannot be published without."""
+        columns = definitions.resolve(self._settings.trigger).blocking_sources()
+        if not columns:
+            return
+
+        missing = {c: n for c, n in self._source.count_missing(columns).items() if n}
+        if missing:
+            described = ", ".join(f"{column} missing in {count} row(s)" for column, count in missing.items())
+            raise ConnectorError(
+                f"Nothing was published: {self._source.table} has rows for this month "
+                f"without a mandatory value ({described})",
+                catalog.SCHEMA_VALIDATION_FAILURE,
+                context={"missing": missing, "table": self._source.table},
+            )
+
     def run_batch(self) -> BatchResult:
         assert self._stack is not None and self._envelopes is not None
 
@@ -390,6 +408,8 @@ class ConnectorRunner:
         stream_exhausted = False
 
         try:
+            self._check_blocking_fields()
+
             for index, item in enumerate(self._source.stream(), start=1):
                 if self._shutdown.is_set:
                     logger.warning("Shutdown signalled; stopping intake and draining")
@@ -491,6 +511,12 @@ class ConnectorRunner:
         try:
             built = self._envelopes.build(event)
         except RecordRejected as rejection:
+            if rejection.detail.get("blocking"):
+                raise ConnectorError(
+                    f"Publishing stopped at row {event.source_index + 1}: {rejection}",
+                    rejection.scenario,
+                    context=rejection.detail,
+                ) from rejection
             self._handle_rejection(
                 trigger_id=None,
                 rejection=rejection,

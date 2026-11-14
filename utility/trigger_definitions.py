@@ -49,8 +49,12 @@ class TriggerDefinition:
     def required_sources(self) -> List[str]:
         return [spec.source for spec in self.fields if spec.required and spec.default is None]
 
+    def blocking_sources(self) -> List[str]:
+        return [spec.source for spec in self.fields if spec.required and spec.blocking]
 
-def _payload_fields() -> List[FieldSpec]:
+
+def _payload_fields(*, country_code: bool = False) -> List[FieldSpec]:
+    country = [FieldSpec("Country Code", "country_code", blocking=True)] if country_code else []
     return [
         FieldSpec(
             "Date of Request",
@@ -92,6 +96,7 @@ def _payload_fields() -> List[FieldSpec]:
             default=DEFAULT_LOCATION,
             max_length=MAX_LENGTHS["client_relationship_owner_location"],
         ),
+        *country,
         FieldSpec("Client Region", "region", max_length=MAX_LENGTHS["region"]),
     ]
 
@@ -101,7 +106,7 @@ TRIGGER_8_DEFINITION = TriggerDefinition(
     published_sub_type=SUBTYPE_NEW_HRC_RELATIONSHIP,
     subtype_detail="Trig_8_Cross_Border_Transactions",
     event_key_source="business_date",
-    fields=_payload_fields(),
+    fields=_payload_fields(country_code=True),
 )
 
 

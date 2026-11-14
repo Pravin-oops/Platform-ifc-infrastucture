@@ -226,6 +226,7 @@ class EnvelopeBuilder:
                     "field_name": exc.field_name,
                     "source_key": exc.source_key,
                     "check": exc.check,
+                    "blocking": exc.blocking,
                     "source_object": event.source_object,
                 },
             ) from exc

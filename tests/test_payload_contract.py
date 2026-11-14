@@ -146,7 +146,7 @@ class TestDateFormat:
 
 
 class TestContractLengths:
-    """The eight published fields carry the consumer's widths."""
+    """The published fields carry the consumer's widths; Country Code is Trigger 8 only."""
 
     EXPECTED = {
         "Date of Request": 10,
@@ -161,7 +161,10 @@ class TestContractLengths:
 
     @pytest.mark.parametrize("definition", definitions.DEFINITIONS.values(), ids=lambda d: d.sub_type)
     def test_every_field_declares_the_specified_width(self, definition):
-        assert {s.name: s.max_length for s in definition.fields} == self.EXPECTED
+        expected = dict(self.EXPECTED)
+        if definition.sub_type == definitions.TRIGGER_8:
+            expected["Country Code"] = None  # no width agreed yet
+        assert {s.name: s.max_length for s in definition.fields} == expected
 
     def test_the_defaults_fit_their_own_fields(self):
         """A default longer than its field would quarantine every row it filled."""
@@ -180,6 +183,7 @@ class TestContractLengths:
                 "counterparty_full_legal_entity_name": "AbCdEfGh12345",
                 "client_relationship_owner_name": "TOKENISED_NAME",
                 "client_relationship_owner_brid": "B0433118",
+                "country_code": "GB",
                 "region": "EMEA",
             },
         )
@@ -196,6 +200,7 @@ class TestPayloadValidation:
                 "counterparty_full_legal_entity_name": "AbCdEfGh12345",
                 "client_relationship_owner_name": "TOKENISED_NAME",
                 "client_relationship_owner_brid": "B0433118",
+                "country_code": "GB",
                 "region": "EMEA",
                 "business_date": "2026-06-30",
             },
@@ -247,8 +252,22 @@ class TestTriggerDefinitions:
         "sub_type", [definitions.TRIGGER_8, definitions.TRIGGER_9, definitions.TRIGGER_21]
     )
     def test_every_definition_publishes_the_same_eight_fields(self, sub_type):
-        """One payload contract, shared by every trigger - order included."""
-        assert definitions.DEFINITIONS[sub_type].field_names() == self.EXPECTED_FIELDS
+        """One payload contract, shared by every trigger - order included.
+        Trigger 8 alone adds Country Code, as row 8 above Client Region."""
+        names = definitions.DEFINITIONS[sub_type].field_names()
+        if sub_type == definitions.TRIGGER_8:
+            assert names[7] == "Country Code"
+            assert names[8] == "Client Region"
+            names = names[:7] + names[8:]
+        assert names == self.EXPECTED_FIELDS
+
+    @pytest.mark.parametrize("sub_type", [definitions.TRIGGER_9, definitions.TRIGGER_21])
+    def test_country_code_is_not_published_for_the_other_triggers(self, sub_type):
+        assert "Country Code" not in definitions.DEFINITIONS[sub_type].field_names()
+        assert definitions.DEFINITIONS[sub_type].blocking_sources() == []
+
+    def test_only_a_missing_country_code_stops_a_trigger_8_run(self):
+        assert definitions.TRIGGER_8_DEFINITION.blocking_sources() == ["country_code"]
 
     @pytest.mark.parametrize(
         "sub_type", [definitions.TRIGGER_8, definitions.TRIGGER_9, definitions.TRIGGER_21]

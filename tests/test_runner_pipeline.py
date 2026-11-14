@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Optional
 
+import re
+
 import pytest
 
 from utility import failure_catalog as catalog
@@ -146,6 +148,7 @@ VALID_ROW = {
     "client_relationship_owner_name": "XyZwVu67890",
     "client_relationship_owner_business_unit": "UK Corporate",
     "client_relationship_owner_location": "UK",
+    "country_code": "GB",
     "region": "EMEA",
     "business_date": "2026-06-30",
 }
@@ -163,14 +166,32 @@ class FakeAthena:
     GetQueryResults pages them.
     """
 
-    def __init__(self, rows: List[Dict[str, Any]], *, state: str = "SUCCEEDED"):
+    def __init__(
+        self,
+        rows: List[Dict[str, Any]],
+        *,
+        state: str = "SUCCEEDED",
+        missing: Optional[Dict[str, int]] = None,
+    ):
         self.rows = rows
         self.state = state
+        #: Overrides what the COUNT_IF check reports, to stand in for a table
+        #: that changed between the check and the read.
+        self.missing = missing
         self.queries: List[Dict[str, Any]] = []
 
     def start_query_execution(self, **request):
         self.queries.append(request)
-        return {"QueryExecutionId": "q-1"}
+        return {"QueryExecutionId": f"q-{len(self.queries)}"}
+
+    def _missing_counts(self, sql: str) -> Dict[str, int]:
+        def blank(value):
+            return value is None or (isinstance(value, str) and not value.strip())
+
+        counted = {
+            c: sum(1 for r in self.rows if blank(r.get(c))) for c in re.findall(r'AS "(\w+)"', sql)
+        }
+        return {**counted, **(self.missing or {})}
 
     def get_query_execution(self, QueryExecutionId):
         status = {"State": self.state, "StateChangeReason": "TABLE_NOT_FOUND"}
@@ -200,9 +221,25 @@ class FakeAthena:
             for i, chunk in enumerate(chunks)
         ]
 
+        fake = self
+
         class Paginator:
-            def paginate(self, **_):
-                return iter(pages)
+            def paginate(self, QueryExecutionId=None, **_):
+                sql = fake.queries[int(QueryExecutionId.split("-")[1]) - 1]["QueryString"]
+                if "COUNT_IF(" not in sql:
+                    return iter(pages)
+                counts = fake._missing_counts(sql)
+                return iter([{
+                    "ResultSet": {
+                        "Rows": [
+                            {"Data": [{"VarCharValue": c} for c in counts]},
+                            {"Data": [{"VarCharValue": str(n)} for n in counts.values()]},
+                        ],
+                        "ResultSetMetadata": {
+                            "ColumnInfo": [{"Name": c, "Type": "bigint"} for c in counts]
+                        },
+                    }
+                }])
 
         return Paginator()
 
@@ -342,7 +379,7 @@ class TestRunLogs:
 
 class TestQuarantine:
     def test_a_poison_record_is_quarantined_and_the_batch_continues(self, runner_factory):
-        poison = {"region": "EMEA"}  # no CSID, so no idValue
+        poison = {"region": "EMEA", "country_code": "GB"}  # no CSID, so no idValue
         runner, producer = runner_factory([poison, VALID_ROW])
 
         result = runner.run_batch()
@@ -352,7 +389,7 @@ class TestQuarantine:
         assert result.reconciliation.balanced
 
     def test_exceeding_the_quarantine_tolerance_fails_the_run(self, runner_factory):
-        poison = {"region": "EMEA"}
+        poison = {"region": "EMEA", "country_code": "GB"}
         runner, _ = runner_factory(
             [poison, VALID_ROW], resilience={"max_quarantine_ratio": 0.1}
         )
@@ -361,6 +398,79 @@ class TestQuarantine:
 
         assert result.outcome == "QUALITY_GATE_FAILED"
         assert result.exit_code == catalog.SCHEMA_VALIDATION_FAILURE.exit_code
+
+
+class TestMissingCountryCode:
+    """Trigger 8 cannot be published without a Country Code: one row without it
+    stops the run before anything reaches the topic, rather than being quarantined."""
+
+    @pytest.mark.parametrize("value", [None, "", "   "])
+    def test_one_row_without_a_country_code_publishes_nothing(self, runner_factory, value):
+        runner, producer = runner_factory([VALID_ROW, row(country_code=value), VALID_ROW])
+
+        result = runner.run_batch()
+
+        assert producer.produced == []
+        assert result.outcome == "FAILED"
+        assert result.exit_code == catalog.SCHEMA_VALIDATION_FAILURE.exit_code
+        assert result.counters.published == 0
+        assert result.counters.quarantined == 0
+        assert "country_code missing in 1 row(s)" in result.classification.raw_error
+        assert result.classification.context["missing"] == {"country_code": 1}
+
+    def test_a_table_without_the_column_publishes_nothing(self, runner_factory):
+        rows = [{k: v for k, v in VALID_ROW.items() if k != "country_code"}] * 3
+        runner, producer = runner_factory(rows)
+
+        result = runner.run_batch()
+
+        assert producer.produced == []
+        assert result.outcome == "FAILED"
+        assert result.classification.context["missing"] == {"country_code": 3}
+
+    def test_the_check_runs_before_the_rows_are_read(self, runner_factory):
+        runner, _ = runner_factory([row(country_code=None)])
+        runner.run_batch()
+
+        queries = [q["QueryString"] for q in runner._source._client.queries]
+        assert len(queries) == 1
+        assert queries[0].startswith('SELECT COUNT_IF("country_code" IS NULL')
+
+    def test_a_row_that_loses_its_country_code_after_the_check_stops_the_publish(self):
+        """The backstop: the check saw a complete month, the read did not."""
+        rows = [VALID_ROW, row(country_code=None), VALID_ROW]
+        runner, producer, _ = build_runner(rows, athena=FakeAthena(rows, missing={"country_code": 0}))
+
+        result = runner.run_batch()
+
+        assert result.outcome == "FAILED"
+        assert result.exit_code == catalog.SCHEMA_VALIDATION_FAILURE.exit_code
+        assert len(producer.produced) == 1
+        assert result.counters.quarantined == 0
+        assert "Publishing stopped at row 2" in result.classification.raw_error
+
+    def test_a_complete_month_is_published(self, runner_factory):
+        runner, producer = runner_factory([VALID_ROW, VALID_ROW])
+        result = runner.run_batch()
+
+        assert result.outcome == "SUCCESS"
+        assert len(producer.produced) == 2
+
+    @pytest.mark.parametrize("trigger", ["TRIGGER_9", "TRIGGER_21"])
+    def test_the_other_triggers_are_not_checked(self, trigger):
+        rows = [{k: v for k, v in VALID_ROW.items() if k != "country_code"}]
+        runner, producer, _ = build_runner(
+            rows,
+            run={"trigger": trigger},
+            source={"trigger_tables": {trigger: "ifc_trigger_db.other"}},
+        )
+        runner._source._trigger = trigger
+
+        result = runner.run_batch()
+
+        assert result.outcome == "SUCCESS"
+        assert len(producer.produced) == 1
+        assert not any("COUNT_IF(" in q["QueryString"] for q in runner._source._client.queries)
 
 
 class TestRejectionReporting:
@@ -620,7 +730,7 @@ class TestBatchCompletionWindow:
     def test_a_quarantined_record_does_not_widen_the_window(self, runner_factory):
         """Only records that reached the broker count: the window is what TBB
         is told was produced."""
-        poison = {"region": "EMEA"}
+        poison = {"region": "EMEA", "country_code": "GB"}
         runner, _ = runner_factory([VALID_ROW, poison])
         result = runner.run_batch()
 
@@ -647,7 +757,8 @@ class TestTheMonthIsOneBatch:
         assert result.source == {
             "table": "ifc_trigger_db.trigger_8",
             "business_date": "2026-06-30",
-            "query_execution_id": "q-1",
+            # q-1 is the Country Code check that runs before the read.
+            "query_execution_id": "q-2",
         }
 
     def test_the_run_trigger_table_is_queried_for_the_month_end(self):
@@ -655,9 +766,11 @@ class TestTheMonthIsOneBatch:
         runner, _, _ = build_runner([], athena=athena)
         runner.run_batch()
 
-        (query,) = athena.queries
-        assert '"ifc_trigger_db"."trigger_8"' in query["QueryString"]
-        assert query["ExecutionParameters"] == ["'2026-06-30'"]
+        check, query = athena.queries
+        assert query["QueryString"].startswith('SELECT * FROM "ifc_trigger_db"."trigger_8"')
+        for started in (check, query):
+            assert '"ifc_trigger_db"."trigger_8"' in started["QueryString"]
+            assert started["ExecutionParameters"] == ["'2026-06-30'"]
 
     def test_a_month_spanning_several_result_pages_is_published_whole(self):
         """Hundreds a month in practice; paging must still not drop a row."""
@@ -670,7 +783,7 @@ class TestTheMonthIsOneBatch:
 
     def test_a_bad_row_is_quarantined_and_the_rest_of_the_month_publishes(self):
         rows = self._rows(5)
-        rows[2] = {"region": "EMEA"}  # no CSID
+        rows[2] = {"region": "EMEA", "country_code": "GB"}  # no CSID
         runner, _, _ = build_runner(rows)
         result = runner.run_batch()
 

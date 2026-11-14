@@ -95,6 +95,7 @@ def an_event(csid, business_date="2026-08-31"):
             "client_relationship_owner_name": "TOKENISED_NAME",
             "client_relationship_owner_brid": "BR123456",
             "business_date": business_date,
+            "country_code": "GB",
             "region": "EMEA",
         },
     )

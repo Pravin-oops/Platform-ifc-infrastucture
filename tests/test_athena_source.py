@@ -37,6 +37,7 @@ COLUMNS = [
     ("client_relationship_owner_name", "varchar"),
     ("client_relationship_owner_business_unit", "varchar"),
     ("client_relationship_owner_location", "varchar"),
+    ("country_code", "varchar"),
     ("region", "varchar"),
     ("business_date", "date"),
 ]
@@ -50,6 +51,7 @@ ROW = [
     "XyZwVu67890",
     "UK Corporate",
     "UK",
+    "GB",
     "EMEA",
     "2026-08-31",
 ]
@@ -122,6 +124,41 @@ def make(client, *, month="2026-08", trigger="TRIGGER_8", **athena) -> AthenaTri
         client=client,
         sleep=lambda _s: None,
     )
+
+
+class TestMissingValues:
+    """The pre-publish check: how many of the month's rows lack a column's value."""
+
+    def test_the_query_counts_null_and_blank_values_for_the_business_date(self):
+        sql, params = make(FakeAthena()).missing_query(["country_code"])
+
+        assert sql == (
+            'SELECT COUNT_IF("country_code" IS NULL OR TRIM(CAST("country_code" AS VARCHAR)) = \'\') '
+            'AS "country_code" FROM "ifc_trigger_db"."trigger_8_events" '
+            'WHERE CAST("business_date" AS DATE) = CAST(? AS DATE)'
+        )
+        assert params == ["'2026-08-31'"]
+
+    def test_the_count_is_read_per_column(self):
+        page = {
+            "ResultSet": {
+                "Rows": [
+                    {"Data": [{"VarCharValue": "country_code"}]},
+                    {"Data": [{"VarCharValue": "7"}]},
+                ],
+                "ResultSetMetadata": {"ColumnInfo": [{"Name": "country_code", "Type": "bigint"}]},
+            }
+        }
+        assert make(FakeAthena(pages=[page])).count_missing(["country_code"]) == {"country_code": 7}
+
+    def test_a_column_name_is_not_spliced_into_the_sql_unchecked(self):
+        with pytest.raises(ValueError):
+            make(FakeAthena()).missing_query(['x" OR 1=1 --'])
+
+    def test_a_failed_query_is_a_source_access_error(self):
+        client = FakeAthena(states=("FAILED",), reason="COLUMN_NOT_FOUND: country_code")
+        with pytest.raises(SourceAccessError):
+            make(client).count_missing(["country_code"])
 
 
 class TestQuery:

@@ -4,7 +4,7 @@ import calendar
 import logging
 import time
 from datetime import date
-from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple
 
 from botocore.exceptions import BotoCoreError, ClientError
 
@@ -63,6 +63,36 @@ class AthenaTriggerSource:
             order = ", ".join(sql_identifier(c, what="order_by column") for c in self._athena.order_by)
             sql += f" ORDER BY {order}"
         return sql, [athena_query.string_literal(self.business_date.isoformat())]
+
+    def missing_query(self, columns: Sequence[str]) -> Tuple[str, List[str]]:
+        date_column = sql_identifier(self._athena.business_date_column, what="business_date_column")
+        counts = ", ".join(
+            f"COUNT_IF({name} IS NULL OR TRIM(CAST({name} AS VARCHAR)) = '') AS {name}"
+            for name in (sql_identifier(c, what="payload source column") for c in columns)
+        )
+        sql = (
+            f"SELECT {counts} FROM {athena_table(self.table)} "
+            f"WHERE CAST({date_column} AS DATE) = CAST(? AS DATE)"
+        )
+        return sql, [athena_query.string_literal(self.business_date.isoformat())]
+
+    def count_missing(self, columns: Sequence[str]) -> Dict[str, int]:
+        """How many of the month's rows have no value in each of ``columns``."""
+        client = self._athena_client()
+        try:
+            sql, parameters = self.missing_query(columns)
+            query_id = athena_query.start(client, self._athena, sql, parameters, label=self.table)
+            self.last_query_execution_id = query_id
+            athena_query.wait(client, self._athena, query_id, label=self.table, sleep=self._sleep)
+            found = next(iter(athena_query.rows(client, query_id)), {})
+        except (ClientError, BotoCoreError) as exc:
+            raise SourceAccessError(
+                f"Athena query on {self.table} failed: {exc}",
+                path=self.table,
+                operation="query",
+                cause=exc,
+            ) from exc
+        return {column: int(found.get(column) or 0) for column in columns}
 
     def check_access(self) -> str:
         database, table = self.table.split(".")
